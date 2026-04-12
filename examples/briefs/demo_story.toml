@@ -1,0 +1,9 @@
+title_hint = "雾港回声"
+idea = "一名失意声音设计师回到海港故乡，调查一盘能预告死亡的失踪录音带。"
+genre = "悬疑 / 科幻"
+tone = "冷峻、诗性、电影感"
+target_audience = "18-35 岁喜欢悬疑与世界观设定的读者"
+chapter_count = 6
+total_word_target = 18000
+must_include = ["旧电台塔楼", "倒放录音", "海雾中的追逐", "双时间线揭示"]
+style_keywords = ["海港", "电流噪声", "霓虹", "潮湿", "宿命感"]

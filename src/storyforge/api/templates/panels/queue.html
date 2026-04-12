@@ -1,0 +1,45 @@
+<section class="page-panel" data-page-panel="queue">
+  <div class="page-stage">
+    <header class="page-header">
+      <div>
+        <p class="section-kicker">Production Progress</p>
+        <h2>查看当前制作进度</h2>
+        <p>适合盯当前正在制作的任务，及时看到文本、图片和视频阶段的推进情况。</p>
+      </div>
+    </header>
+
+    <div class="management-layout">
+      <aside class="panel list-panel">
+        <div class="panel-head">
+          <p class="section-kicker">Live Tasks</p>
+          <h2>实时任务</h2>
+          <p>这里展示所有正在制作或最近完成的记录。</p>
+        </div>
+
+        <div class="queue-toolbar">
+          <button type="button" class="secondary" id="refresh-button">立即刷新</button>
+          <div class="queue-status">
+            <span class="queue-status-dot"></span>
+            <strong id="poll-indicator">同步中</strong>
+          </div>
+        </div>
+
+        <div id="queue-task-list" class="list-stack">
+          <article class="empty-state">
+            <h3>还没有任务</h3>
+            <p>从“新建任务”开始创建第一条制作记录，任务列表会自动出现在这里。</p>
+          </article>
+        </div>
+      </aside>
+
+      <section class="panel detail-page">
+        <div id="queue-detail-view" class="detail-view">
+          <article class="empty-state">
+            <h3>等待选择任务</h3>
+            <p>从左侧选中一条任务后，这里会显示该次制作的详细状态和已产出的内容。</p>
+          </article>
+        </div>
+      </section>
+    </div>
+  </div>
+</section>

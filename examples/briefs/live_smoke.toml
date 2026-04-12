@@ -1,0 +1,9 @@
+title_hint = "雾站单片段测试"
+idea = "一名归来的档案员在暴雨夜走进停运车站，发现一段会提前播放未来事故的广播。"
+genre = "悬疑 / 都市奇谭"
+tone = "压抑、潮湿、电影感"
+target_audience = "喜欢短悬疑和视觉叙事的成年观众"
+chapter_count = 1
+total_word_target = 1500
+must_include = ["停运车站", "提前播放的广播", "暴雨夜台阶"]
+style_keywords = ["暴雨", "冷色灯光", "空站台", "旧广播"]

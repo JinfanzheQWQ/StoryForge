@@ -1,0 +1,9 @@
+title_hint = "雪港密函"
+idea = "一名失踪多年的邮差在暴雪夜回到封港小镇，只为投递一封写给三天后死者的信。"
+genre = "悬疑 / 奇幻"
+tone = "冷冽、克制、电影感"
+target_audience = "喜欢短篇悬疑和强氛围叙事的成年观众"
+chapter_count = 1
+total_word_target = 1500
+must_include = ["封港小镇", "暴雪中的邮局", "写给死者的信"]
+style_keywords = ["暴雪", "海港", "旧邮局", "煤油灯"]

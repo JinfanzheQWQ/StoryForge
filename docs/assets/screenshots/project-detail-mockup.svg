@@ -1,0 +1,65 @@
+<svg width="1200" height="820" viewBox="0 0 1200 820" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="92" y1="64" x2="1110" y2="748" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5FAFF"/>
+      <stop offset="0.55" stop-color="#FFF8F1"/>
+      <stop offset="1" stop-color="#F5FFF8"/>
+    </linearGradient>
+    <filter id="shadow" x="48" y="44" width="1104" height="732" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="20"/>
+      <feGaussianBlur stdDeviation="24"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0862745 0 0 0 0 0.145098 0 0 0 0 0.215686 0 0 0 0.12 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="820" rx="30" fill="url(#bg)"/>
+  <circle cx="128" cy="118" r="84" fill="#DCEEFF"/>
+  <circle cx="1074" cy="716" r="112" fill="#FFE5D0"/>
+  <g filter="url(#shadow)">
+    <rect x="96" y="84" width="1008" height="636" rx="30" fill="#FFFFFF"/>
+    <rect x="96" y="84" width="1008" height="636" rx="30" stroke="#DBE7F1"/>
+    <rect x="96" y="84" width="1008" height="48" rx="30" fill="#F9FBFE"/>
+    <rect x="96" y="116" width="1008" height="1" fill="#E4EDF5"/>
+    <circle cx="128" cy="108" r="5.5" fill="#FF6C5F"/>
+    <circle cx="148" cy="108" r="5.5" fill="#FFBE2E"/>
+    <circle cx="168" cy="108" r="5.5" fill="#27C93F"/>
+    <rect x="126" y="158" width="170" height="520" rx="24" fill="#11243C"/>
+    <rect x="154" y="194" width="66" height="14" rx="7" fill="#7893B6"/>
+    <rect x="154" y="240" width="114" height="34" rx="17" fill="#1B3A62"/>
+    <rect x="154" y="292" width="88" height="12" rx="6" fill="#4C678A"/>
+    <rect x="154" y="322" width="106" height="12" rx="6" fill="#4C678A"/>
+    <rect x="154" y="352" width="92" height="12" rx="6" fill="#4C678A"/>
+    <rect x="154" y="382" width="120" height="12" rx="6" fill="#4C678A"/>
+    <rect x="326" y="158" width="742" height="520" rx="24" fill="#FBFCFE" stroke="#DFE8F1"/>
+    <rect x="364" y="194" width="172" height="14" rx="7" fill="#AEBFD0"/>
+    <rect x="364" y="226" width="324" height="42" rx="16" fill="#16273E"/>
+    <rect x="838" y="194" width="84" height="30" rx="15" fill="#0E766E"/>
+    <rect x="938" y="194" width="86" height="30" rx="15" fill="#FFFFFF" stroke="#D5E0EA"/>
+    <rect x="364" y="300" width="206" height="100" rx="22" fill="#EFF6FC" stroke="#DCE8F2"/>
+    <rect x="594" y="300" width="206" height="100" rx="22" fill="#FFF4E8" stroke="#F0DFC9"/>
+    <rect x="824" y="300" width="206" height="100" rx="22" fill="#F1FBF4" stroke="#D9ECDD"/>
+    <rect x="392" y="326" width="48" height="48" rx="16" fill="#D8E8F7"/>
+    <rect x="622" y="326" width="48" height="48" rx="16" fill="#F6E1CE"/>
+    <rect x="852" y="326" width="48" height="48" rx="16" fill="#D8EFDF"/>
+    <rect x="456" y="334" width="52" height="10" rx="5" fill="#9FB5CA"/>
+    <rect x="686" y="334" width="52" height="10" rx="5" fill="#C7AF95"/>
+    <rect x="916" y="334" width="52" height="10" rx="5" fill="#8DB69E"/>
+    <rect x="456" y="356" width="78" height="10" rx="5" fill="#C9D6E3"/>
+    <rect x="686" y="356" width="76" height="10" rx="5" fill="#E7D7C6"/>
+    <rect x="916" y="356" width="72" height="10" rx="5" fill="#CAE3D2"/>
+    <rect x="364" y="430" width="430" height="210" rx="24" fill="#FFFFFF" stroke="#DDE7F0"/>
+    <rect x="824" y="430" width="206" height="210" rx="24" fill="#FFFFFF" stroke="#DDE7F0"/>
+    <rect x="392" y="460" width="104" height="12" rx="6" fill="#A9BBCC"/>
+    <rect x="392" y="496" width="374" height="34" rx="17" fill="#F4F8FC"/>
+    <rect x="392" y="544" width="374" height="34" rx="17" fill="#F4F8FC"/>
+    <rect x="392" y="592" width="374" height="34" rx="17" fill="#F4F8FC"/>
+    <rect x="852" y="462" width="150" height="92" rx="18" fill="#EEF5FB"/>
+    <rect x="852" y="572" width="70" height="38" rx="14" fill="#E8F0F8"/>
+    <rect x="932" y="572" width="70" height="38" rx="14" fill="#FDF0E2"/>
+    <text x="364" y="674" fill="#203244" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Project Detail Mockup</text>
+    <text x="364" y="704" fill="#65778A" font-family="Inter, Arial, sans-serif" font-size="18">Use this slot for the real project detail page with runs, assets, and status cards.</text>
+  </g>
+</svg>

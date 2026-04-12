@@ -211,7 +211,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(persisted_task.status_code, 200)
             self.assertEqual(persisted_task.json()["project_id"], project_id)
 
-    @patch("storyforge.application.container.run_video_pipeline")
+    @patch("storyforge.application.task_handlers.run_video_pipeline")
     def test_story_artifacts_are_available_while_task_is_still_running(self, mock_run_video_pipeline) -> None:
         def fake_run_video_pipeline(*args, **kwargs):
             output_dir = kwargs["output_root"]
@@ -310,9 +310,9 @@ class ApiTestCase(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 202)
 
-    @patch("storyforge.application.container.run_video_render_pipeline")
-    @patch("storyforge.application.container.run_scene_image_pipeline")
-    @patch("storyforge.application.container.run_character_image_pipeline")
+    @patch("storyforge.application.task_handlers.run_video_render_pipeline")
+    @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
+    @patch("storyforge.application.task_handlers.run_character_image_pipeline")
     def test_submit_manual_staged_jobs_share_one_logical_run(
         self,
         mock_run_character_image_pipeline,

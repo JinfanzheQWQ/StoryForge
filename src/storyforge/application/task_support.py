@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from storyforge.application.tasks import QueuedTask, TaskRecord
+from storyforge.core.io import read_json
+from storyforge.domains.novel.contracts import NovelPackage
+
+if TYPE_CHECKING:
+    from storyforge.application.task_runtime import TaskExecutionContext
+
+
+def persist_task_progress(
+    context: TaskExecutionContext,
+    task: QueuedTask,
+    result: dict[str, object],
+) -> None:
+    context.task_store.update_result(task.task_id, result)
+    context.project_store.mark_task_result(task.project_id, task.task_id, result)
+
+
+def resolve_source_task(
+    context: TaskExecutionContext,
+    task: QueuedTask,
+) -> TaskRecord:
+    source_task_id = str(task.payload["source_task_id"])
+    source_task = context.task_store.get(source_task_id)
+    if source_task is None or source_task.project_id != task.project_id:
+        raise ValueError(f"Source task {source_task_id} not found for project {task.project_id}")
+    if source_task.status != "completed":
+        raise ValueError(f"Source task {source_task_id} is not completed yet")
+    return source_task
+
+
+def resolve_output_dir(source_task: TaskRecord) -> Path:
+    raw_output_dir = source_task.result.get("output_dir") if source_task.result else None
+    if not raw_output_dir:
+        raise ValueError(f"Source task {source_task.task_id} has no output_dir")
+    return Path(str(raw_output_dir))
+
+
+def load_novel_package(source_task: TaskRecord) -> NovelPackage:
+    raw_package_path = source_task.result.get("novel_package_path") if source_task.result else None
+    if not raw_package_path:
+        raise ValueError(f"Source task {source_task.task_id} has no novel_package_path")
+    package_path = Path(str(raw_package_path))
+    if not package_path.exists():
+        raise FileNotFoundError(f"Novel package not found at {package_path}")
+    return NovelPackage.from_dict(read_json(package_path))
+
+
+def resolve_story_title(source_task: TaskRecord) -> str:
+    if source_task.result and source_task.result.get("story_title"):
+        return str(source_task.result["story_title"])
+    if source_task.payload and source_task.payload.get("brief"):
+        return str(source_task.payload["brief"].get("title_hint", source_task.task_id))
+    return source_task.task_id
+
+
+def resolve_pipeline_root_task_id(source_task: TaskRecord) -> str:
+    if source_task.result and source_task.result.get("pipeline_root_task_id"):
+        return str(source_task.result["pipeline_root_task_id"])
+    if source_task.payload and source_task.payload.get("pipeline_root_task_id"):
+        return str(source_task.payload["pipeline_root_task_id"])
+    return source_task.task_id
+
+
+def propagate_shared_result(
+    context: TaskExecutionContext,
+    task_ids: set[str],
+    result: dict[str, object],
+    exclude_task_id: str | None = None,
+) -> None:
+    shared_result = {
+        key: value
+        for key, value in result.items()
+        if key not in {"task_stage", "source_task_id"}
+    }
+    for task_id in task_ids:
+        if not task_id or task_id == exclude_task_id:
+            continue
+        if context.task_store.get(task_id) is None:
+            continue
+        context.task_store.update_result(task_id, shared_result)
+
+
+def build_requested_media_error(
+    requested: bool,
+    seedream_execution: object | None,
+    seedance_execution: object,
+) -> str:
+    if not requested:
+        return ""
+
+    errors: list[str] = []
+    if seedream_execution is None:
+        errors.append("Seedream did not return an execution report.")
+    else:
+        seedream_submitted = bool(getattr(seedream_execution, "submitted", False))
+        seedream_failed_count = int(getattr(seedream_execution, "failed_count", 0))
+        if not seedream_submitted or seedream_failed_count > 0:
+            errors.append(
+                "Seedream media generation failed: "
+                f"submitted={seedream_submitted}, "
+                f"generated_count={getattr(seedream_execution, 'generated_count', 0)}, "
+                f"failed_count={seedream_failed_count}, "
+                f"note={getattr(seedream_execution, 'note', '')}"
+            )
+
+    seedance_submitted = bool(getattr(seedance_execution, "submitted", False))
+    seedance_failed_count = int(getattr(seedance_execution, "failed_count", 0))
+    seedance_pending_count = int(getattr(seedance_execution, "pending_count", 0))
+    if not seedance_submitted or seedance_failed_count > 0 or seedance_pending_count > 0:
+        errors.append(
+            "Seedance video generation failed: "
+            f"submitted={seedance_submitted}, "
+            f"completed_count={getattr(seedance_execution, 'completed_count', 0)}, "
+            f"failed_count={seedance_failed_count}, "
+            f"pending_count={seedance_pending_count}, "
+            f"note={getattr(seedance_execution, 'note', '')}"
+        )
+
+    return " | ".join(errors)
+
+
+def build_requested_image_error(seedream_execution: object | None) -> str:
+    if seedream_execution is None:
+        return "Seedream did not return an execution report."
+
+    seedream_submitted = bool(getattr(seedream_execution, "submitted", False))
+    seedream_failed_count = int(getattr(seedream_execution, "failed_count", 0))
+    if seedream_submitted and seedream_failed_count == 0:
+        return ""
+    return (
+        "Seedream image generation failed: "
+        f"submitted={seedream_submitted}, "
+        f"generated_count={getattr(seedream_execution, 'generated_count', 0)}, "
+        f"failed_count={seedream_failed_count}, "
+        f"note={getattr(seedream_execution, 'note', '')}"
+    )
+
+
+def build_requested_video_error(seedance_execution: object) -> str:
+    seedance_submitted = bool(getattr(seedance_execution, "submitted", False))
+    seedance_failed_count = int(getattr(seedance_execution, "failed_count", 0))
+    seedance_pending_count = int(getattr(seedance_execution, "pending_count", 0))
+    if seedance_submitted and seedance_failed_count == 0 and seedance_pending_count == 0:
+        return ""
+    return (
+        "Seedance video generation failed: "
+        f"submitted={seedance_submitted}, "
+        f"completed_count={getattr(seedance_execution, 'completed_count', 0)}, "
+        f"failed_count={seedance_failed_count}, "
+        f"pending_count={seedance_pending_count}, "
+        f"note={getattr(seedance_execution, 'note', '')}"
+    )

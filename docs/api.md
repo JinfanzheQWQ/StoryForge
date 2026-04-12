@@ -1,28 +1,25 @@
 # API 文档
 
-## 1. 服务启动
+这份文档描述 StoryForge 当前可用的 HTTP 接口。  
+默认服务基于 `FastAPI`，接口文档也可在运行时通过 Swagger 查看。
+
+## 启动服务
 
 ```bash
-uv run storyforge api serve --host 0.0.0.0 --port 8000 --reload
+uv run storyforge api serve --host 127.0.0.1 --port 8000 --reload
 ```
 
-启动后默认接口文档地址：
+默认入口：
 
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/docs`
-- `http://127.0.0.1:8000/redoc`
+- `http://127.0.0.1:8000/`：Web 控制台
+- `http://127.0.0.1:8000/docs`：Swagger
+- `http://127.0.0.1:8000/redoc`：ReDoc
 
-其中：
+## 接口分组
 
-- `/` 是浏览器 Web 控制台
-- `/docs` 是 Swagger 文档
-- `/redoc` 是 ReDoc 文档
+### 健康检查
 
-## 2. 路由概览
-
-### `GET /health`
-
-健康检查。
+#### `GET /health`
 
 返回：
 
@@ -32,16 +29,40 @@ uv run storyforge api serve --host 0.0.0.0 --port 8000 --reload
 }
 ```
 
-### `POST /v1/projects/novel`
+### UI
 
-提交第一步“生成小说”任务。
+#### `GET /`
 
-现在支持两种模式：
+返回浏览器端工作台页面。
 
-- 不传 `project_id`：后端自动新建项目，并返回新的 `project_id`
-- 传 `project_id`：把这次运行挂到已有项目下，作为该项目的新一轮 run
+#### `GET /ui`
 
-请求体：
+与 `/` 相同。
+
+#### `GET /v1/ui/bootstrap`
+
+返回前端启动所需的默认配置和模型名。
+
+### 项目
+
+#### `GET /v1/projects`
+
+列出所有项目摘要。
+
+#### `GET /v1/projects/{project_id}`
+
+返回单个项目详情，包括：
+
+- 项目基础信息
+- 项目 brief
+- 关联任务
+- 最近一次运行摘要
+
+#### `POST /v1/projects/novel`
+
+创建“生成小说”任务。
+
+请求示例：
 
 ```json
 {
@@ -61,156 +82,125 @@ uv run storyforge api serve --host 0.0.0.0 --port 8000 --reload
 }
 ```
 
-返回：
+说明：
 
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "task_id": "f1b7e7ba-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "status": "queued"
-}
-```
-
-### `POST /v1/projects/characters`
-
-提交第二步“生成角色图”任务。这个阶段会基于已有小说 run 调用 Seedream，生成角色定妆图，并写回后续场景图所需的参考图状态。
-
-请求体：
-
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id"
-}
-```
-
-### `POST /v1/projects/scenes`
-
-提交第三步“生成场景图”任务。这个阶段会复用同一个 story run 输出目录，并要求角色图已经存在，随后生成场景首尾帧与更新后的 Seedance manifest。
-
-请求体：
-
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id"
-}
-```
-
-### `POST /v1/projects/videos`
-
-提交第四步“生成视频”任务。这个阶段会复用同一个 story run 的输出目录，要求场景首尾帧已齐备，然后调用 Seedance 生成片段并在成功后尝试 ffmpeg 合并总片。
-
-请求体：
-
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id"
-}
-```
-
-### `POST /v1/projects/novel-to-video`
-
-兼容旧的一键全链路接口。
-
-它仍然可用，主要给旧脚本或测试使用。新的 Web 控制台默认改成四步手动推进。
-
-### `POST /v1/projects/images`
-
-兼容旧的“图片一口气生成”接口。
-
-它会连续执行角色图和场景图两步，主要给旧脚本或测试使用。新的 Web 控制台默认改成更细的四步手动推进。
-
-### `GET /v1/projects`
-
-列出所有持久化项目。
-
-### `GET /v1/projects/{project_id}`
-
-返回单个项目详情，包括：
-
-- 项目基础信息
-- 项目级 `brief`
-- 属于该项目的全部历史任务
-- 最近一次运行状态
-- 总运行次数、完成次数、失败次数、总片次数
-
-### `GET /v1/tasks`
-
-列出所有任务。
-
-### `GET /v1/tasks/{task_id}`
-
-查询指定任务状态。
+- `project_id = null` 时会自动新建项目
+- 传入已有 `project_id` 时，会把本次运行挂到已有项目下
 
 返回示例：
 
 ```json
 {
-  "task_id": "f1b7e7ba-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "status": "queued"
+}
+```
+
+#### `POST /v1/projects/characters`
+
+创建“生成角色图”任务。
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "use_llm": true
+}
+```
+
+#### `POST /v1/projects/scenes`
+
+创建“生成场景图”任务。
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id"
+}
+```
+
+#### `POST /v1/projects/videos`
+
+创建“生成视频”任务。
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id"
+}
+```
+
+#### `POST /v1/projects/images`
+
+兼容接口。会连续执行“角色图 + 场景图”两步。
+
+#### `POST /v1/projects/novel-to-video`
+
+兼容接口。会一口气执行整条链路。
+
+### 任务
+
+#### `GET /v1/tasks`
+
+列出所有任务。
+
+#### `GET /v1/tasks/{task_id}`
+
+查询单个任务状态。
+
+返回示例：
+
+```json
+{
+  "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "task_type": "project.story",
   "status": "completed",
-  "created_at": "2026-04-09T00:00:00+00:00",
-  "started_at": "2026-04-09T00:00:01+00:00",
-  "finished_at": "2026-04-09T00:00:03+00:00",
+  "created_at": "2026-04-12T00:00:00+00:00",
+  "started_at": "2026-04-12T00:00:01+00:00",
+  "finished_at": "2026-04-12T00:00:03+00:00",
   "result": {
-    "output_dir": "/path/to/outputs/雾港回声",
-    "novel_package_path": "/path/to/novel_package.json",
-    "pipeline_root_task_id": "f1b7e7ba-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "task_stage": "story"
+    "output_dir": "/path/to/output",
+    "novel_package_path": "/path/to/novel_package.json"
   },
   "error": null
 }
 ```
 
-### `GET /v1/tasks/{task_id}/artifacts`
+#### `GET /v1/tasks/{task_id}/artifacts`
 
-返回页面预览所需的结构化产物索引，包括：
+返回用于页面展示的产物索引，包括：
 
 - 根目录文档文件
 - 章节 Markdown
 - 角色图
-- 场景首尾帧
+- 场景帧
 - 视频片段
-- 总片 `full_story.mp4`
+- 总片
 
-### `GET /v1/ui/bootstrap`
+## 任务状态
 
-返回 Web 控制台默认表单值，以及当前启用的模型名。
+- `queued`
+- `running`
+- `completed`
+- `failed`
 
-## 3. 任务生命周期
+## 当前约束
 
-### `queued`
+- 执行队列目前仍是内存态
+- 认证和权限尚未接入
+- 对象存储尚未接入
+- `Seedream` / `Seedance` 的 provider contract 仍可能因账户环境不同而需要微调
 
-任务已入队，等待 worker 执行。
+## 相关文档
 
-### `running`
-
-任务执行中。
-
-### `completed`
-
-任务执行完成，结果路径在 `result` 中。
-
-### `failed`
-
-任务执行失败，错误信息在 `error` 中。
-
-## 4. 当前实现限制
-
-- 项目与任务元数据现在支持两种持久化方式：
-  - 本地 `workspace/state/`
-  - MySQL `projects` / `tasks`
-- 真正的分布式队列还没有接入。
-- 还没有认证。
-- 新的四步接口会在第二步、第三步、第四步分别直接尝试真实调用 Seedream / Seedance。
-- 旧的 `/v1/projects/novel-to-video` 仍支持用 `submit_seedance` 控制是否只跑到 manifest。
-
-## 5. 建议的生产化改造
-
-1. 给任务系统加真正的持久化执行队列
-2. 给 API 加认证和项目隔离
-3. 加 webhook / 回调机制
-4. 给 Seedance 增加更稳的失败重试、超时恢复和字幕兜底
+- [README](../README.md)
+- [使用文档](usage.md)
+- [架构文档](architecture.md)

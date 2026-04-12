@@ -24,8 +24,41 @@ def build_project_summary_response(
     project: ProjectRecord,
     task_store: TaskStore,
 ) -> ProjectSummaryResponse:
+    latest_task = (
+        task_store.get_many([project.latest_task_id]).get(project.latest_task_id)
+        if project.latest_task_id
+        else None
+    )
     tasks = task_store.list(project_id=project.project_id)
-    latest_task = task_store.get(project.latest_task_id) if project.latest_task_id else None
+    return _build_project_summary_response(project, tasks, latest_task)
+
+
+def build_project_summary_responses(
+    projects: list[ProjectRecord],
+    task_store: TaskStore,
+) -> list[ProjectSummaryResponse]:
+    if not projects:
+        return []
+
+    tasks_by_project = task_store.list_grouped(project.project_id for project in projects)
+    latest_task_map = task_store.get_many(
+        project.latest_task_id for project in projects if project.latest_task_id
+    )
+    return [
+        _build_project_summary_response(
+            project,
+            tasks_by_project.get(project.project_id, []),
+            latest_task_map.get(project.latest_task_id or ""),
+        )
+        for project in projects
+    ]
+
+
+def _build_project_summary_response(
+    project: ProjectRecord,
+    tasks: list[TaskRecord],
+    latest_task: TaskRecord | None,
+) -> ProjectSummaryResponse:
     logical_runs = _group_tasks_by_run(tasks)
     latest_tasks = [
         _select_latest_task(items)

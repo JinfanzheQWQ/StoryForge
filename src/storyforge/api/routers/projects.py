@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from storyforge.api.serializers import build_project_detail_response, build_project_summary_response
+from storyforge.api.serializers import (
+    build_project_detail_response,
+    build_project_summary_responses,
+)
 from storyforge.api.schemas import (
     BuildProjectRequest,
     CreateStageTaskRequest,
@@ -19,10 +22,10 @@ router = APIRouter(prefix="/v1/projects", tags=["projects"])
 @router.get("", response_model=list[ProjectSummaryResponse])
 async def list_projects(request: Request) -> list[ProjectSummaryResponse]:
     container = request.app.state.container
-    return [
-        build_project_summary_response(item, container.task_queue.store)
-        for item in container.project_store.list()
-    ]
+    return build_project_summary_responses(
+        container.project_store.list(),
+        container.task_queue.store,
+    )
 
 
 @router.get("/{project_id}", response_model=ProjectDetailResponse)

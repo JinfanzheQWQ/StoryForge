@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,11 +86,28 @@ class TaskStore:
     def get(self, task_id: str) -> TaskRecord | None:
         return self._tasks.get(task_id)
 
+    def get_many(self, task_ids: Iterable[str]) -> dict[str, TaskRecord]:
+        unique_ids = {str(task_id) for task_id in task_ids if task_id}
+        return {
+            task_id: self._tasks[task_id]
+            for task_id in unique_ids
+            if task_id in self._tasks
+        }
+
     def list(self, project_id: str | None = None) -> list[TaskRecord]:
         values = self._tasks.values()
         if project_id is not None:
             values = [item for item in values if item.project_id == project_id]
         return sorted(values, key=lambda item: item.created_at, reverse=True)
+
+    def list_grouped(self, project_ids: Iterable[str]) -> dict[str, list[TaskRecord]]:
+        project_id_set = {str(project_id) for project_id in project_ids if project_id}
+        grouped = {project_id: [] for project_id in project_id_set}
+        for item in sorted(self._tasks.values(), key=lambda record: record.created_at, reverse=True):
+            if item.project_id not in project_id_set:
+                continue
+            grouped.setdefault(item.project_id, []).append(item)
+        return grouped
 
     def queued_tasks(self) -> list[QueuedTask]:
         return [

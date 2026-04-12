@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage Guide
+    url: https://github.com/JinfanzheQWQ/StoryForge/blob/main/docs/usage.md
+    about: Read the setup and usage guide before opening an issue.
+  - name: API Documentation
+    url: https://github.com/JinfanzheQWQ/StoryForge/blob/main/docs/api.md
+    about: Check the current API contract and workflow endpoints.

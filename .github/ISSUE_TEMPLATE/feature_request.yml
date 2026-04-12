@@ -1,0 +1,71 @@
+name: Feature Request
+description: Suggest a feature or workflow improvement for StoryForge.
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for product, workflow, API, or developer-experience improvements.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What are you trying to achieve?
+      placeholder: Describe the real workflow or pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: What should StoryForge do?
+      placeholder: Describe the feature, behavior, or API you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any workaround or alternative you considered.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Product / UX
+        - Web UI
+        - API
+        - Novel Generation
+        - Image Pipeline
+        - Video Pipeline
+        - Queue / Persistence
+        - Documentation
+        - Developer Experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: Expected Impact
+      description: Why does this matter?
+      placeholder: Reduced manual work, better output quality, lower cost, easier debugging, etc.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the existing docs and roadmap before opening this request.
+          required: true
+        - label: I searched existing issues and did not find the same request.
+          required: true

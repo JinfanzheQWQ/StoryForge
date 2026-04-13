@@ -57,7 +57,8 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 
 维护约定：
 
-- 角色结构先走 `Cast Analyzer`，不要再让 heuristics 主导角色数量、角色层级和关系双方判断
+- 小说链路先走 `Story Drafter`，再走 `Cast Analyzer`
+- 角色结构不要再直接从 brief 主分析，优先基于已生成小说草稿解析
 - prompt 模板统一放 `prompts.py`
 - 结构化输出 schema 统一放 `schemas.py`
 - 角色卡必须显式保留 `cast_slot_id`，不要只靠数组顺序猜测主角和配角对应关系
@@ -82,37 +83,43 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 当前小说链路的顺序是：
 
 1. `Story Architect`
-2. `Cast Analyzer`
-3. `Character Designer`
-4. `Chapter Planner`
-5. `Chapter Writer`
-6. `Editorial Reviewer`
+2. `Story Drafter`
+3. `Cast Analyzer`
+4. `Character Designer`
+5. `Chapter Planner`
+6. `Chapter Writer`
+7. `Editorial Reviewer`
 
 如果要改“角色层级”“角色数量判断”“前两位角色顺序”“主配角关系图”这类行为，优先顺序必须是：
 
-1. 先改 `Cast Analyzer` prompt 和 schema
-2. 再改消费它的角色 / 章节 prompt
-3. 最后才考虑是否补 heuristic 或 repair
+1. 先改 `Story Drafter` 是否把关键角色真实写进小说草稿
+2. 再改 `Cast Analyzer` prompt 和 schema
+3. 再改消费它的角色 / 章节 prompt
+4. 最后才考虑是否补 heuristic 或 repair
 
 不要反过来先堆关键词规则。
 
-当前 `Cast Analyzer` prompt 的默认约定是：
+当前小说链路的默认约定是：
 
-1. 先抽取 brief 中所有不可替代的角色指代
-2. 再判断 story shape，而不是先按“双主角模板”猜结构
-3. 每个 slot 都必须保留 `brief_label`
-4. 每个 slot 都应尽量保留 `source_evidence`
-5. `Character Designer` 必须一一消费这些 slot，并回填 `cast_slot_id`
-6. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
+1. `Story Architect` 只负责项目底稿，不负责钉死最终角色结构
+2. `Story Drafter` 先生成完整小说草稿
+3. `Cast Analyzer` 再从小说草稿中抽取不可替代的角色指代，而不是直接靠 brief 主分析
+4. 每个 slot 都必须保留 `brief_label`
+5. 每个 slot 都应尽量保留 `source_evidence`
+6. `Character Designer` 必须一一消费这些 slot，并回填 `cast_slot_id`
+7. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
+8. `Chapter Writer` 负责基于小说草稿做统一命名、角色一致性补强和文本润色
+9. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
 
 如果未来再遇到“明明是多角色故事，却只被压成一个或两个人”的问题，优先检查：
 
-1. `build_cast_user_prompt`
-2. `CastAnalysisSchema`
-3. `_repair_cast_analysis`
-4. `_fallback_cast_analysis`
+1. `build_story_drafter_user_prompt`
+2. `build_cast_user_prompt`
+3. `CastAnalysisSchema`
+4. `_repair_cast_analysis`
+5. `_fallback_cast_analysis`
 
-不要先在角色生成阶段偷偷补角色。
+不要先在角色生成阶段偷偷补角色，也不要先在 brief 层堆关键词硬修。
 
 ### 视频域
 

@@ -55,6 +55,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(len(story_result.chapter_paths), brief.chapter_count)
         self.assertIsNotNone(story_result.novel_package.review)
         self.assertIn("story_architect", story_result.novel_package.workflow_trace)
+        self.assertIn("story_drafter", story_result.novel_package.workflow_trace)
         self.assertIn("cast_analyzer", story_result.novel_package.workflow_trace)
         self.assertTrue(
             all(item.voice_profile.voice_style for item in story_result.novel_package.outline.characters)
@@ -573,6 +574,7 @@ class PipelineTestCase(unittest.TestCase):
             brief,
             '{"title":"雨夜告白"}',
             cast_analysis=cast_analysis,
+            story_draft_context="- 第 1 章《雨夜》 摘要：女生在雨夜向男生告白。",
         )
 
         self.assertIn("characters 数组前两位必须就是这段关系的双方", prompt)
@@ -580,6 +582,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("cast_slot_id", prompt)
         self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
         self.assertIn("source_evidence", prompt)
+        self.assertIn("已生成小说草稿", prompt)
 
     def test_dual_lead_repair_preserves_gender_order_from_brief(self) -> None:
         service = NovelGeneratorService()
@@ -660,10 +663,12 @@ class PipelineTestCase(unittest.TestCase):
             architecture_summary='{"title":"重逢站台"}',
             character_summary='{"characters":[]}',
             cast_analysis=cast_analysis,
+            story_draft_context="- 第 1 章《站台》 摘要：她与前任在站台重逢。",
         )
 
         self.assertIn("featured_characters 前两位必须优先放关系双方", prompt)
         self.assertIn("不能只写单人心理活动", prompt)
+        self.assertIn("已生成小说草稿", prompt)
         self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
 
     def test_dual_lead_chapter_repair_adds_counterpart_from_brief(self) -> None:

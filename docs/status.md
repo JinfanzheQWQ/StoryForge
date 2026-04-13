@@ -25,12 +25,13 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 小说生成
 
 - 结构化多 Agent 小说工作流
+- 小说链路已改为 `Story Drafter` 先生成整部小说草稿，再做 cast / 角色 / 分章结构化
 - `Cast Analyzer` 角色层级与关系图解析阶段
 - 角色卡、章节蓝图、章节草稿、审校结果落盘
 - `workflow_trace.json` 中间产物追踪
 - 角色 `voice_profile` 输出并贯通后续视频 prompt
 - 角色结构约定已调整为“LLM Cast Analysis 优先，heuristics 只做 fallback / repair”
-- cast slots 会尽量保留 brief 指代和 `source_evidence`，复杂 brief 不再默认压成固定双人模板
+- cast slots 会尽量保留小说草稿中的角色指代和 `source_evidence`，复杂 brief 不再默认压成固定双人模板
 
 ### 视频规划与媒体链路
 

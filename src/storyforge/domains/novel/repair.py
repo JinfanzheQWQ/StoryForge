@@ -5,31 +5,71 @@ from storyforge.domains.novel.schemas import (
     CastAnalysisSchema,
     CastRelationshipSchema,
     CastSlotSchema,
+    ChapterDraftSchema,
     ChapterPlanSetSchema,
     CharacterRosterSchema,
+    StoryDraftSetSchema,
     StoryArchitectureSchema,
 )
 
 
 class NovelRepairMixin:
+    def _repair_story_draft_set(
+        self,
+        story_draft_set: StoryDraftSetSchema,
+        brief: StoryBrief,
+        architecture: StoryArchitectureSchema,
+    ) -> StoryDraftSetSchema:
+        fallback = self._fallback_story_draft_set(brief, architecture)
+        repaired: list[ChapterDraftSchema] = []
+
+        for index in range(brief.chapter_count):
+            fallback_item = fallback.chapters[index]
+            current_item = (
+                story_draft_set.chapters[index]
+                if index < len(story_draft_set.chapters)
+                else fallback_item
+            )
+            repaired.append(
+                current_item.model_copy(
+                    update={
+                        "number": index + 1,
+                        "title": current_item.title.strip() or fallback_item.title,
+                        "summary": current_item.summary.strip() or fallback_item.summary,
+                        "markdown": current_item.markdown.strip() or fallback_item.markdown,
+                        "visual_hooks": current_item.visual_hooks or fallback_item.visual_hooks,
+                        "continuity_refs": current_item.continuity_refs or fallback_item.continuity_refs,
+                    }
+                )
+            )
+
+        return StoryDraftSetSchema(chapters=repaired)
+
     def _repair_cast_analysis(
         self,
         analysis: CastAnalysisSchema,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> CastAnalysisSchema:
-        fallback = self._fallback_cast_analysis(brief, architecture)
+        fallback = self._fallback_cast_analysis(
+            brief,
+            architecture,
+            story_draft_set=story_draft_set,
+        )
         story_shape = analysis.story_shape.strip() or fallback.story_shape
         explicit_counterpart = self._resolve_explicit_counterpart_flag(
             analysis,
             brief,
             story_shape=story_shape,
+            story_draft_set=story_draft_set,
         )
         requires_dual_leads = self._resolve_requires_dual_leads_flag(
             analysis,
             brief,
             story_shape=story_shape,
             explicit_counterpart=explicit_counterpart,
+            story_draft_set=story_draft_set,
         )
         recommended_core_cast_count = max(
             analysis.recommended_core_cast_count,
@@ -81,11 +121,15 @@ class NovelRepairMixin:
         brief: StoryBrief,
         *,
         story_shape: str,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> bool:
         if story_shape == "dual_relationship_with_supporting_cast":
             return True
         if story_shape in {"single_lead_with_supporting_cast", "ensemble"}:
             return False
+        story_draft_text = self._story_draft_text(story_draft_set)
+        if story_draft_text:
+            return analysis.explicit_counterpart or self._text_requires_explicit_counterpart(story_draft_text)
         return analysis.explicit_counterpart or self._brief_requires_explicit_counterpart(brief)
 
     def _resolve_requires_dual_leads_flag(
@@ -95,6 +139,7 @@ class NovelRepairMixin:
         *,
         story_shape: str,
         explicit_counterpart: bool,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> bool:
         if explicit_counterpart:
             return True
@@ -102,6 +147,9 @@ class NovelRepairMixin:
             return True
         if story_shape in {"single_lead_with_supporting_cast", "ensemble"}:
             return False
+        story_draft_text = self._story_draft_text(story_draft_set)
+        if story_draft_text:
+            return analysis.requires_dual_leads or self._text_requires_multiple_core_characters(story_draft_text)
         return analysis.requires_dual_leads or self._brief_requires_dual_leads(brief)
 
     def _repair_cast_slots(
@@ -259,7 +307,14 @@ class NovelRepairMixin:
         brief: StoryBrief,
         character_roster: CharacterRosterSchema,
         cast_analysis: CastAnalysisSchema | None = None,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> ChapterPlanSetSchema:
+        fallback = self._fallback_chapter_plan_set(
+            brief,
+            character_roster,
+            cast_analysis=cast_analysis,
+            story_draft_set=story_draft_set,
+        )
         canonical_names = [item.name for item in character_roster.characters]
         role_map = {item.name: item.role for item in character_roster.characters}
         minimum_featured_count = min(len(canonical_names), self._minimum_featured_character_count(brief, cast_analysis))
@@ -269,8 +324,14 @@ class NovelRepairMixin:
             cast_analysis,
         )
         primary_pair = canonical_names[: max(1, minimum_featured_count)]
+        draft_by_number = {
+            item.number: item for item in (story_draft_set.chapters if story_draft_set is not None else [])
+        }
 
-        for chapter in chapter_plan_set.chapters:
+        source_items = chapter_plan_set.chapters or fallback.chapters
+        for index, chapter in enumerate(source_items):
+            fallback_chapter = fallback.chapters[index % len(fallback.chapters)]
+            source_chapter = draft_by_number.get(chapter.number)
             featured: list[str] = []
             for raw_name in chapter.featured_characters:
                 resolved = self._resolve_roster_name(raw_name, canonical_names, role_map)
@@ -307,10 +368,24 @@ class NovelRepairMixin:
                         break
 
             repaired_chapters.append(
-                chapter.model_copy(update={"featured_characters": featured})
+                chapter.model_copy(
+                    update={
+                        "number": index + 1,
+                        "title": chapter.title.strip() or (source_chapter.title if source_chapter is not None else fallback_chapter.title),
+                        "summary": chapter.summary.strip() or (source_chapter.summary if source_chapter is not None else fallback_chapter.summary),
+                        "goal": chapter.goal.strip() or fallback_chapter.goal,
+                        "key_conflict": chapter.key_conflict.strip() or fallback_chapter.key_conflict,
+                        "beats": chapter.beats or fallback_chapter.beats,
+                        "cliffhanger": chapter.cliffhanger.strip() or fallback_chapter.cliffhanger,
+                        "featured_characters": featured,
+                    }
+                )
             )
 
-        return ChapterPlanSetSchema(chapters=repaired_chapters)
+        for index in range(len(repaired_chapters), brief.chapter_count):
+            repaired_chapters.append(fallback.chapters[index])
+
+        return ChapterPlanSetSchema(chapters=repaired_chapters[: brief.chapter_count])
 
     def _repair_primary_character_roles(
         self,

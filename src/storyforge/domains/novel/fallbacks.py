@@ -9,7 +9,9 @@ from storyforge.domains.novel.heuristics import (
     brief_requires_dual_leads,
     brief_requires_explicit_counterpart,
     count_role_labels_in_brief,
+    count_role_labels_in_text,
     extract_role_labels_from_brief,
+    extract_role_labels_from_text,
     infer_primary_character_genders,
 )
 from storyforge.domains.novel.schemas import (
@@ -21,6 +23,7 @@ from storyforge.domains.novel.schemas import (
     CharacterRosterSchema,
     CharacterVoiceProfileSchema,
     EditorialReviewSchema,
+    StoryDraftSetSchema,
     StoryArchitectureSchema,
 )
 
@@ -41,18 +44,73 @@ class NovelFallbackMixin:
             tone_notes=[brief.tone, "镜头感", "悬念递进"],
         )
 
+    def _fallback_story_draft_set(
+        self,
+        brief: StoryBrief,
+        architecture: StoryArchitectureSchema,
+    ) -> StoryDraftSetSchema:
+        anchors = brief.must_include or architecture.visual_motifs or ["秘密", "旧档案", "夜雨"]
+        anchor_cycle = cycle(anchors)
+        chapters: list[ChapterDraftSchema] = []
+        for index in range(1, brief.chapter_count + 1):
+            anchor = next(anchor_cycle)
+            title = f"第 {index} 章：{anchor}"
+            summary = (
+                f"围绕“{anchor}”展开关键事件，主角在 {architecture.setting} 中推进主线，"
+                "并让局势比上一章更危险。"
+            )
+            markdown = (
+                f"# {title}\n\n"
+                f"{brief.idea} 的故事在这一章真正向前推动。主角带着“{anchor}”相关线索进入新的场景，"
+                f"在 {architecture.setting} 的压迫氛围里不断逼近真相。"
+                f"环境中的 {'、'.join(architecture.visual_motifs)} 反复出现，使这一章同时具备小说阅读感和可视化空间。\n\n"
+                "事件推进过程中，主角遇到新的阻力与新的信息来源，人物关系因此发生改变。"
+                "这一章既完成当章冲突，也在收束处留下更强的悬念，便于后续继续拆成视频片段。"
+            )
+            chapters.append(
+                ChapterDraftSchema(
+                    number=index,
+                    title=title,
+                    summary=summary,
+                    markdown=markdown,
+                    visual_hooks=[
+                        f"{architecture.setting} 中与“{anchor}”相关的视觉节点",
+                        *architecture.visual_motifs[:2],
+                    ],
+                    continuity_refs=[
+                        f"围绕“{anchor}”留下的新问题",
+                        architecture.story_engine,
+                    ],
+                )
+            )
+        return StoryDraftSetSchema(chapters=chapters)
+
     def _fallback_cast_analysis(
         self,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> CastAnalysisSchema:
-        explicit_counterpart = brief_requires_explicit_counterpart(brief)
-        requires_dual_leads = brief_requires_dual_leads(brief)
+        story_draft_text = self._story_draft_text(story_draft_set)
+        explicit_counterpart = (
+            self._text_requires_explicit_counterpart(story_draft_text)
+            if story_draft_text
+            else brief_requires_explicit_counterpart(brief)
+        )
+        requires_dual_leads = (
+            self._text_requires_multiple_core_characters(story_draft_text)
+            if story_draft_text
+            else brief_requires_dual_leads(brief)
+        )
         prefers_pair = brief_prefers_male_female_pair(brief)
         inferred_pair = infer_primary_character_genders(brief)
         first_gender = inferred_pair[0] if inferred_pair is not None else ("男" if prefers_pair else "未指定")
         second_gender = inferred_pair[1] if inferred_pair is not None else ("女" if prefers_pair else "未指定")
-        role_labels = extract_role_labels_from_brief(brief, limit=6)
+        role_labels = (
+            extract_role_labels_from_text(story_draft_text, limit=6)
+            if story_draft_text
+            else extract_role_labels_from_brief(brief, limit=6)
+        )
         if not explicit_counterpart and len(role_labels) >= 4:
             requires_dual_leads = False
             prefers_pair = False
@@ -60,6 +118,7 @@ class NovelFallbackMixin:
             brief,
             explicit_counterpart=explicit_counterpart,
             requires_dual_leads=requires_dual_leads,
+            story_draft_text=story_draft_text,
         )
 
         slots: list[CastSlotSchema] = []
@@ -345,8 +404,13 @@ class NovelFallbackMixin:
         *,
         explicit_counterpart: bool,
         requires_dual_leads: bool,
+        story_draft_text: str = "",
     ) -> int:
-        extracted_role_count = count_role_labels_in_brief(brief, limit=6)
+        extracted_role_count = (
+            count_role_labels_in_text(story_draft_text, limit=6)
+            if story_draft_text
+            else count_role_labels_in_brief(brief, limit=6)
+        )
         if brief.chapter_count <= 1:
             base_count = 2 if explicit_counterpart else 3
             return max(base_count, min(extracted_role_count, 4))
@@ -355,6 +419,17 @@ class NovelFallbackMixin:
             return max(base_count, min(extracted_role_count, 5))
         base_count = 5 if requires_dual_leads else 4
         return max(base_count, min(extracted_role_count, 5))
+
+    def _story_draft_text(
+        self,
+        story_draft_set: StoryDraftSetSchema | None,
+    ) -> str:
+        if story_draft_set is None:
+            return ""
+        return "\n".join(
+            f"{item.title}\n{item.summary}\n{item.markdown}"
+            for item in story_draft_set.chapters
+        ).strip()
 
     def _fallback_character_roster(
         self,
@@ -416,22 +491,33 @@ class NovelFallbackMixin:
         brief: StoryBrief,
         character_roster: CharacterRosterSchema,
         cast_analysis: CastAnalysisSchema | None = None,
+        story_draft_set: StoryDraftSetSchema | None = None,
     ) -> ChapterPlanSetSchema:
         anchors = brief.must_include or ["关键线索", "失控夜晚", "旧档案"]
         anchor_cycle = cycle(anchors)
         lead_names = [item.name for item in character_roster.characters]
         analysis = cast_analysis
         chapters: list[dict[str, Any]] = []
+        draft_by_number = {
+            item.number: item for item in (story_draft_set.chapters if story_draft_set is not None else [])
+        }
 
         for index in range(1, brief.chapter_count + 1):
             anchor = next(anchor_cycle)
+            source_chapter = draft_by_number.get(index)
+            title = source_chapter.title if source_chapter is not None else f"第 {index} 章：{anchor}"
+            summary = (
+                source_chapter.summary
+                if source_chapter is not None
+                else f"围绕“{anchor}”展开调查，主角距离真相更近，但局势更加危险。"
+            )
             featured_count = 2 if analysis is not None and analysis.requires_dual_leads else 1
             chapters.append(
                 {
                     "number": index,
-                    "title": f"第 {index} 章：{anchor}",
+                    "title": title,
                     "goal": f"让主角围绕“{anchor}”推进调查并升级人物关系。",
-                    "summary": f"围绕“{anchor}”展开调查，主角距离真相更近，但局势更加危险。",
+                    "summary": summary,
                     "key_conflict": f"主角必须在保留底牌和立刻行动之间作出选择，以处理“{anchor}”带来的风险。",
                     "beats": [
                         f"主角抵达与“{anchor}”相关的地点，确认异样。",

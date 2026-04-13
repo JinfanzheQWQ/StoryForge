@@ -66,6 +66,8 @@
 ### 小说生成链路
 
 - `Story Architect`
+- `Story Drafter`
+- `Cast Analyzer`
 - `Character Designer`
 - `Chapter Planner`
 - `Chapter Writer`

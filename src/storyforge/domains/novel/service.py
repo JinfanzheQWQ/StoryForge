@@ -19,6 +19,9 @@ from storyforge.domains.novel.fallbacks import NovelFallbackMixin
 from storyforge.domains.novel.prompts import (
     build_architect_system_prompt,
     build_architect_user_prompt,
+    build_story_drafter_system_prompt,
+    build_story_drafter_user_prompt,
+    build_story_draft_context,
     build_cast_system_prompt,
     build_cast_user_prompt,
     build_character_system_prompt,
@@ -38,6 +41,7 @@ from storyforge.domains.novel.schemas import (
     ChapterPlanSetSchema,
     CharacterRosterSchema,
     EditorialReviewSchema,
+    StoryDraftSetSchema,
     StoryArchitectureSchema,
 )
 
@@ -71,6 +75,26 @@ class NovelGeneratorService(
             fallback=self._fallback_architecture(brief),
         )
 
+        story_draft_set = self._run_structured_agent(
+            schema=StoryDraftSetSchema,
+            request=PromptRequest(
+                system_prompt=build_story_drafter_system_prompt(),
+                user_prompt=build_story_drafter_user_prompt(
+                    brief=brief,
+                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                ),
+                metadata={"task": "story-drafter"},
+            ),
+            fallback=self._fallback_story_draft_set(brief, architecture),
+        )
+        story_draft_set = self._repair_story_draft_set(
+            story_draft_set,
+            brief,
+            architecture,
+        )
+        story_draft_chapters = self._assemble_seed_chapters(story_draft_set)
+        story_draft_context = build_story_draft_context(story_draft_chapters)
+
         # Agreement: LLM-based cast analysis is the primary source of truth
         # for role structure. Heuristics only remain as repair and fallback backstops.
         cast_analysis = self._run_structured_agent(
@@ -80,15 +104,21 @@ class NovelGeneratorService(
                 user_prompt=build_cast_user_prompt(
                     brief=brief,
                     architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                    story_draft_context=story_draft_context,
                 ),
                 metadata={"task": "cast-analyzer"},
             ),
-            fallback=self._fallback_cast_analysis(brief, architecture),
+            fallback=self._fallback_cast_analysis(
+                brief,
+                architecture,
+                story_draft_set=story_draft_set,
+            ),
         )
         cast_analysis = self._repair_cast_analysis(
             cast_analysis,
             brief,
             architecture,
+            story_draft_set=story_draft_set,
         )
 
         character_roster = self._run_structured_agent(
@@ -99,6 +129,7 @@ class NovelGeneratorService(
                     brief=brief,
                     architecture_summary=architecture.model_dump_json(ensure_ascii=False),
                     cast_analysis=cast_analysis,
+                    story_draft_context=story_draft_context,
                 ),
                 metadata={"task": "character-designer"},
             ),
@@ -124,6 +155,7 @@ class NovelGeneratorService(
                     architecture_summary=architecture.model_dump_json(ensure_ascii=False),
                     character_summary=character_roster.model_dump_json(ensure_ascii=False),
                     cast_analysis=cast_analysis,
+                    story_draft_context=story_draft_context,
                 ),
                 metadata={"task": "chapter-planner"},
             ),
@@ -131,6 +163,7 @@ class NovelGeneratorService(
                 brief,
                 character_roster,
                 cast_analysis=cast_analysis,
+                story_draft_set=story_draft_set,
             ),
         )
         chapter_plan_set = self._repair_chapter_plan_set(
@@ -138,10 +171,16 @@ class NovelGeneratorService(
             brief,
             character_roster,
             cast_analysis=cast_analysis,
+            story_draft_set=story_draft_set,
         )
 
         outline = self._assemble_outline(architecture, character_roster, chapter_plan_set)
-        chapters = self._build_chapters(brief, outline, cast_analysis)
+        chapters = self._build_chapters(
+            brief,
+            outline,
+            cast_analysis,
+            seed_chapters=story_draft_chapters,
+        )
         review = self._run_structured_agent(
             schema=EditorialReviewSchema,
             request=PromptRequest(
@@ -164,6 +203,7 @@ class NovelGeneratorService(
             ),
             workflow_trace={
                 "story_architect": architecture.model_dump(),
+                "story_drafter": story_draft_set.model_dump(),
                 "cast_analyzer": cast_analysis.model_dump(),
                 "character_designer": character_roster.model_dump(),
                 "chapter_planner": chapter_plan_set.model_dump(),
@@ -225,9 +265,12 @@ class NovelGeneratorService(
         brief: StoryBrief,
         outline: StoryOutline,
         cast_analysis: CastAnalysisSchema,
+        seed_chapters: list[DraftChapter] | None = None,
     ) -> list[DraftChapter]:
         drafted: list[DraftChapter] = []
+        seed_by_number = {item.number: item for item in (seed_chapters or [])}
         for chapter in outline.chapters:
+            source_chapter = seed_by_number.get(chapter.number)
             chapter_payload = self._run_structured_agent(
                 schema=ChapterDraftSchema,
                 request=PromptRequest(
@@ -238,10 +281,15 @@ class NovelGeneratorService(
                         chapter=chapter,
                         previous_chapters=drafted,
                         cast_analysis=cast_analysis,
+                        source_chapter=source_chapter,
                     ),
                     metadata={"task": f"chapter-writer-{chapter.number:02d}"},
                 ),
-                fallback=self._fallback_chapter_draft(brief, outline, chapter),
+                fallback=(
+                    self._chapter_schema_from_seed(source_chapter)
+                    if source_chapter is not None
+                    else self._fallback_chapter_draft(brief, outline, chapter)
+                ),
             )
             drafted.append(
                 DraftChapter(
@@ -255,6 +303,36 @@ class NovelGeneratorService(
                 )
             )
         return drafted
+
+    def _assemble_seed_chapters(
+        self,
+        story_draft_set: StoryDraftSetSchema,
+    ) -> list[DraftChapter]:
+        return [
+            DraftChapter(
+                number=item.number,
+                title=item.title,
+                markdown=item.markdown,
+                summary=item.summary,
+                agent_notes="seed-draft",
+                visual_hooks=item.visual_hooks,
+                continuity_refs=item.continuity_refs,
+            )
+            for item in story_draft_set.chapters
+        ]
+
+    def _chapter_schema_from_seed(
+        self,
+        source_chapter: DraftChapter,
+    ) -> ChapterDraftSchema:
+        return ChapterDraftSchema(
+            number=source_chapter.number,
+            title=source_chapter.title,
+            summary=source_chapter.summary,
+            markdown=source_chapter.markdown,
+            visual_hooks=source_chapter.visual_hooks,
+            continuity_refs=source_chapter.continuity_refs,
+        )
 
     def _run_structured_agent(
         self,

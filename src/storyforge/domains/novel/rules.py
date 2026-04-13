@@ -11,6 +11,7 @@ from storyforge.domains.novel.heuristics import (
     build_brief_text,
     count_role_labels_in_brief,
     infer_primary_character_genders,
+    text_requires_explicit_counterpart,
     text_requires_multiple_core_characters,
 )
 from storyforge.domains.novel.schemas import CastAnalysisSchema
@@ -80,6 +81,9 @@ class NovelRuleMixin:
 
     def _text_requires_multiple_core_characters(self, text: str) -> bool:
         return text_requires_multiple_core_characters(text)
+
+    def _text_requires_explicit_counterpart(self, text: str) -> bool:
+        return text_requires_explicit_counterpart(text)
 
     def _brief_prefers_male_female_pair(
         self,

@@ -132,6 +132,10 @@ class ChapterDraftSchema(BaseModel):
     continuity_refs: list[str] = Field(description="需要后续章节继续承接的信息")
 
 
+class StoryDraftSetSchema(BaseModel):
+    chapters: list[ChapterDraftSchema] = Field(description="先行生成的整部小说草稿")
+
+
 class EditorialReviewSchema(BaseModel):
     overall_verdict: str = Field(description="整体编辑判断")
     strengths: list[str] = Field(description="当前强项")

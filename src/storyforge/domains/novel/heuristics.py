@@ -269,8 +269,6 @@ def extract_role_labels_from_brief(brief: StoryBrief, limit: int = 6) -> list[st
     This is intentionally heuristic and only serves fallback / repair paths.
     The primary cast structure still comes from the LLM Cast Analyzer prompt.
     """
-    labels: list[str] = []
-    seen: set[str] = set()
     text = "，".join(
         part
         for part in (
@@ -279,6 +277,12 @@ def extract_role_labels_from_brief(brief: StoryBrief, limit: int = 6) -> list[st
         )
         if part
     )
+    return extract_role_labels_from_text(text, limit=limit)
+
+
+def extract_role_labels_from_text(text: str, limit: int = 6) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
 
     for clause in CLAUSE_SPLIT_PATTERN.split(text):
         clause = clause.strip()
@@ -315,6 +319,10 @@ def extract_role_labels_from_brief(brief: StoryBrief, limit: int = 6) -> list[st
 
 def count_role_labels_in_brief(brief: StoryBrief, limit: int = 6) -> int:
     return len(extract_role_labels_from_brief(brief, limit=limit))
+
+
+def count_role_labels_in_text(text: str, limit: int = 6) -> int:
+    return len(extract_role_labels_from_text(text, limit=limit))
 
 
 def _extract_head_role_label(clause: str) -> str:

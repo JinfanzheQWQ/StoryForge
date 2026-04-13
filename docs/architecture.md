@@ -55,17 +55,19 @@ Integrations
 核心角色包括：
 
 1. `Story Architect`
-2. `Cast Analyzer`
-3. `Character Designer`
-4. `Chapter Planner`
-5. `Chapter Writer`
-6. `Editorial Reviewer`
+2. `Story Drafter`
+3. `Cast Analyzer`
+4. `Character Designer`
+5. `Chapter Planner`
+6. `Chapter Writer`
+7. `Editorial Reviewer`
 
 生成流程：
 
 ```text
 StoryBrief
   -> StoryArchitectureSchema
+  -> StoryDraftSetSchema
   -> CastAnalysisSchema
   -> CharacterRosterSchema
   -> ChapterPlanSetSchema
@@ -86,6 +88,7 @@ StoryBrief
 `workflow_trace.json` 中当前会记录：
 
 - `story_architect`
+- `story_drafter`
 - `cast_analyzer`
 - `character_designer`
 - `chapter_planner`
@@ -95,15 +98,20 @@ StoryBrief
 
 当前小说链路有一个明确约定：
 
+- **小说链路先产出完整小说草稿，再从草稿里解析 cast、角色和章节结构**
 - **角色结构、层级、排序与关系图以 `Cast Analyzer` 的 LLM 解析结果为主**
+- **`Story Architect` 只负责故事引擎、主题、舞台和视觉母题，不负责预设最终角色人数**
 - `heuristics` 只负责 fallback 和 repair，不再主导“到底有几个核心角色、谁和谁是关系双方”
 
 这意味着：
 
-1. 先由 LLM 解析 brief 中的 cast slots、角色层级、关系图与排序规则
-2. cast slots 会尽量保留 brief 指代和 `source_evidence`，避免把“记者 / 线人 / 前任 / 退休警察”压扁成泛化配角
-3. 再由角色生成和章节规划消费这份解析结果
-4. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics 补位
+1. `Story Architect` 先给出项目底稿，但不允许提前钉死角色结构
+2. 再由 `Story Drafter` 根据 brief 与项目底稿写出一版完整小说草稿
+3. 再由 `Cast Analyzer` 基于小说草稿解析 cast slots、角色层级、关系图与排序规则
+4. cast slots 会尽量保留小说草稿中的角色指代和 `source_evidence`，避免把“记者 / 线人 / 前任 / 退休警察”压扁成泛化配角
+5. `Character Designer` 与 `Chapter Planner` 再消费这份草稿与 cast 结构
+6. `Chapter Writer` 最后基于小说草稿原章内容做统一命名、声线强化和结构化润色
+7. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics 补位
 
 ### 小说域内部拆分
 

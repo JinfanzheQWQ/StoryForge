@@ -4,7 +4,13 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from storyforge.agents.base import AgentBackend, DryRunAgentBackend, PromptRequest
+from storyforge.agents.base import (
+    AgentBackend,
+    AgentBackendUnavailableError,
+    DryRunAgentBackend,
+    PromptRequest,
+    UnavailableAgentBackend,
+)
 from storyforge.domains.novel.contracts import (
     ChapterPlan,
     CharacterProfile,
@@ -15,6 +21,7 @@ from storyforge.domains.novel.contracts import (
     StoryBrief,
     StoryOutline,
 )
+from storyforge.domains.novel.errors import NovelStructuredGenerationError
 from storyforge.domains.novel.fallbacks import NovelFallbackMixin
 from storyforge.domains.novel.prompts import (
     build_architect_system_prompt,
@@ -59,10 +66,14 @@ class NovelGeneratorService(
         backend: AgentBackend | None = None,
         chapter_scene_count: int = 3,
         major_character_count: int = 3,
+        structured_retry_attempts: int = 3,
     ) -> None:
-        self.backend = backend or DryRunAgentBackend()
+        self.backend = backend or UnavailableAgentBackend(
+            "NovelGeneratorService requires a live LLM backend."
+        )
         self.chapter_scene_count = chapter_scene_count
         self.major_character_count = major_character_count
+        self.structured_retry_attempts = max(1, structured_retry_attempts)
 
     def build_novel_package(self, brief: StoryBrief) -> NovelPackage:
         architecture = self._run_structured_agent(
@@ -340,14 +351,49 @@ class NovelGeneratorService(
         request: PromptRequest,
         fallback: StructuredModelT,
     ) -> StructuredModelT:
-        # Dry-run and network-less environments still need to produce a full pipeline,
-        # so any structured agent failure cleanly falls back to deterministic output.
+        # Dry-run remains deterministic for tests and demos. Live LLM execution is
+        # fail-fast: invalid structured output is retried, then raised explicitly.
         if isinstance(self.backend, DryRunAgentBackend):
             return fallback
-        try:
-            response = self.backend.generate_structured(request, schema)
-            if isinstance(response, schema):
-                return response
-            return schema.model_validate(response)
-        except Exception:
-            return fallback
+        last_error: Exception | None = None
+        for attempt in range(1, self.structured_retry_attempts + 1):
+            attempt_request = self._build_retry_request(request, schema, attempt)
+            try:
+                response = self.backend.generate_structured(attempt_request, schema)
+                if isinstance(response, schema):
+                    return response
+                return schema.model_validate(response)
+            except AgentBackendUnavailableError:
+                raise
+            except Exception as exc:
+                last_error = exc
+
+        raise NovelStructuredGenerationError(
+            task=str(request.metadata.get("task", "structured-agent")),
+            schema_name=schema.__name__,
+            attempts=self.structured_retry_attempts,
+            cause=last_error or RuntimeError("unknown structured generation failure"),
+        )
+
+    def _build_retry_request(
+        self,
+        request: PromptRequest,
+        schema: type[StructuredModelT],
+        attempt: int,
+    ) -> PromptRequest:
+        if attempt <= 1:
+            return request
+
+        retry_note = (
+            "\n\n上一次输出未通过结构化校验。"
+            f"这是第 {attempt} 次尝试。"
+            f"请严格按 {schema.__name__} 对应结构返回，不要输出解释，不要输出 Markdown 代码块，"
+            "不要遗漏字段。"
+        )
+        metadata = dict(request.metadata)
+        metadata["structured_retry_attempt"] = attempt
+        return PromptRequest(
+            system_prompt=request.system_prompt,
+            user_prompt=request.user_prompt + retry_note,
+            metadata=metadata,
+        )

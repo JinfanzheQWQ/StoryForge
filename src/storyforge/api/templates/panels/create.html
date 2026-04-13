@@ -117,26 +117,11 @@
             </div>
           </section>
 
-          <section class="form-card">
-            <div class="section-head">
-              <h3>生成模式</h3>
-              <p>这里只控制故事文本阶段是否使用真实 DeepSeek。</p>
-            </div>
-
-            <div class="mode-grid">
-              <label class="mode-card">
-                <input type="checkbox" name="use_llm" checked />
-                <span class="mode-title">启用 DeepSeek 正式生成</span>
-                <small>关闭后更适合调试页面和流程；开启后会直接生成真实小说文本。</small>
-              </label>
-            </div>
-          </section>
-
           <div class="launch-footer">
             <button type="submit" id="submit-button">生成故事文本</button>
             <div class="submit-status-card">
               <span class="submit-status-label">状态提示</span>
-              <strong id="submit-status">等待开始第一步。</strong>
+              <strong id="submit-status">已固定使用 DeepSeek，等待开始第一步。</strong>
             </div>
           </div>
         </form>

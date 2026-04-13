@@ -47,6 +47,8 @@ StoryForge 默认采用四步式分阶段工作流，而不是一键全跑：
 - 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Chapter Writer`、`Editorial Reviewer`
 - 小说链路改为 story-first：先生成完整小说草稿，再从草稿里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做 fallback / repair
+- 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
+- 运行时已移除 DryRun / 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
@@ -124,6 +126,7 @@ STORYFORGE_DB_PASSWORD=...
 ### 3. 检查配置文件
 
 默认配置文件是 [`configs/storyforge.example.toml`](configs/storyforge.example.toml)。
+该示例配置默认已启用 DeepSeek。
 
 关键配置项包括：
 

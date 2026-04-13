@@ -4,7 +4,13 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from storyforge.agents.base import AgentBackend, DryRunAgentBackend, PromptRequest
+from storyforge.agents.base import (
+    AgentBackend,
+    AgentBackendUnavailableError,
+    DryRunAgentBackend,
+    PromptRequest,
+    UnavailableAgentBackend,
+)
 from storyforge.core.config import SeedanceConfig
 from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.contracts import CharacterVisualProfile, VideoProjectPackage, VideoSegment
@@ -39,7 +45,9 @@ class NovelToVideoService(
         scene_image_provider: str = "prompt-only",
         seedance_config: SeedanceConfig | None = None,
     ) -> None:
-        self.backend = backend or DryRunAgentBackend()
+        self.backend = backend or UnavailableAgentBackend(
+            "NovelToVideoService requires a live LLM backend."
+        )
         self.segment_duration_seconds = segment_duration_seconds
         self.aspect_ratio = aspect_ratio
         self.fps = fps
@@ -176,5 +184,7 @@ class NovelToVideoService(
             if isinstance(response, schema):
                 return response
             return schema.model_validate(response)
+        except AgentBackendUnavailableError:
+            raise
         except Exception:
             return fallback

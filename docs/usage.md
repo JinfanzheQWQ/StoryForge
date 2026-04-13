@@ -52,7 +52,7 @@ SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 
 ```toml
 [llm]
-enabled = false
+enabled = true
 provider = "deepseek"
 model = "deepseek-chat"
 

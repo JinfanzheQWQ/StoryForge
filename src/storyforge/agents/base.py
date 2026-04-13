@@ -29,8 +29,23 @@ class AgentBackend(Protocol):
         """Generate a structured response validated against the given schema."""
 
 
+class AgentBackendUnavailableError(RuntimeError):
+    """Raised when no live LLM backend is configured for runtime execution."""
+
+
+class UnavailableAgentBackend:
+    def __init__(self, message: str = "LLM backend is unavailable.") -> None:
+        self.message = message
+
+    def generate(self, request: PromptRequest) -> AgentResult:
+        raise AgentBackendUnavailableError(self.message)
+
+    def generate_structured(self, request: PromptRequest, schema: type[StructuredT]) -> StructuredT:
+        raise AgentBackendUnavailableError(self.message)
+
+
 class DryRunAgentBackend:
-    """Deterministic backend used before a real model is wired in."""
+    """Deterministic stub backend used only by automated tests."""
 
     def __init__(self, name: str = "dry-run") -> None:
         self.name = name

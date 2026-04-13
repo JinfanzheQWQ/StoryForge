@@ -17,7 +17,6 @@ export function applyBootstrapToForm(payload) {
   fillInput("total_word_target", payload.default_brief.total_word_target);
   fillInput("must_include", payload.default_brief.must_include.join(", "));
   fillInput("style_keywords", payload.default_brief.style_keywords.join(", "));
-  elements.form.elements.use_llm.checked = payload.use_llm;
 }
 
 export function parseCommaSeparated(value) {
@@ -65,7 +64,7 @@ export function readProjectSubmission() {
         must_include: parseCommaSeparated(elements.form.elements.must_include.value),
         style_keywords: parseCommaSeparated(elements.form.elements.style_keywords.value),
       },
-      use_llm: elements.form.elements.use_llm.checked,
+      use_llm: true,
     },
   };
 }

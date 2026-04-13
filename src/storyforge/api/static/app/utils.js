@@ -214,7 +214,7 @@ export function buildPipelineStageLabel(task, run = null) {
 }
 
 export function runModeLabel(task) {
-  const llmLabel = task.payload?.use_llm === false ? "演示模式" : "DeepSeek";
+  const llmLabel = "DeepSeek";
   if (task.task_type === "project.story") {
     return `${llmLabel} / 故事文本`;
   }
@@ -231,7 +231,7 @@ export function runModeLabel(task) {
     return "Seedance / 视频阶段";
   }
   if (task.task_type === "project.build") {
-    return `${llmLabel} / 全流程兼容模式`;
+    return `${llmLabel} / 全流程`;
   }
   return llmLabel;
 }

@@ -26,7 +26,7 @@ def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
             must_include=["失踪列车", "广播站", "暴雨站台"],
             style_keywords=["霓虹", "监控噪点", "夜雨", "旧列车"],
         ),
-        use_llm=config.llm.enabled,
+        use_llm=True,
         submit_seedance=config.video.submit_seedance or config.seedance.auto_submit,
         llm_model=config.llm.model,
         seedream_model=config.seedream.model,

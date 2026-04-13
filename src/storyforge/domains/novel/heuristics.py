@@ -317,10 +317,6 @@ def extract_role_labels_from_text(text: str, limit: int = 6) -> list[str]:
     return labels
 
 
-def count_role_labels_in_brief(brief: StoryBrief, limit: int = 6) -> int:
-    return len(extract_role_labels_from_brief(brief, limit=limit))
-
-
 def count_role_labels_in_text(text: str, limit: int = 6) -> int:
     return len(extract_role_labels_from_text(text, limit=limit))
 

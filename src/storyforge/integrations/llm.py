@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from storyforge.agents.base import AgentBackend, DryRunAgentBackend
+from storyforge.agents.base import AgentBackend, AgentBackendUnavailableError
 from storyforge.agents.langchain_agent import LangChainTextAgentBackend
 from storyforge.core.config import AppConfig
 
@@ -12,11 +12,17 @@ DEEPSEEK_BASE_URL_ENV = "DEEPSEEK_BASE_URL"
 def build_agent_backend(config: AppConfig, use_llm: bool = False) -> AgentBackend:
     enabled = use_llm or config.llm.enabled
     if not enabled:
-        return DryRunAgentBackend()
+        raise AgentBackendUnavailableError(
+            "Live LLM mode is required. Non-LLM DryRun mode has been removed. "
+            "Enable [llm].enabled in config or keep use_llm=true."
+        )
 
     api_key = os.getenv(config.llm.api_key_env)
     if not api_key:
-        return DryRunAgentBackend(name=f"dry-run-missing-{config.llm.api_key_env.lower()}")
+        raise AgentBackendUnavailableError(
+            f"Missing required API key env: {config.llm.api_key_env}. "
+            "Configure DeepSeek credentials before running StoryForge."
+        )
 
     return LangChainTextAgentBackend(
         model_name=config.llm.model,

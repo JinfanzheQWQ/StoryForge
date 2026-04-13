@@ -17,9 +17,24 @@ if str(SRC) not in sys.path:
 from fastapi.testclient import TestClient  # noqa: E402
 
 from storyforge.api.main import create_app  # noqa: E402
+from storyforge.agents.base import DryRunAgentBackend  # noqa: E402
 
 
 class ApiTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._story_backend_patcher = patch(
+            "storyforge.pipelines.story_pipeline.build_agent_backend",
+            return_value=DryRunAgentBackend(),
+        )
+        self._video_backend_patcher = patch(
+            "storyforge.pipelines.video_planning.build_agent_backend",
+            return_value=DryRunAgentBackend(),
+        )
+        self._story_backend_patcher.start()
+        self._video_backend_patcher.start()
+        self.addCleanup(self._story_backend_patcher.stop)
+        self.addCleanup(self._video_backend_patcher.stop)
+
     def _create_test_config(self) -> Path:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
@@ -32,7 +47,7 @@ class ApiTestCase(unittest.TestCase):
             textwrap.dedent(
                 f"""
                 [llm]
-                enabled = false
+                enabled = true
                 provider = "deepseek"
                 model = "deepseek-chat"
                 temperature = 0.7
@@ -158,7 +173,7 @@ class ApiTestCase(unittest.TestCase):
                         "must_include": ["失踪列车"],
                         "style_keywords": ["暴雨", "车站", "霓虹"],
                     },
-                    "use_llm": False,
+                    "use_llm": True,
                     "submit_seedance": False,
                 },
             )
@@ -254,7 +269,7 @@ class ApiTestCase(unittest.TestCase):
                         "must_include": ["失踪列车"],
                         "style_keywords": ["暴雨", "站台"],
                     },
-                    "use_llm": False,
+                    "use_llm": True,
                     "submit_seedance": False,
                 },
             )
@@ -304,7 +319,7 @@ class ApiTestCase(unittest.TestCase):
                         "must_include": ["末班车"],
                         "style_keywords": ["夜雨", "空车厢"],
                     },
-                    "use_llm": False,
+                    "use_llm": True,
                     "submit_seedance": False,
                 },
             )
@@ -473,7 +488,7 @@ class ApiTestCase(unittest.TestCase):
                         "must_include": ["阶段化"],
                         "style_keywords": ["测试"],
                     },
-                    "use_llm": False,
+                    "use_llm": True,
                 },
             )
             self.assertEqual(story_response.status_code, 202)

@@ -8,7 +8,6 @@ from storyforge.domains.novel.heuristics import (
     brief_prefers_male_female_pair,
     brief_requires_dual_leads,
     brief_requires_explicit_counterpart,
-    count_role_labels_in_brief,
     count_role_labels_in_text,
     extract_role_labels_from_brief,
     extract_role_labels_from_text,
@@ -409,13 +408,13 @@ class NovelFallbackMixin:
         extracted_role_count = (
             count_role_labels_in_text(story_draft_text, limit=6)
             if story_draft_text
-            else count_role_labels_in_brief(brief, limit=6)
+            else len(extract_role_labels_from_brief(brief, limit=6))
         )
         if brief.chapter_count <= 1:
             base_count = 2 if explicit_counterpart else 3
             return max(base_count, min(extracted_role_count, 4))
         if brief.chapter_count <= 3:
-            base_count = 4 if requires_dual_leads else 4
+            base_count = 4
             return max(base_count, min(extracted_role_count, 5))
         base_count = 5 if requires_dual_leads else 4
         return max(base_count, min(extracted_role_count, 5))

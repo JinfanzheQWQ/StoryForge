@@ -9,7 +9,7 @@ from storyforge.domains.novel.heuristics import (
     brief_requires_dual_leads,
     brief_requires_explicit_counterpart,
     build_brief_text,
-    count_role_labels_in_brief,
+    extract_role_labels_from_brief,
     infer_primary_character_genders,
     text_requires_explicit_counterpart,
     text_requires_multiple_core_characters,
@@ -23,10 +23,11 @@ class NovelRuleMixin:
         brief: StoryBrief,
         cast_analysis: CastAnalysisSchema | None = None,
     ) -> int:
-        extracted_role_count = count_role_labels_in_brief(brief, limit=6)
         if cast_analysis is not None:
-            return max(1, cast_analysis.recommended_core_cast_count, extracted_role_count)
-        baseline = 2 if self._text_requires_multiple_core_characters(self._brief_text(brief)) else 1
+            return max(1, cast_analysis.recommended_core_cast_count)
+
+        extracted_role_count = len(extract_role_labels_from_brief(brief, limit=6))
+        baseline = 2 if self._text_requires_multiple_core_characters(build_brief_text(brief)) else 1
         return max(baseline, extracted_role_count)
 
     def _repair_primary_character_genders(
@@ -75,9 +76,6 @@ class NovelRuleMixin:
             if gender not in image_prompt:
                 image_prompt = f"{image_prompt} 性别：{gender}。".strip()
         return item.model_copy(update={"gender": gender, "image_prompt": image_prompt})
-
-    def _brief_text(self, brief: StoryBrief) -> str:
-        return build_brief_text(brief)
 
     def _text_requires_multiple_core_characters(self, text: str) -> bool:
         return text_requires_multiple_core_characters(text)

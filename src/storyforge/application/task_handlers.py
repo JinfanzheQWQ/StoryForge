@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
     brief = StoryBrief.from_dict(task.payload["brief"])
-    use_llm = bool(task.payload.get("use_llm", False))
+    use_llm = bool(task.payload.get("use_llm", True))
     output_root = _build_story_output_root(context, task)
     story_result = run_story_pipeline(
         brief=brief,
@@ -60,7 +60,7 @@ def run_images_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     novel_package = load_novel_package(source_task)
-    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", False)))
+    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     partial_response = _build_stage_response(
         task=task,
@@ -110,7 +110,7 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     novel_package = load_novel_package(source_task)
-    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", False)))
+    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     partial_response = _build_stage_response(
         task=task,
@@ -254,7 +254,7 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
 
 def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
     brief = StoryBrief.from_dict(task.payload["brief"])
-    use_llm = bool(task.payload.get("use_llm", False))
+    use_llm = bool(task.payload.get("use_llm", True))
     submit_seedance = bool(task.payload.get("submit_seedance", False))
     output_root = _build_story_output_root(context, task)
 

@@ -72,8 +72,9 @@ class NovelRepairMixin:
             story_draft_set=story_draft_set,
         )
         recommended_core_cast_count = max(
+            1,
             analysis.recommended_core_cast_count,
-            self._minimum_core_character_count(brief, analysis),
+            fallback.recommended_core_cast_count,
         )
         prefers_male_female_pair = (
             analysis.prefers_male_female_pair

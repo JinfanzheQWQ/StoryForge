@@ -110,6 +110,8 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 7. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
 8. `Chapter Writer` 负责基于小说草稿做统一命名、角色一致性补强和文本润色
 9. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
+10. live LLM 模式下，结构化输出如果坏 JSON、缺失 `structured_response` 或 schema 校验失败，最多重试 3 次；仍失败就直接抛错，不再 silent fallback
+11. 运行时不要再依赖 DryRun；如果缺少 DeepSeek 配置，应明确报错。测试如需 deterministic backend，必须在测试代码里显式 patch 注入
 
 如果未来再遇到“明明是多角色故事，却只被压成一个或两个人”的问题，优先检查：
 

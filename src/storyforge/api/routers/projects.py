@@ -19,6 +19,14 @@ from storyforge.api.schemas import (
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
 
+def _ensure_live_llm_requested(use_llm: bool | None) -> None:
+    if use_llm is False:
+        raise HTTPException(
+            status_code=400,
+            detail="Non-LLM mode has been removed. Configure DeepSeek and keep use_llm=true.",
+        )
+
+
 @router.get("", response_model=list[ProjectSummaryResponse])
 async def list_projects(request: Request) -> list[ProjectSummaryResponse]:
     container = request.app.state.container
@@ -42,6 +50,7 @@ async def create_story_job(
     payload: CreateStoryTaskRequest,
     request: Request,
 ) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
     container = request.app.state.container
     project_store = container.project_store
     project_id = payload.project_id
@@ -71,6 +80,7 @@ async def create_image_job(
     payload: CreateStageTaskRequest,
     request: Request,
 ) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
     container = request.app.state.container
     project = container.project_store.get(payload.project_id)
     if project is None:
@@ -101,6 +111,7 @@ async def create_character_job(
     payload: CreateStageTaskRequest,
     request: Request,
 ) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
     container = request.app.state.container
     project = container.project_store.get(payload.project_id)
     if project is None:
@@ -184,6 +195,7 @@ async def create_project_job(
     payload: BuildProjectRequest,
     request: Request,
 ) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
     container = request.app.state.container
     queue = container.task_queue
     project_store = container.project_store

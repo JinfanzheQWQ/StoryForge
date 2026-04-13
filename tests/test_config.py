@@ -21,7 +21,7 @@ class ConfigTestCase(unittest.TestCase):
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         self.assertEqual(config.llm.provider, "deepseek")
         self.assertEqual(config.llm.model, "deepseek-chat")
-        self.assertFalse(config.llm.enabled)
+        self.assertTrue(config.llm.enabled)
         self.assertEqual(config.video.segment_duration_seconds, 5)
         self.assertEqual(config.video.character_image_provider, "seedream-4.5")
         self.assertEqual(config.video.scene_image_provider, "seedream-4.5")

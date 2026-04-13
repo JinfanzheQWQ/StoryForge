@@ -12,7 +12,9 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from storyforge.core.config import AppConfig  # noqa: E402
+from storyforge.agents.base import DryRunAgentBackend, PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
+from storyforge.domains.novel.errors import NovelStructuredGenerationError  # noqa: E402
 from storyforge.domains.novel.heuristics import extract_role_labels_from_brief  # noqa: E402
 from storyforge.domains.novel.prompts import (  # noqa: E402
     build_character_user_prompt,
@@ -31,6 +33,18 @@ from storyforge.pipelines.video_pipeline import run_video_pipeline  # noqa: E402
 
 class PipelineTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self._story_backend_patcher = patch(
+            "storyforge.pipelines.story_pipeline.build_agent_backend",
+            return_value=DryRunAgentBackend(),
+        )
+        self._video_backend_patcher = patch(
+            "storyforge.pipelines.video_planning.build_agent_backend",
+            return_value=DryRunAgentBackend(),
+        )
+        self._story_backend_patcher.start()
+        self._video_backend_patcher.start()
+        self.addCleanup(self._story_backend_patcher.stop)
+        self.addCleanup(self._video_backend_patcher.stop)
         self.temp_root = ROOT / "tests/.tmp"
         if self.temp_root.exists():
             shutil.rmtree(self.temp_root)
@@ -39,6 +53,91 @@ class PipelineTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         if self.temp_root.exists():
             shutil.rmtree(self.temp_root)
+
+    def test_live_structured_generation_retries_before_success(self) -> None:
+        class RetryBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls < 3:
+                    raise RuntimeError("structured_response missing")
+                return StoryArchitectureSchema(
+                    title="站台告白",
+                    premise="列车离站前的告白。",
+                    theme="告别与勇气",
+                    setting="夜晚站台",
+                    story_engine="离站倒计时逼迫关系表态。",
+                    visual_motifs=["站台", "列车", "夜风"],
+                    tone_notes=["克制", "电影感"],
+                )
+
+        service = NovelGeneratorService(backend=RetryBackend())
+        brief = StoryBrief(
+            title_hint="站台告白",
+            idea="一个女生在列车离站前向喜欢多年的男生告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+
+        result = service._run_structured_agent(
+            schema=StoryArchitectureSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "story-architect"},
+            ),
+            fallback=service._fallback_architecture(brief),
+        )
+
+        self.assertEqual(result.title, "站台告白")
+        self.assertEqual(service.backend.calls, 3)
+        self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 3)
+        self.assertIn("上一次输出未通过结构化校验", service.backend.requests[-1].user_prompt)
+
+    def test_live_structured_generation_raises_after_retry_limit(self) -> None:
+        class AlwaysFailBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                raise RuntimeError("structured_response missing")
+
+        service = NovelGeneratorService(backend=AlwaysFailBackend())
+        brief = StoryBrief(
+            title_hint="站台告白",
+            idea="一个女生在列车离站前向喜欢多年的男生告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+
+        with self.assertRaises(NovelStructuredGenerationError) as ctx:
+            service._run_structured_agent(
+                schema=StoryArchitectureSchema,
+                request=PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "story-architect"},
+                ),
+                fallback=service._fallback_architecture(brief),
+            )
+
+        self.assertEqual(service.backend.calls, 3)
+        self.assertIn("task=story-architect", str(ctx.exception))
 
     def test_story_and_video_pipeline(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

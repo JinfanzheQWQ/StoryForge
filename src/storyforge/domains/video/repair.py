@@ -72,7 +72,7 @@ class VideoRepairMixin:
         if len(canonical_names) == 1:
             return canonical_names[0]
 
-        generic_aliases = {
+        lead_aliases = {
             "主角",
             "主人公",
             "男主",
@@ -81,9 +81,23 @@ class VideoRepairMixin:
             "神秘人",
             "录音师",
             "修复师",
+            "告白者",
+            "主动方",
+            "发起者",
         }
-        if token in generic_aliases:
+        if token in lead_aliases:
             return canonical_names[0]
+
+        counterpart_aliases = {
+            "被告白的人",
+            "被表白的人",
+            "对方",
+            "另一方",
+            "回应方",
+            "被回应的人",
+        }
+        if token in counterpart_aliases:
+            return canonical_names[1] if len(canonical_names) >= 2 else canonical_names[0]
 
         fuzzy_matches = [
             name for name in canonical_names if token in name or name in token
@@ -255,6 +269,9 @@ class VideoRepairMixin:
             "lead",
             "hero",
             "protagonist",
+            "告白者",
+            "主动方",
+            "发起者",
         }
         if token.lower() in generic_lead_aliases or token in generic_lead_aliases:
             featured = self._fallback_segment_characters(
@@ -263,6 +280,24 @@ class VideoRepairMixin:
                 chapter_feature_map=chapter_feature_map,
             )
             return featured[0] if featured else ""
+
+        counterpart_aliases = {
+            "被告白的人",
+            "被表白的人",
+            "对方",
+            "另一方",
+            "回应方",
+            "被回应的人",
+        }
+        if token in counterpart_aliases:
+            featured = self._fallback_segment_characters(
+                chapter_number=chapter_number,
+                canonical_names=canonical_names,
+                chapter_feature_map=chapter_feature_map,
+            )
+            if len(featured) >= 2:
+                return featured[1]
+            return canonical_names[1] if len(canonical_names) >= 2 else ""
 
         fuzzy_matches = [
             name

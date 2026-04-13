@@ -19,6 +19,8 @@ from storyforge.domains.novel.fallbacks import NovelFallbackMixin
 from storyforge.domains.novel.prompts import (
     build_architect_system_prompt,
     build_architect_user_prompt,
+    build_cast_system_prompt,
+    build_cast_user_prompt,
     build_character_system_prompt,
     build_character_user_prompt,
     build_chapter_planner_system_prompt,
@@ -31,6 +33,7 @@ from storyforge.domains.novel.prompts import (
 from storyforge.domains.novel.repair import NovelRepairMixin
 from storyforge.domains.novel.rules import NovelRuleMixin
 from storyforge.domains.novel.schemas import (
+    CastAnalysisSchema,
     ChapterDraftSchema,
     ChapterPlanSetSchema,
     CharacterRosterSchema,
@@ -68,6 +71,26 @@ class NovelGeneratorService(
             fallback=self._fallback_architecture(brief),
         )
 
+        # Agreement: LLM-based cast analysis is the primary source of truth
+        # for role structure. Heuristics only remain as repair and fallback backstops.
+        cast_analysis = self._run_structured_agent(
+            schema=CastAnalysisSchema,
+            request=PromptRequest(
+                system_prompt=build_cast_system_prompt(),
+                user_prompt=build_cast_user_prompt(
+                    brief=brief,
+                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                ),
+                metadata={"task": "cast-analyzer"},
+            ),
+            fallback=self._fallback_cast_analysis(brief, architecture),
+        )
+        cast_analysis = self._repair_cast_analysis(
+            cast_analysis,
+            brief,
+            architecture,
+        )
+
         character_roster = self._run_structured_agent(
             schema=CharacterRosterSchema,
             request=PromptRequest(
@@ -75,15 +98,21 @@ class NovelGeneratorService(
                 user_prompt=build_character_user_prompt(
                     brief=brief,
                     architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                    cast_analysis=cast_analysis,
                 ),
                 metadata={"task": "character-designer"},
             ),
-            fallback=self._fallback_character_roster(brief, architecture),
+            fallback=self._fallback_character_roster(
+                brief,
+                architecture,
+                cast_analysis=cast_analysis,
+            ),
         )
         character_roster = self._repair_character_roster(
             character_roster,
             brief,
             architecture,
+            cast_analysis=cast_analysis,
         )
 
         chapter_plan_set = self._run_structured_agent(
@@ -94,19 +123,25 @@ class NovelGeneratorService(
                     brief=brief,
                     architecture_summary=architecture.model_dump_json(ensure_ascii=False),
                     character_summary=character_roster.model_dump_json(ensure_ascii=False),
+                    cast_analysis=cast_analysis,
                 ),
                 metadata={"task": "chapter-planner"},
             ),
-            fallback=self._fallback_chapter_plan_set(brief, character_roster),
+            fallback=self._fallback_chapter_plan_set(
+                brief,
+                character_roster,
+                cast_analysis=cast_analysis,
+            ),
         )
         chapter_plan_set = self._repair_chapter_plan_set(
             chapter_plan_set,
             brief,
             character_roster,
+            cast_analysis=cast_analysis,
         )
 
         outline = self._assemble_outline(architecture, character_roster, chapter_plan_set)
-        chapters = self._build_chapters(brief, outline)
+        chapters = self._build_chapters(brief, outline, cast_analysis)
         review = self._run_structured_agent(
             schema=EditorialReviewSchema,
             request=PromptRequest(
@@ -129,6 +164,7 @@ class NovelGeneratorService(
             ),
             workflow_trace={
                 "story_architect": architecture.model_dump(),
+                "cast_analyzer": cast_analysis.model_dump(),
                 "character_designer": character_roster.model_dump(),
                 "chapter_planner": chapter_plan_set.model_dump(),
                 "editor_review": review.model_dump(),
@@ -148,6 +184,7 @@ class NovelGeneratorService(
             visual_motifs=architecture.visual_motifs,
             characters=[
                 CharacterProfile(
+                    cast_slot_id=item.cast_slot_id,
                     name=item.name,
                     role=item.role,
                     gender=item.gender,
@@ -183,7 +220,12 @@ class NovelGeneratorService(
             ),
         )
 
-    def _build_chapters(self, brief: StoryBrief, outline: StoryOutline) -> list[DraftChapter]:
+    def _build_chapters(
+        self,
+        brief: StoryBrief,
+        outline: StoryOutline,
+        cast_analysis: CastAnalysisSchema,
+    ) -> list[DraftChapter]:
         drafted: list[DraftChapter] = []
         for chapter in outline.chapters:
             chapter_payload = self._run_structured_agent(
@@ -195,6 +237,7 @@ class NovelGeneratorService(
                         outline=outline,
                         chapter=chapter,
                         previous_chapters=drafted,
+                        cast_analysis=cast_analysis,
                     ),
                     metadata={"task": f"chapter-writer-{chapter.number:02d}"},
                 ),

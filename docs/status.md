@@ -1,6 +1,6 @@
 # 工程状态
 
-> 截至 `2026-04-12`
+> 截至 `2026-04-13`
 
 这份文档只回答三件事：
 
@@ -25,9 +25,12 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 小说生成
 
 - 结构化多 Agent 小说工作流
+- `Cast Analyzer` 角色层级与关系图解析阶段
 - 角色卡、章节蓝图、章节草稿、审校结果落盘
 - `workflow_trace.json` 中间产物追踪
 - 角色 `voice_profile` 输出并贯通后续视频 prompt
+- 角色结构约定已调整为“LLM Cast Analysis 优先，heuristics 只做 fallback / repair”
+- cast slots 会尽量保留 brief 指代和 `source_evidence`，复杂 brief 不再默认压成固定双人模板
 
 ### 视频规划与媒体链路
 
@@ -52,7 +55,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 - 应用层已拆分为 container / runtime / handlers / support / persistence
 - 视频域已拆分为 facade / prompting / repair / planning
-- 小说域已拆分为 service / fallbacks / repair / rules
+- 小说域已拆分为 service / prompts / schemas / fallbacks / repair / rules
 
 ## 当前验证基线
 
@@ -61,7 +64,16 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `uv run ruff check src/storyforge tests`
   - `All checks passed!`
 - `uv run pytest`
-  - `33 passed`
+  - `42 passed`
+
+最近一次真实 LLM 自测：
+
+- 时间：`2026-04-13`
+- 模型：`DeepSeek`
+- 样例：`旧城回响`
+- 结果：`Cast Analyzer` 真实拆出 `记者 / 昔日恋人 / 地下线人 / 地方势力继承人 / 退休警察 / 失踪父亲`
+- 结果：故事形态被识别为 `single_lead_with_supporting_cast`
+- 结果：`Character Designer` 产出了与这些 slot 对齐的正式角色卡
 
 ## 当前主要限制
 
@@ -77,6 +89,11 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 角色一致性仍以“参考图 + prompt 锁定”为主
 - 声音一致性仍是 prompt 级，不是声纹级
 - 硬字幕主要依赖模型生成，缺少稳定的后处理兜底
+
+### 小说理解
+
+- cast 解析已经从 heuristics 主导改为 LLM 主导，但仍然没有审校后自动回改闭环
+- 长篇上下文仍主要依赖阶段输入和最近章节摘要，不是长期记忆式写作
 
 ### 生产可用性
 

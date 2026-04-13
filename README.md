@@ -44,7 +44,8 @@ StoryForge 默认采用四步式分阶段工作流，而不是一键全跑：
 
 ## 主要特性
 
-- 结构化多 Agent 小说生成链路：`Story Architect`、`Character Designer`、`Chapter Planner`、`Chapter Writer`、`Editorial Reviewer`
+- 结构化多 Agent 小说生成链路：`Story Architect`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Chapter Writer`、`Editorial Reviewer`
+- 角色结构约定：以 LLM `Cast Analyzer` 结果为主，先抽取 brief 里的角色指代并落成 cast slots，heuristics 只做 fallback / repair
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
@@ -106,6 +107,7 @@ cp .env.example .env
 
 ```bash
 DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=...
 SEEDREAM_API_KEY=...
 SEEDANCE_API_KEY=...
 SEEDREAM_BASE_URL=...

@@ -87,6 +87,7 @@ class CharacterVoiceProfile:
 
 @dataclass(slots=True)
 class CharacterProfile:
+    cast_slot_id: str
     name: str
     role: str
     gender: str
@@ -109,6 +110,7 @@ class CharacterProfile:
         if not voice_style:
             voice_style = voice_profile.resolved_voice_style()
         return cls(
+            cast_slot_id=raw.get("cast_slot_id", ""),
             name=raw["name"],
             role=raw["role"],
             gender=raw.get("gender", "未指定"),

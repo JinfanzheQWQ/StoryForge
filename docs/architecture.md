@@ -55,16 +55,18 @@ Integrations
 核心角色包括：
 
 1. `Story Architect`
-2. `Character Designer`
-3. `Chapter Planner`
-4. `Chapter Writer`
-5. `Editorial Reviewer`
+2. `Cast Analyzer`
+3. `Character Designer`
+4. `Chapter Planner`
+5. `Chapter Writer`
+6. `Editorial Reviewer`
 
 生成流程：
 
 ```text
 StoryBrief
   -> StoryArchitectureSchema
+  -> CastAnalysisSchema
   -> CharacterRosterSchema
   -> ChapterPlanSetSchema
   -> StoryOutline
@@ -81,18 +83,44 @@ StoryBrief
 - `workflow_trace.json`
 - `chapters/*.md`
 
+`workflow_trace.json` 中当前会记录：
+
+- `story_architect`
+- `cast_analyzer`
+- `character_designer`
+- `chapter_planner`
+- `editor_review`
+
+### 小说链路约定
+
+当前小说链路有一个明确约定：
+
+- **角色结构、层级、排序与关系图以 `Cast Analyzer` 的 LLM 解析结果为主**
+- `heuristics` 只负责 fallback 和 repair，不再主导“到底有几个核心角色、谁和谁是关系双方”
+
+这意味着：
+
+1. 先由 LLM 解析 brief 中的 cast slots、角色层级、关系图与排序规则
+2. cast slots 会尽量保留 brief 指代和 `source_evidence`，避免把“记者 / 线人 / 前任 / 退休警察”压扁成泛化配角
+3. 再由角色生成和章节规划消费这份解析结果
+4. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics 补位
+
 ### 小说域内部拆分
 
 小说域当前已经按职责拆分：
 
 - [`../src/storyforge/domains/novel/service.py`](../src/storyforge/domains/novel/service.py)
   主流程、outline 组装、章节写作编排
+- [`../src/storyforge/domains/novel/prompts.py`](../src/storyforge/domains/novel/prompts.py)
+  小说多阶段 prompt 构造，包含 cast 分析、角色生成、章节规划、章节写作、审校
+- [`../src/storyforge/domains/novel/schemas.py`](../src/storyforge/domains/novel/schemas.py)
+  小说结构化输出 schema，包括 `CastAnalysisSchema` 与角色 `cast_slot_id`
 - [`../src/storyforge/domains/novel/fallbacks.py`](../src/storyforge/domains/novel/fallbacks.py)
-  deterministic fallback
+  deterministic fallback，包括 cast analysis fallback
 - [`../src/storyforge/domains/novel/repair.py`](../src/storyforge/domains/novel/repair.py)
-  角色与章节规划修补
+  cast analysis、角色与章节规划修补
 - [`../src/storyforge/domains/novel/rules.py`](../src/storyforge/domains/novel/rules.py)
-  brief 启发规则与双角色 / 性别修正规则
+  brief 启发规则与性别修正规则
 
 ## 视频链路
 

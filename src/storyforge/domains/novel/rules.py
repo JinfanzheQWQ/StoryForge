@@ -4,34 +4,64 @@ import re
 from typing import Any
 
 from storyforge.domains.novel.contracts import StoryBrief
+from storyforge.domains.novel.heuristics import (
+    brief_prefers_male_female_pair,
+    brief_requires_dual_leads,
+    brief_requires_explicit_counterpart,
+    build_brief_text,
+    count_role_labels_in_brief,
+    infer_primary_character_genders,
+    text_requires_multiple_core_characters,
+)
+from storyforge.domains.novel.schemas import CastAnalysisSchema
 
 
 class NovelRuleMixin:
-    def _minimum_core_character_count(self, brief: StoryBrief) -> int:
-        return 2 if self._text_requires_multiple_core_characters(self._brief_text(brief)) else 1
+    def _minimum_core_character_count(
+        self,
+        brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
+    ) -> int:
+        extracted_role_count = count_role_labels_in_brief(brief, limit=6)
+        if cast_analysis is not None:
+            return max(1, cast_analysis.recommended_core_cast_count, extracted_role_count)
+        baseline = 2 if self._text_requires_multiple_core_characters(self._brief_text(brief)) else 1
+        return max(baseline, extracted_role_count)
 
     def _repair_primary_character_genders(
         self,
         characters: list[Any],
         brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
     ) -> list[Any]:
-        if len(characters) < 2 or not self._brief_prefers_male_female_pair(brief):
+        if len(characters) < 2 or not self._brief_prefers_male_female_pair(
+            brief,
+            cast_analysis,
+        ):
             return characters
 
         first = characters[0]
         second = characters[1]
-        first_gender = first.gender.strip()
-        second_gender = second.gender.strip()
+        expected_pair = self._expected_primary_character_genders(
+            brief,
+            cast_analysis,
+        )
+        if expected_pair is not None:
+            first_gender, second_gender = expected_pair
+        else:
+            first_gender = first.gender.strip()
+            second_gender = second.gender.strip()
 
-        if {first_gender, second_gender} == {"男", "女"}:
+        if expected_pair is None and {first_gender, second_gender} == {"男", "女"}:
             return characters
 
         updated_characters = list(characters)
-        if first_gender not in {"男", "女"}:
-            first_gender = "男"
-        opposite_gender = "女" if first_gender == "男" else "男"
-        if second_gender == first_gender or second_gender not in {"男", "女"}:
-            second_gender = opposite_gender
+        if expected_pair is None:
+            if first_gender not in {"男", "女"}:
+                first_gender = "男"
+            opposite_gender = "女" if first_gender == "男" else "男"
+            if second_gender == first_gender or second_gender not in {"男", "女"}:
+                second_gender = opposite_gender
 
         updated_characters[0] = self._update_character_gender(first, first_gender)
         updated_characters[1] = self._update_character_gender(second, second_gender)
@@ -46,61 +76,57 @@ class NovelRuleMixin:
         return item.model_copy(update={"gender": gender, "image_prompt": image_prompt})
 
     def _brief_text(self, brief: StoryBrief) -> str:
-        return " ".join(
-            [
-                brief.title_hint,
-                brief.idea,
-                brief.genre,
-                brief.tone,
-                " ".join(brief.must_include),
-                " ".join(brief.style_keywords),
-            ]
-        )
+        return build_brief_text(brief)
 
     def _text_requires_multiple_core_characters(self, text: str) -> bool:
-        compact = re.sub(r"\s+", "", text)
-        keywords = (
-            "告白",
-            "表白",
-            "暗恋",
-            "恋人",
-            "情侣",
-            "前任",
-            "重逢",
-            "求婚",
-            "情书",
-            "约会",
-            "夫妻",
-            "对峙",
-            "争吵",
-            "谈判",
-            "审问",
-            "质问",
-            "双人",
-            "对话",
-            "母女",
-            "父子",
-            "姐妹",
-            "兄弟",
-            "师徒",
-        )
-        return any(keyword in compact for keyword in keywords)
+        return text_requires_multiple_core_characters(text)
 
-    def _brief_prefers_male_female_pair(self, brief: StoryBrief) -> bool:
-        if not self._text_requires_multiple_core_characters(self._brief_text(brief)):
-            return False
-        text = self._brief_text(brief).lower()
-        same_gender_keywords = (
-            "双男",
-            "双女",
-            "男男",
-            "女女",
-            "耽美",
-            "百合",
-            "bl",
-            "gl",
-            "同性",
-            "男同",
-            "女同",
-        )
-        return not any(keyword in text for keyword in same_gender_keywords)
+    def _brief_prefers_male_female_pair(
+        self,
+        brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
+    ) -> bool:
+        if cast_analysis is not None:
+            return cast_analysis.prefers_male_female_pair
+        return brief_prefers_male_female_pair(brief)
+
+    def _brief_requires_dual_leads(
+        self,
+        brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
+    ) -> bool:
+        if cast_analysis is not None:
+            return cast_analysis.requires_dual_leads
+        return brief_requires_dual_leads(brief)
+
+    def _brief_requires_explicit_counterpart(
+        self,
+        brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
+    ) -> bool:
+        if cast_analysis is not None:
+            return cast_analysis.explicit_counterpart
+        return brief_requires_explicit_counterpart(brief)
+
+    def _expected_primary_character_genders(
+        self,
+        brief: StoryBrief,
+        cast_analysis: CastAnalysisSchema | None = None,
+    ) -> tuple[str, str] | None:
+        if cast_analysis is not None:
+            primary_slots = cast_analysis.primary_slots(2)
+            if len(primary_slots) >= 2:
+                first_gender = self._normalize_gender_hint(primary_slots[0].gender_hint)
+                second_gender = self._normalize_gender_hint(primary_slots[1].gender_hint)
+            else:
+                first_gender = ""
+                second_gender = ""
+            if first_gender and second_gender:
+                return first_gender, second_gender
+        return infer_primary_character_genders(brief)
+
+    def _normalize_gender_hint(self, value: str) -> str:
+        token = value.strip()
+        if token in {"男", "女"}:
+            return token
+        return ""

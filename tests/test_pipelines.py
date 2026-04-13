@@ -13,6 +13,11 @@ if str(SRC) not in sys.path:
 
 from storyforge.core.config import AppConfig  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
+from storyforge.domains.novel.heuristics import extract_role_labels_from_brief  # noqa: E402
+from storyforge.domains.novel.prompts import (  # noqa: E402
+    build_character_user_prompt,
+    build_chapter_planner_user_prompt,
+)
 from storyforge.domains.novel.schemas import StoryArchitectureSchema  # noqa: E402
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
 from storyforge.domains.video.contracts import CharacterVisualProfile, VideoSegment  # noqa: E402
@@ -50,6 +55,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(len(story_result.chapter_paths), brief.chapter_count)
         self.assertIsNotNone(story_result.novel_package.review)
         self.assertIn("story_architect", story_result.novel_package.workflow_trace)
+        self.assertIn("cast_analyzer", story_result.novel_package.workflow_trace)
         self.assertTrue(
             all(item.voice_profile.voice_style for item in story_result.novel_package.outline.characters)
         )
@@ -503,24 +509,346 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        roster = service._fallback_character_roster(brief, architecture).model_copy(
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        roster = service._fallback_character_roster(
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        ).model_copy(
             update={
                 "characters": [
-                    service._fallback_character_roster(brief, architecture).characters[0].model_copy(
+                    service._fallback_character_roster(
+                        brief,
+                        architecture,
+                        cast_analysis=cast_analysis,
+                    ).characters[0].model_copy(
                         update={"name": "程野", "gender": "男", "image_prompt": "程野，男，高中生。"}
                     ),
-                    service._fallback_character_roster(brief, architecture).characters[1].model_copy(
+                    service._fallback_character_roster(
+                        brief,
+                        architecture,
+                        cast_analysis=cast_analysis,
+                    ).characters[1].model_copy(
                         update={"name": "周沉", "gender": "男", "image_prompt": "周沉，男，高中生。"}
                     ),
                 ]
             }
         )
 
-        repaired = service._repair_character_roster(roster, brief, architecture)
+        repaired = service._repair_character_roster(
+            roster,
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        )
 
         self.assertEqual(repaired.characters[0].gender, "男")
         self.assertEqual(repaired.characters[1].gender, "女")
         self.assertIn("性别：女", repaired.characters[1].image_prompt)
+
+    def test_dual_lead_prompt_forbids_single_character_roster(self) -> None:
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一个女生终于在雨夜向喜欢的男生告白。",
+            genre="校园恋爱",
+            tone="青春、克制",
+            chapter_count=1,
+            total_word_target=1500,
+        )
+        architecture = StoryArchitectureSchema(
+            title="雨夜告白",
+            premise="雨夜里迟到的告白。",
+            theme="勇气与回应",
+            setting="高中校园",
+            story_engine="双人关系推进",
+            visual_motifs=["雨", "路灯"],
+            tone_notes=["青春"],
+        )
+        cast_analysis = NovelGeneratorService()._fallback_cast_analysis(
+            brief,
+            architecture,
+        )
+
+        prompt = build_character_user_prompt(
+            brief,
+            '{"title":"雨夜告白"}',
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertIn("characters 数组前两位必须就是这段关系的双方", prompt)
+        self.assertIn("不得只输出单主角", prompt)
+        self.assertIn("cast_slot_id", prompt)
+        self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
+        self.assertIn("source_evidence", prompt)
+
+    def test_dual_lead_repair_preserves_gender_order_from_brief(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一个女生终于在雨夜向喜欢的男生告白。",
+            genre="校园恋爱",
+            tone="青春、克制",
+            chapter_count=1,
+            total_word_target=1500,
+        )
+        architecture = StoryArchitectureSchema(
+            title="雨夜告白",
+            premise="雨夜里迟到的告白。",
+            theme="勇气与回应",
+            setting="高中校园",
+            story_engine="双人关系推进",
+            visual_motifs=["雨", "路灯"],
+            tone_notes=["青春"],
+        )
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        roster = service._fallback_character_roster(
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        ).model_copy(
+            update={
+                "characters": [
+                    service._fallback_character_roster(
+                        brief,
+                        architecture,
+                        cast_analysis=cast_analysis,
+                    ).characters[0].model_copy(
+                        update={"name": "程野", "gender": "男", "image_prompt": "程野，男，高中生。"}
+                    )
+                ]
+            }
+        )
+
+        repaired = service._repair_character_roster(
+            roster,
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertGreaterEqual(len(repaired.characters), 2)
+        self.assertEqual(repaired.characters[0].gender, "女")
+        self.assertEqual(repaired.characters[1].gender, "男")
+        self.assertIn("关系定位", repaired.characters[0].image_prompt)
+        self.assertIn("关系定位", repaired.characters[1].image_prompt)
+
+    def test_dual_lead_chapter_prompt_requires_both_sides(self) -> None:
+        brief = StoryBrief(
+            title_hint="重逢站台",
+            idea="她和多年未见的前任在站台重逢，并必须在列车离开前说清真相。",
+            genre="都市情感",
+            tone="克制、拉扯",
+            chapter_count=2,
+            total_word_target=3000,
+        )
+        architecture = StoryArchitectureSchema(
+            title="重逢站台",
+            premise="站台重逢。",
+            theme="错过与坦白",
+            setting="列车站台",
+            story_engine="双人关系推进",
+            visual_motifs=["站台", "列车"],
+            tone_notes=["克制"],
+        )
+        cast_analysis = NovelGeneratorService()._fallback_cast_analysis(
+            brief,
+            architecture,
+        )
+
+        prompt = build_chapter_planner_user_prompt(
+            brief=brief,
+            architecture_summary='{"title":"重逢站台"}',
+            character_summary='{"characters":[]}',
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertIn("featured_characters 前两位必须优先放关系双方", prompt)
+        self.assertIn("不能只写单人心理活动", prompt)
+        self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
+
+    def test_dual_lead_chapter_repair_adds_counterpart_from_brief(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一个女生终于在雨夜向喜欢的男生告白。",
+            genre="校园恋爱",
+            tone="青春、克制",
+            chapter_count=1,
+            total_word_target=1500,
+        )
+        architecture = StoryArchitectureSchema(
+            title="雨夜告白",
+            premise="雨夜里迟到的告白。",
+            theme="勇气与回应",
+            setting="高中校园",
+            story_engine="双人关系推进",
+            visual_motifs=["雨", "路灯"],
+            tone_notes=["青春"],
+        )
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        roster = service._fallback_character_roster(
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        )
+        chapter_plan_set = service._fallback_chapter_plan_set(
+            brief,
+            roster,
+            cast_analysis=cast_analysis,
+        ).model_copy(
+            update={
+                "chapters": [
+                    service._fallback_chapter_plan_set(
+                        brief,
+                        roster,
+                        cast_analysis=cast_analysis,
+                    ).chapters[0].model_copy(
+                        update={
+                            "title": "雨棚下",
+                            "summary": "她终于决定把心里的话说出口。",
+                            "key_conflict": "她不确定自己是否会被拒绝。",
+                            "beats": ["她在雨棚下反复练习开口。"],
+                            "featured_characters": [roster.characters[0].name],
+                        }
+                    )
+                ]
+            }
+        )
+
+        repaired = service._repair_chapter_plan_set(
+            chapter_plan_set,
+            brief,
+            roster,
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertEqual(
+            repaired.chapters[0].featured_characters[:2],
+            [roster.characters[0].name, roster.characters[1].name],
+        )
+
+    def test_cast_analysis_is_primary_cast_contract(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="边界之夜",
+            idea="她终于决定越过那条谁都不敢点破的边界。",
+            genre="情感短篇",
+            tone="克制、暧昧",
+            chapter_count=1,
+            total_word_target=1500,
+        )
+        architecture = StoryArchitectureSchema(
+            title="边界之夜",
+            premise="边界被越过的夜晚。",
+            theme="压抑与越界",
+            setting="毕业夜晚",
+            story_engine="关系推进",
+            visual_motifs=["路灯", "夏夜"],
+            tone_notes=["克制"],
+        )
+        cast_analysis = service._repair_cast_analysis(
+            service._fallback_cast_analysis(brief, architecture).model_copy(
+                update={
+                    "story_shape": "dual_relationship_with_supporting_cast",
+                    "requires_dual_leads": True,
+                    "explicit_counterpart": True,
+                    "recommended_core_cast_count": 2,
+                }
+            ),
+            brief,
+            architecture,
+        )
+
+        prompt = build_character_user_prompt(
+            brief,
+            architecture.model_dump_json(),
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
+        self.assertIn("不得只输出单主角", prompt)
+
+    def test_cast_analysis_supports_multi_role_story_structure(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="旧城回响",
+            idea="一名记者回到旧城调查父亲失踪真相，昔日恋人、线人和地方势力相继卷入。",
+            genre="悬疑剧情",
+            tone="克制、压迫",
+            chapter_count=4,
+            total_word_target=9000,
+        )
+        architecture = StoryArchitectureSchema(
+            title="旧城回响",
+            premise="记者回旧城追查失踪真相。",
+            theme="真相、背叛与旧情",
+            setting="旧工业城市",
+            story_engine="调查推进不断卷出旧关系网络",
+            visual_motifs=["旧厂房", "雨夜"],
+            tone_notes=["压迫"],
+        )
+
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+
+        self.assertGreaterEqual(cast_analysis.recommended_core_cast_count, 4)
+        self.assertGreaterEqual(len(cast_analysis.slots), 3)
+        self.assertEqual(cast_analysis.slots[0].tier, "lead")
+
+    def test_extract_role_labels_from_complex_brief(self) -> None:
+        brief = StoryBrief(
+            title_hint="旧城回响",
+            idea="一名记者回到旧城调查父亲失踪真相，昔日恋人、地下线人、地方势力继承人和掌握档案的退休警察相继卷入。",
+            genre="悬疑剧情",
+            tone="克制、压迫",
+            chapter_count=3,
+            total_word_target=6000,
+        )
+
+        labels = extract_role_labels_from_brief(brief)
+
+        self.assertIn("记者", labels)
+        self.assertIn("昔日恋人", labels)
+        self.assertIn("地下线人", labels)
+        self.assertIn("地方势力继承人", labels)
+        self.assertIn("掌握档案的退休警察", labels)
+
+    def test_fallback_cast_analysis_uses_grounded_role_labels(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="旧城回响",
+            idea="一名记者回到旧城调查父亲失踪真相，昔日恋人、地下线人、地方势力继承人和掌握档案的退休警察相继卷入。",
+            genre="悬疑剧情",
+            tone="克制、压迫",
+            chapter_count=3,
+            total_word_target=6000,
+        )
+        architecture = StoryArchitectureSchema(
+            title="旧城回响",
+            premise="记者回旧城追查失踪真相。",
+            theme="真相、背叛与旧情",
+            setting="旧工业城市",
+            story_engine="调查推进不断卷出旧关系网络",
+            visual_motifs=["旧厂房", "雨夜"],
+            tone_notes=["压迫"],
+        )
+
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        slot_labels = [item.brief_label for item in cast_analysis.slots[:4]]
+
+        self.assertEqual(slot_labels[0], "记者")
+        self.assertIn("昔日恋人", slot_labels)
+        self.assertIn("地下线人", slot_labels)
+        self.assertTrue(any(item.source_evidence for item in cast_analysis.slots[:3]))
+
+    def test_dual_lead_alias_maps_counterpart_to_second_character(self) -> None:
+        service = NovelGeneratorService()
+        resolved = service._resolve_roster_name(
+            raw_name="被告白的人",
+            canonical_names=["林雾", "沈砚"],
+            role_map={"林雾": "关系主动方 / 叙事发起者", "沈砚": "关系对位角色 / 关键回应方"},
+        )
+
+        self.assertEqual(resolved, "沈砚")
 
     def test_missing_chapters_are_repaired_back_into_segment_plan(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

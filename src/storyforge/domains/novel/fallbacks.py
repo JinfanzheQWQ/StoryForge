@@ -4,7 +4,18 @@ from itertools import cycle
 from typing import Any
 
 from storyforge.domains.novel.contracts import ChapterPlan, DraftChapter, StoryBrief, StoryOutline
+from storyforge.domains.novel.heuristics import (
+    brief_prefers_male_female_pair,
+    brief_requires_dual_leads,
+    brief_requires_explicit_counterpart,
+    count_role_labels_in_brief,
+    extract_role_labels_from_brief,
+    infer_primary_character_genders,
+)
 from storyforge.domains.novel.schemas import (
+    CastAnalysisSchema,
+    CastRelationshipSchema,
+    CastSlotSchema,
     ChapterDraftSchema,
     ChapterPlanSetSchema,
     CharacterRosterSchema,
@@ -30,44 +41,372 @@ class NovelFallbackMixin:
             tone_notes=[brief.tone, "镜头感", "悬念递进"],
         )
 
+    def _fallback_cast_analysis(
+        self,
+        brief: StoryBrief,
+        architecture: StoryArchitectureSchema,
+    ) -> CastAnalysisSchema:
+        explicit_counterpart = brief_requires_explicit_counterpart(brief)
+        requires_dual_leads = brief_requires_dual_leads(brief)
+        prefers_pair = brief_prefers_male_female_pair(brief)
+        inferred_pair = infer_primary_character_genders(brief)
+        first_gender = inferred_pair[0] if inferred_pair is not None else ("男" if prefers_pair else "未指定")
+        second_gender = inferred_pair[1] if inferred_pair is not None else ("女" if prefers_pair else "未指定")
+        role_labels = extract_role_labels_from_brief(brief, limit=6)
+        if not explicit_counterpart and len(role_labels) >= 4:
+            requires_dual_leads = False
+            prefers_pair = False
+        recommended_count = self._fallback_recommended_core_cast_count(
+            brief,
+            explicit_counterpart=explicit_counterpart,
+            requires_dual_leads=requires_dual_leads,
+        )
+
+        slots: list[CastSlotSchema] = []
+        relationships: list[CastRelationshipSchema] = []
+
+        if explicit_counterpart:
+            lead_1_label = role_labels[0] if role_labels else "brief 中主动发起关系动作的一方"
+            lead_2_label = (
+                role_labels[1]
+                if len(role_labels) >= 2
+                else "brief 中接收关系动作的一方"
+            )
+            slots.extend(
+                [
+                    CastSlotSchema(
+                        slot_id="lead_1",
+                        tier="lead",
+                        story_function="protagonist",
+                        brief_label=lead_1_label,
+                        source_evidence=[lead_1_label],
+                        gender_hint=self._gender_hint_from_label(lead_1_label, first_gender),
+                        objective="主动推动关系跨过关键门槛。",
+                        must_appear_in=["opening", "midpoint", "climax", "ending"],
+                        order_priority=1,
+                        notes="必须最先展开成正式角色卡。",
+                    ),
+                    CastSlotSchema(
+                        slot_id="lead_2",
+                        tier="lead",
+                        story_function="love_interest",
+                        brief_label=lead_2_label,
+                        source_evidence=[lead_2_label],
+                        gender_hint=self._gender_hint_from_label(lead_2_label, second_gender),
+                        objective="接住对方的动作，并决定是否回应或反转局势。",
+                        must_appear_in=["opening", "climax", "ending"],
+                        order_priority=2,
+                        notes="必须作为第一关系对象稳定存在。",
+                    ),
+                ]
+            )
+            relationships.append(
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="lead_2",
+                    relationship_type="core_relationship",
+                    priority=1,
+                    summary="这是一段驱动主线的核心关系，双方顺序不可互换。",
+                )
+            )
+            if recommended_count >= 3:
+                support_label = (
+                    role_labels[2]
+                    if len(role_labels) >= 3
+                    else "关系见证者或情绪支点"
+                )
+                slots.append(
+                    CastSlotSchema(
+                        slot_id="core_support_1",
+                        tier="core_support",
+                        story_function=self._story_function_from_role_label(
+                            support_label,
+                            default="ally",
+                        ),
+                        brief_label=support_label,
+                        source_evidence=[support_label],
+                        gender_hint=self._gender_hint_from_label(support_label),
+                        objective="放大主角情绪或推动关系迈出下一步。",
+                        must_appear_in=["opening", "midpoint"],
+                        order_priority=3,
+                        notes="不要抢走 lead 的戏剧功能。",
+                    )
+                )
+            if recommended_count >= 4:
+                pressure_label = (
+                    role_labels[3]
+                    if len(role_labels) >= 4
+                    else "制造外部阻力的人"
+                )
+                slots.append(
+                    CastSlotSchema(
+                        slot_id="core_support_2",
+                        tier="core_support",
+                        story_function=self._story_function_from_role_label(
+                            pressure_label,
+                            default="obstacle",
+                        ),
+                        brief_label=pressure_label,
+                        source_evidence=[pressure_label],
+                        gender_hint=self._gender_hint_from_label(pressure_label),
+                        objective="制造误会、时间压力或现实阻力。",
+                        must_appear_in=["midpoint", "climax"],
+                        order_priority=4,
+                        notes="负责增加现实层面的冲突。",
+                    )
+                )
+                relationships.append(
+                    CastRelationshipSchema(
+                        source_slot_id="core_support_2",
+                        target_slot_id="lead_1",
+                        relationship_type="pressure",
+                        priority=2,
+                        summary="该角色负责向 lead_1 施加现实压力。",
+                    )
+                )
+            return CastAnalysisSchema(
+                story_shape="dual_relationship_with_supporting_cast",
+                recommended_core_cast_count=recommended_count,
+                requires_dual_leads=True,
+                explicit_counterpart=True,
+                prefers_male_female_pair=prefers_pair,
+                cast_strategy="先稳定关系双方，再按需要补充情绪支点和阻力角色；高优先级 slots 不可丢失或换序。",
+                chapter_participation_rule="涉及关系推进、误会升级、摊牌和结局的章节，lead_1 与 lead_2 必须共同参与；core_support 角色按节点出现。",
+                ordering_rule="角色表先展开 lead_1、lead_2，再展开 core_support，最后才考虑 supporting。",
+                slots=slots,
+                relationships=relationships,
+            )
+
+        if requires_dual_leads:
+            lead_1_label = role_labels[0] if role_labels else "第一核心人物"
+            lead_2_label = role_labels[1] if len(role_labels) >= 2 else "第二核心人物"
+            slots.extend(
+                [
+                    CastSlotSchema(
+                        slot_id="lead_1",
+                        tier="lead",
+                        story_function="protagonist",
+                        brief_label=lead_1_label,
+                        source_evidence=[lead_1_label],
+                        gender_hint=self._gender_hint_from_label(lead_1_label, first_gender),
+                        objective="推动主线事件向前。",
+                        must_appear_in=["opening", "midpoint", "climax", "ending"],
+                        order_priority=1,
+                        notes="承担主要视角或主推动功能。",
+                    ),
+                    CastSlotSchema(
+                        slot_id="lead_2",
+                        tier="lead",
+                        story_function=self._story_function_from_role_label(
+                            lead_2_label,
+                            default="counterpart",
+                        ),
+                        brief_label=lead_2_label,
+                        source_evidence=[lead_2_label],
+                        gender_hint=self._gender_hint_from_label(lead_2_label, second_gender),
+                        objective="与第一核心人物形成对冲、互补或牵引。",
+                        must_appear_in=["opening", "midpoint", "climax"],
+                        order_priority=2,
+                        notes="必须具备独立目标，不能是背景板。",
+                    ),
+                ]
+            )
+            relationships.append(
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="lead_2",
+                    relationship_type="primary_dynamic",
+                    priority=1,
+                    summary="双主导角色共同承担主要剧情推动。",
+                )
+            )
+            if recommended_count >= 3:
+                support_label = (
+                    role_labels[2]
+                    if len(role_labels) >= 3
+                    else "主角侧的稳定支点"
+                )
+                slots.append(
+                    CastSlotSchema(
+                        slot_id="core_support_1",
+                        tier="core_support",
+                        story_function=self._story_function_from_role_label(
+                            support_label,
+                            default="ally",
+                        ),
+                        brief_label=support_label,
+                        source_evidence=[support_label],
+                        gender_hint=self._gender_hint_from_label(support_label),
+                        objective="帮助主线推进或提供关键资源。",
+                        must_appear_in=["opening", "midpoint"],
+                        order_priority=3,
+                        notes="作为高频配角存在。",
+                    )
+                )
+            return CastAnalysisSchema(
+                story_shape="dual_lead_with_supporting_cast",
+                recommended_core_cast_count=recommended_count,
+                requires_dual_leads=True,
+                explicit_counterpart=False,
+                prefers_male_female_pair=prefers_pair,
+                cast_strategy="先固定两位 lead，再按剧情需要补 core_support；不要把所有 supporting 都挤进核心阵容。",
+                chapter_participation_rule="关键推进章节尽量覆盖两位 lead，core_support 在需要时加入，不要求全程跟随。",
+                ordering_rule="角色表先展开 lead，再展开 core_support。",
+                slots=slots,
+                relationships=relationships,
+            )
+
+        lead_label = role_labels[0] if role_labels else "主角"
+        slots.append(
+            CastSlotSchema(
+                slot_id="lead_1",
+                tier="lead",
+                story_function="protagonist",
+                brief_label=lead_label,
+                source_evidence=[lead_label],
+                gender_hint=self._gender_hint_from_label(lead_label),
+                objective="推动主线事件。",
+                must_appear_in=["opening", "midpoint", "climax", "ending"],
+                order_priority=1,
+                notes="必须保持叙事中心地位。",
+            )
+        )
+        if recommended_count >= 2:
+            support_label = (
+                role_labels[1]
+                if len(role_labels) >= 2
+                else "主角的高频互动对象"
+            )
+            slots.append(
+                CastSlotSchema(
+                    slot_id="core_support_1",
+                    tier="core_support",
+                    story_function=self._story_function_from_role_label(
+                        support_label,
+                        default="ally",
+                    ),
+                    brief_label=support_label,
+                    source_evidence=[support_label],
+                    gender_hint=self._gender_hint_from_label(support_label),
+                    objective="协助、阻拦或映照主角。",
+                    must_appear_in=["opening", "midpoint"],
+                    order_priority=2,
+                    notes="高频配角，不是一次性路人。",
+                )
+            )
+            relationships.append(
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="core_support_1",
+                    relationship_type="support_dynamic",
+                    priority=1,
+                    summary="高频互动对象负责映照主角状态。",
+                )
+            )
+        if recommended_count >= 3:
+            pressure_label = (
+                role_labels[2]
+                if len(role_labels) >= 3
+                else "主角的外部阻力来源"
+            )
+            slots.append(
+                CastSlotSchema(
+                    slot_id="core_support_2",
+                    tier="core_support",
+                    story_function=self._story_function_from_role_label(
+                        pressure_label,
+                        default="antagonist",
+                    ),
+                    brief_label=pressure_label,
+                    source_evidence=[pressure_label],
+                    gender_hint=self._gender_hint_from_label(pressure_label),
+                    objective="制造明确冲突或限制条件。",
+                    must_appear_in=["midpoint", "climax"],
+                    order_priority=3,
+                    notes="承担主要对抗压力。",
+                )
+            )
+        return CastAnalysisSchema(
+            story_shape="single_lead_with_supporting_cast",
+            recommended_core_cast_count=recommended_count,
+            requires_dual_leads=False,
+            explicit_counterpart=False,
+            prefers_male_female_pair=False,
+            cast_strategy="以 lead_1 为中心构建核心 cast，再补充 1 到 2 位高频配角承担支撑和阻力功能。",
+            chapter_participation_rule="lead_1 必须贯穿始终；core_support 角色按关键节点出场，不要求每章齐全。",
+            ordering_rule="角色表第一位永远是 lead_1，其后再按 core_support 优先级展开。",
+            slots=slots,
+            relationships=relationships,
+        )
+
+    def _fallback_recommended_core_cast_count(
+        self,
+        brief: StoryBrief,
+        *,
+        explicit_counterpart: bool,
+        requires_dual_leads: bool,
+    ) -> int:
+        extracted_role_count = count_role_labels_in_brief(brief, limit=6)
+        if brief.chapter_count <= 1:
+            base_count = 2 if explicit_counterpart else 3
+            return max(base_count, min(extracted_role_count, 4))
+        if brief.chapter_count <= 3:
+            base_count = 4 if requires_dual_leads else 4
+            return max(base_count, min(extracted_role_count, 5))
+        base_count = 5 if requires_dual_leads else 4
+        return max(base_count, min(extracted_role_count, 5))
+
     def _fallback_character_roster(
         self,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
+        cast_analysis: CastAnalysisSchema | None = None,
     ) -> CharacterRosterSchema:
         names = cycle(DEFAULT_CHARACTER_NAMES)
-        roles = [
-            "主角",
-            "对手 / 镜像角色",
-            "盟友 / 情感支点",
-            "关键证人",
-            "幕后操盘者",
-        ]
-        genders = ["男", "女", "女", "男", "未指定"]
+        analysis = cast_analysis or self._fallback_cast_analysis(brief, architecture)
+        slots = analysis.primary_slots(max(1, analysis.recommended_core_cast_count))
         characters = []
-        for _ in range(self.major_character_count):
+        target_count = max(self.major_character_count, max(1, analysis.recommended_core_cast_count))
+        for index in range(target_count):
+            slot = slots[index] if index < len(slots) else CastSlotSchema(
+                slot_id=f"supporting_{index - len(slots) + 1}",
+                tier="supporting",
+                story_function="supporting",
+                brief_label=f"补位角色 {index + 1}",
+                source_evidence=[],
+                gender_hint="未指定",
+                objective="补充信息、制造环境压力或支撑场景成立。",
+                must_appear_in=[],
+                order_priority=index + 1,
+                notes="补位生成的 supporting 角色。",
+            )
             name = next(names)
-            role = roles[len(characters) % len(roles)]
-            gender = genders[len(characters) % len(genders)]
+            role = self._role_from_cast_slot(slot)
+            gender = self._resolved_cast_slot_gender(slot, brief, index)
             voice_profile = self._build_fallback_voice_profile(
                 brief=brief,
                 role=role,
             )
+            desire = slot.objective.strip() or f"解开与《{brief.title_hint}》主线相关的真相"
+            conflict = self._conflict_from_cast_slot(slot)
+            arc = self._arc_from_cast_slot(slot)
+            image_prompt = (
+                f"{name}，{gender}，{role}，青年到中青年年龄段，体型稳定，{brief.tone}，"
+                f"{'、'.join(architecture.visual_motifs)}，电影感角色肖像，槽位：{slot.slot_id}"
+            )
             characters.append(
                 {
+                    "cast_slot_id": slot.slot_id,
                     "name": name,
                     "role": role,
                     "gender": gender,
-                    "desire": f"解开与《{brief.title_hint}》主线相关的真相",
-                    "conflict": "越接近真相，代价越大，关系也越难维系。",
-                    "arc": "从试探和保留，逐步走向主动承担。",
+                    "desire": desire,
+                    "conflict": conflict,
+                    "arc": arc,
                     "visual_signature": list(architecture.visual_motifs[:2]) + [brief.genre],
                     "voice_style": voice_profile.voice_style,
                     "voice_profile": voice_profile.model_dump(),
-                    "image_prompt": (
-                        f"{name}，{gender}，{role}，青年到中青年年龄段，{brief.tone}，"
-                        f"{'、'.join(architecture.visual_motifs)}，电影感角色肖像"
-                    ),
+                    "image_prompt": image_prompt,
                 }
             )
         return CharacterRosterSchema.model_validate({"characters": characters})
@@ -76,14 +415,17 @@ class NovelFallbackMixin:
         self,
         brief: StoryBrief,
         character_roster: CharacterRosterSchema,
+        cast_analysis: CastAnalysisSchema | None = None,
     ) -> ChapterPlanSetSchema:
         anchors = brief.must_include or ["关键线索", "失控夜晚", "旧档案"]
         anchor_cycle = cycle(anchors)
         lead_names = [item.name for item in character_roster.characters]
+        analysis = cast_analysis
         chapters: list[dict[str, Any]] = []
 
         for index in range(1, brief.chapter_count + 1):
             anchor = next(anchor_cycle)
+            featured_count = 2 if analysis is not None and analysis.requires_dual_leads else 1
             chapters.append(
                 {
                     "number": index,
@@ -97,11 +439,97 @@ class NovelFallbackMixin:
                         "一个更直接的危险事件迫使主角改变策略。",
                     ][: self.chapter_scene_count],
                     "cliffhanger": f"与“{anchor}”直接相关的人或证据突然出现，改变整个局势。",
-                    "featured_characters": lead_names[: min(2, len(lead_names))],
+                    "featured_characters": lead_names[
+                        : min(max(1, featured_count), len(lead_names))
+                    ],
                 }
             )
 
         return ChapterPlanSetSchema.model_validate({"chapters": chapters})
+
+    def _role_from_cast_slot(self, slot: CastSlotSchema) -> str:
+        if slot.story_function == "protagonist":
+            return "主角"
+        if slot.story_function == "love_interest":
+            return "关系对位角色 / 情感对象"
+        if slot.story_function == "counterpart":
+            return "关键对位角色"
+        if slot.story_function == "ally":
+            return "盟友 / 情感支点"
+        if slot.story_function == "mentor":
+            return "导师 / 信息引路人"
+        if slot.story_function == "handler":
+            return "情报联络人 / 执行支点"
+        if slot.story_function == "witness":
+            return "见证者 / 关键知情人"
+        if slot.story_function == "antagonist":
+            return "对手 / 外部阻力"
+        if slot.story_function == "obstacle":
+            return "外部阻力 / 误会制造者"
+        return "支持角色"
+
+    def _resolved_cast_slot_gender(
+        self,
+        slot: CastSlotSchema,
+        brief: StoryBrief,
+        index: int,
+    ) -> str:
+        if slot.gender_hint in {"男", "女"}:
+            return slot.gender_hint
+        label_gender = self._gender_hint_from_label(slot.brief_label)
+        if label_gender in {"男", "女"}:
+            return label_gender
+        inferred_pair = infer_primary_character_genders(brief)
+        if inferred_pair is not None and index < 2:
+            return inferred_pair[index]
+        return "未指定"
+
+    def _story_function_from_role_label(
+        self,
+        label: str,
+        *,
+        default: str,
+    ) -> str:
+        if any(token in label for token in ("恋人", "前任", "未婚妻", "未婚夫", "丈夫", "妻子")):
+            return "love_interest" if default in {"love_interest", "counterpart"} else "ally"
+        if any(token in label for token in ("线人", "搭档", "朋友", "室友", "同学", "助理")):
+            return "handler" if "线人" in label else "ally"
+        if any(token in label for token in ("警察", "警探", "侦探", "证人", "医生", "律师", "父亲", "母亲")):
+            return "witness"
+        if any(token in label for token in ("继承人", "嫌疑人", "老板", "总监", "投资人", "保镖")):
+            return "antagonist" if default == "antagonist" else "obstacle"
+        if any(token in label for token in ("老师", "教授")):
+            return "mentor"
+        return default
+
+    def _gender_hint_from_label(
+        self,
+        label: str,
+        fallback: str = "未指定",
+    ) -> str:
+        if any(token in label for token in ("女生", "女人", "少女", "妻子", "女儿", "姐姐", "妹妹", "未婚妻")):
+            return "女"
+        if any(token in label for token in ("男生", "男人", "少年", "丈夫", "儿子", "哥哥", "弟弟", "未婚夫")):
+            return "男"
+        return fallback
+
+    def _conflict_from_cast_slot(self, slot: CastSlotSchema) -> str:
+        if slot.story_function == "protagonist":
+            return "想主动推进局势，却要付出更高代价。"
+        if slot.story_function in {"love_interest", "counterpart"}:
+            return "既被主线牵引，又在保护自己。"
+        if slot.story_function in {"ally", "witness"}:
+            return "想帮助主角，但也会被局势反噬。"
+        if slot.story_function in {"antagonist", "obstacle"}:
+            return "通过施压或阻拦改变主线走向。"
+        return "和主线发生交叉时必须站队。"
+
+    def _arc_from_cast_slot(self, slot: CastSlotSchema) -> str:
+        if slot.tier == "lead":
+            return "从试探和保留，逐步走向主动承担。"
+        if slot.tier == "core_support":
+            return "从辅助或阻拦，逐步暴露更真实的立场。"
+        return "在有限出场中完成明确功能。"
 
     def _fallback_chapter_draft(
         self,

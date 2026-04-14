@@ -10,11 +10,11 @@ export const state = {
   storySourceSavingKeys: new Set(),
   storySourceMessages: new Map(),
   currentPage: "home",
+  projectListQuery: "",
+  projectListStatus: "all",
   lastSubmittedTaskId: null,
-  selectedQueueTaskId: null,
   selectedProjectId: null,
   selectedProjectTaskId: null,
-  queueDetailTab: "overview",
   projectDetailTab: "overview",
   artifactsByTaskId: new Map(),
   artifactVersionByTaskId: new Map(),
@@ -24,7 +24,7 @@ export const state = {
 };
 
 export const DETAIL_TABS = [
-  { id: "overview", label: "时间线", queueLabel: "概览" },
+  { id: "overview", label: "时间线" },
   { id: "story", label: "小说" },
   { id: "images", label: "素材库" },
   { id: "videos", label: "成片" },

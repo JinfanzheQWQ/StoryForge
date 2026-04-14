@@ -22,9 +22,7 @@ export async function submitProject(event) {
     state.lastSubmittedTaskId = result.task_id;
     state.selectedProjectId = result.project_id;
     state.selectedProjectTaskId = result.task_id;
-    state.selectedQueueTaskId = result.task_id;
-    state.currentPage = "queue";
-    state.queueDetailTab = "overview";
+    state.currentPage = "project-detail";
     setSubmitStatus(
       projectId
         ? `已为当前故事创建新的文本版本：${compactId(result.task_id)}`
@@ -44,8 +42,7 @@ export async function submitStageJob(endpoint, payload, successMessage) {
   state.lastSubmittedTaskId = result.task_id;
   state.selectedProjectId = result.project_id;
   state.selectedProjectTaskId = payload.source_task_id;
-  state.selectedQueueTaskId = result.task_id;
-  state.currentPage = "queue";
+  state.currentPage = "project-detail";
   elements.pollIndicator.textContent = `${successMessage}：${compactId(result.task_id)}`;
   await refreshTasks();
 }

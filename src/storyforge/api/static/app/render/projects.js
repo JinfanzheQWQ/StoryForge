@@ -9,44 +9,127 @@ import {
   emptyStateCard,
   escapeAttr,
   escapeHtml,
+  filterProjects,
+  findPreviewAsset,
   formatShortTime,
   formatTime,
   getProjectRuns,
+  getProjectRunsFromTasks,
   getRunStageStatus,
   getStorySourceRevision,
   initialLabel,
   metricCard,
+  summarizeRunProgress,
   stageStatusLabel,
   statusLabel,
 } from "../utils.js";
 import { renderRunDetail } from "./detail.js";
 import { renderInto } from "./patch.js";
 
+function renderProjectCardMedia(project, currentRun) {
+  const previewAsset = findPreviewAsset(currentRun?.latestArtifacts);
+  if (!previewAsset) {
+    return `
+      <div class="project-card-media empty">
+        <span>Story ${escapeHtml(compactId(project.project_id))}</span>
+        <strong>${escapeHtml(initialLabel(project.story_title || project.title_hint))}</strong>
+      </div>
+    `;
+  }
+
+  if (previewAsset.kind === "video") {
+    return `
+      <div class="project-card-media">
+        <span>${escapeHtml(previewAsset.label)}</span>
+        <video preload="metadata" muted src="${escapeAttr(previewAsset.url)}"></video>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="project-card-media">
+      <span>${escapeHtml(previewAsset.label)}</span>
+      <img src="${escapeAttr(previewAsset.url)}" alt="${escapeAttr(previewAsset.name)}" loading="lazy" />
+    </div>
+  `;
+}
+
 function renderProjectCard(project) {
   const activeClass = project.project_id === state.selectedProjectId ? "active" : "";
   const title = project.story_title || project.title_hint;
+  const currentRun = getProjectRunsFromTasks(project.project_id)[0] || null;
+  const progress = currentRun
+    ? summarizeRunProgress(currentRun)
+    : {
+        completedCount: project.completed_run_count ? 5 : 0,
+        percent: project.latest_status === "completed" ? 100 : 12,
+        label: statusLabel(project.latest_status || "queued"),
+      };
 
   return `
-    <article class="project-card ${activeClass}">
-      <div class="project-card-header project-card-shell">
+    <article
+      class="project-card ${activeClass}"
+      data-select-project="${escapeAttr(project.project_id)}"
+      role="button"
+      tabindex="0"
+      aria-label="打开项目 ${escapeAttr(title)} 的详情"
+    >
+      ${renderProjectCardMedia(project, currentRun)}
+      <div class="project-card-header project-card-shell project-card-shell-rich">
         <div class="story-avatar">${escapeHtml(initialLabel(title))}</div>
-        <div class="project-card-main">
-          <button type="button" class="project-select-button" data-select-project="${escapeAttr(project.project_id)}">
-            <h3>${escapeHtml(title)}</h3>
-          </button>
-          <div class="project-meta">
-            <span>故事编号 ${escapeHtml(compactId(project.project_id))}</span>
-          </div>
+        <div class="project-card-main project-card-main-rich">
+          <h3>${escapeHtml(title)}</h3>
           <div class="project-meta">
             <span>${project.run_count} 个版本</span>
-            <span>${project.completed_run_count} 次完成</span>
             <span>${project.full_story_count} 条总片</span>
+            <span>${escapeHtml(formatShortTime(project.updated_at))}</span>
+          </div>
+          <div class="project-card-progress">
+            <div class="progress-card-bar" aria-hidden="true">
+              <span style="width: ${progress.percent}%"></span>
+            </div>
+            <strong>${progress.completedCount} / 5 阶段</strong>
+            <small>${escapeHtml(progress.label)}</small>
           </div>
           <p class="project-note">${escapeHtml(buildProjectSummary(project))}</p>
         </div>
         <span class="badge ${project.latest_status || "queued"}">${statusLabel(project.latest_status || "queued")}</span>
       </div>
     </article>
+  `;
+}
+
+function groupProjects(projects) {
+  const groups = [
+    { key: "running", title: "制作中", description: "还在继续推进的项目。", items: [] },
+    { key: "completed", title: "已完成", description: "已经有较完整结果的项目。", items: [] },
+    { key: "queued", title: "待开始", description: "刚创建或等待继续推进的项目。", items: [] },
+    { key: "failed", title: "异常", description: "需要回看失败原因的项目。", items: [] },
+  ];
+  const groupMap = new Map(groups.map((group) => [group.key, group]));
+  projects.forEach((project) => {
+    const status = project.latest_status || "queued";
+    const target = groupMap.get(status) || groupMap.get("queued");
+    target.items.push(project);
+  });
+  return groups.filter((group) => group.items.length > 0);
+}
+
+function renderProjectGroup(group) {
+  return `
+    <section class="project-group">
+      <div class="project-group-head">
+        <div>
+          <p class="section-kicker">${escapeHtml(group.title)}</p>
+          <h3>${escapeHtml(group.title)}项目</h3>
+          <p>${escapeHtml(group.description)}</p>
+        </div>
+        <span class="doc-section-count">${group.items.length} 个</span>
+      </div>
+      <div class="project-library-cards">
+        ${group.items.map(renderProjectCard).join("")}
+      </div>
+    </section>
   `;
 }
 
@@ -124,27 +207,8 @@ function renderRunSwitchCard(run) {
   `;
 }
 
-function findHeroPreviewAsset(artifacts) {
-  if (!artifacts?.available) {
-    return null;
-  }
-  if (artifacts.full_story) {
-    return { ...artifacts.full_story, kind: "video", label: "完整成片" };
-  }
-  if (artifacts.rendered_clips.length) {
-    return { ...artifacts.rendered_clips[0], kind: "video", label: "视频片段" };
-  }
-  if (artifacts.scene_frames.length) {
-    return { ...artifacts.scene_frames[0], kind: "image", label: "场景画面" };
-  }
-  if (artifacts.character_images.length) {
-    return { ...artifacts.character_images[0], kind: "image", label: "角色定妆" };
-  }
-  return null;
-}
-
 function renderProjectHeroPreview(artifacts) {
-  const asset = findHeroPreviewAsset(artifacts);
+  const asset = findPreviewAsset(artifacts);
   if (!asset) {
     return `
       <div class="project-hero-preview empty">
@@ -170,6 +234,7 @@ function renderProjectHero(detail, runs, selectedRun, artifacts) {
   const title = detail.story_title || detail.title_hint;
   const latestStage = selectedRun ? buildPipelineStageLabel(selectedRun.latestTask, selectedRun) : "等待开始";
   const fullStoryLabel = artifacts?.full_story ? "已有总片" : "暂无总片";
+  const progress = summarizeRunProgress(selectedRun);
 
   return `
     <section class="project-hero-card">
@@ -187,6 +252,7 @@ function renderProjectHero(detail, runs, selectedRun, artifacts) {
       <div class="project-hero-panel">
         ${renderProjectHeroPreview(artifacts)}
         <div class="project-hero-metrics">
+          ${metricCard("制作进度", `${progress.completedCount} / 5`)}
           ${metricCard("最近更新", formatShortTime(detail.updated_at))}
           ${metricCard("角色图", String(artifacts?.character_images?.length || 0))}
           ${metricCard("场景帧", String(artifacts?.scene_frames?.length || 0))}
@@ -223,7 +289,20 @@ export function renderProjectList() {
     return;
   }
 
-  renderInto(elements.projectList, state.projects.map(renderProjectCard).join(""));
+  const filteredProjects = filterProjects(
+    state.projects,
+    state.projectListQuery,
+    state.projectListStatus,
+  );
+  if (filteredProjects.length === 0) {
+    renderInto(elements.projectList, emptyStateCard(
+      "没有匹配的故事",
+      "调整搜索词或状态筛选后，再试一次。",
+    ));
+    return;
+  }
+
+  renderInto(elements.projectList, groupProjects(filteredProjects).map(renderProjectGroup).join(""));
 }
 
 export function renderProjectDetail() {
@@ -231,7 +310,7 @@ export function renderProjectDetail() {
   if (!detail) {
     renderInto(elements.projectDetailView, emptyStateCard(
       "等待选择故事",
-      "从左侧选择一个故事后，这里会展示它的版本历史和资产对比。",
+      "从作品库进入一个故事后，这里会展示它的版本历史、阶段状态与全部资产。",
     ));
     return;
   }

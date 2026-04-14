@@ -6,30 +6,27 @@ import {
   buildPipelineStageLabel,
   chip,
   compactId,
-  escapeAttr,
   escapeHtml,
   runModeLabel,
   statusLabel,
 } from "../utils.js";
 import { renderRunStageActions, renderRunTabContent } from "./detail_assets.js";
 
-function renderDetailTab(tab, activeTab, context) {
+function renderDetailTab(tab, activeTab) {
   const activeClass = tab.id === activeTab ? "active" : "";
-  const label = context === "queue" ? tab.queueLabel || tab.label : tab.label;
   return `
     <button
       type="button"
       class="detail-tab ${activeClass}"
-      data-detail-context="${escapeAttr(context)}"
-      data-detail-tab="${escapeAttr(tab.id)}"
+      data-detail-tab="${escapeHtml(tab.id)}"
     >
-      ${escapeHtml(label)}
+      ${escapeHtml(tab.label)}
     </button>
   `;
 }
 
 export function renderRunDetail(task, artifacts, context, run = null) {
-  const activeTab = context === "project" ? state.projectDetailTab : state.queueDetailTab;
+  const activeTab = state.projectDetailTab;
   const displayTask = run?.latestTask || task;
   const stageText = buildPipelineStageLabel(displayTask, run);
   const errorMessage = buildTaskErrorMessage(displayTask);
@@ -37,7 +34,7 @@ export function renderRunDetail(task, artifacts, context, run = null) {
   return `
     <div class="detail-header">
       <div>
-        <p class="section-kicker">${context === "project" ? "Selected Version" : "Task Detail"}</p>
+        <p class="section-kicker">Selected Version</p>
         <h2>${escapeHtml(buildTaskTitle(task, artifacts))}</h2>
         <p class="detail-subtitle">${escapeHtml(buildTaskDetailSubtitle(task, run))}</p>
       </div>
@@ -63,13 +60,21 @@ export function renderRunDetail(task, artifacts, context, run = null) {
           `
           : ""
       }
-      ${context === "project" && run ? renderRunStageActions(run) : ""}
+      ${run ? renderRunStageActions(run) : ""}
     </section>
 
-    <div class="detail-tabs">
-      ${DETAIL_TABS.map((tab) => renderDetailTab(tab, activeTab, context)).join("")}
-    </div>
-
-    ${renderRunTabContent(task, artifacts, context, activeTab, run)}
+    <section class="workspace-content-shell">
+      <div class="workspace-content-head">
+        <div>
+          <p class="section-kicker">Content Navigator</p>
+          <h3>查看当前版本内容</h3>
+          <p class="asset-note">按故事正文、素材、视频和文件切换，当前页面始终围绕同一个制作版本展开。</p>
+        </div>
+        <div class="detail-tabs">
+          ${DETAIL_TABS.map((tab) => renderDetailTab(tab, activeTab)).join("")}
+        </div>
+      </div>
+      ${renderRunTabContent(task, artifacts, context, activeTab, run)}
+    </section>
   `;
 }

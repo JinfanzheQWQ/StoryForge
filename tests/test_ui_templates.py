@@ -22,7 +22,7 @@ class UiTemplateTestCase(unittest.TestCase):
         self.assertIn('data-page-panel="home"', html)
         self.assertIn('data-page-panel="create"', html)
         self.assertIn('data-page-panel="projects"', html)
-        self.assertIn('data-page-panel="queue"', html)
+        self.assertIn('data-page-panel="project-detail"', html)
         self.assertIn('id="lightbox"', html)
         self.assertIn('id="confirm-dialog"', html)
         self.assertNotIn("{{ include", html)

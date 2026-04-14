@@ -67,6 +67,26 @@ function buildRunGroup(rootTaskId, tasks) {
   };
 }
 
+export function getProjectRunsFromTasks(projectId, tasks = state.tasks) {
+  const projectTasks = tasks.filter((task) => task.project_id === projectId);
+  if (!projectTasks.length) {
+    return [];
+  }
+
+  const runMap = new Map();
+  projectTasks.forEach((task) => {
+    const rootTaskId = getPipelineRootTaskId(task);
+    if (!runMap.has(rootTaskId)) {
+      runMap.set(rootTaskId, []);
+    }
+    runMap.get(rootTaskId).push(task);
+  });
+
+  return Array.from(runMap.entries())
+    .map(([rootTaskId, items]) => buildRunGroup(rootTaskId, items))
+    .sort((left, right) => Date.parse(right.latestTask.created_at) - Date.parse(left.latestTask.created_at));
+}
+
 export function getTaskRun(taskId, tasks = state.tasks) {
   const task = tasks.find((item) => item.task_id === taskId);
   if (!task) {
@@ -81,19 +101,51 @@ export function getTaskRun(taskId, tasks = state.tasks) {
 }
 
 export function getProjectRuns(detail) {
-  const runMap = new Map();
+  return getProjectRunsFromTasks(detail.project_id, detail.tasks);
+}
 
-  detail.tasks.forEach((task) => {
-    const rootTaskId = getPipelineRootTaskId(task);
-    if (!runMap.has(rootTaskId)) {
-      runMap.set(rootTaskId, []);
-    }
-    runMap.get(rootTaskId).push(task);
-  });
+export function findPreviewAsset(artifacts) {
+  if (!artifacts?.available) {
+    return null;
+  }
+  if (artifacts.full_story) {
+    return { ...artifacts.full_story, kind: "video", label: "完整成片" };
+  }
+  if (artifacts.rendered_clips.length) {
+    return { ...artifacts.rendered_clips[0], kind: "video", label: "视频片段" };
+  }
+  if (artifacts.scene_frames.length) {
+    return { ...artifacts.scene_frames[0], kind: "image", label: "场景画面" };
+  }
+  if (artifacts.character_images.length) {
+    return { ...artifacts.character_images[0], kind: "image", label: "角色定妆" };
+  }
+  return null;
+}
 
-  return Array.from(runMap.entries())
-    .map(([rootTaskId, tasks]) => buildRunGroup(rootTaskId, tasks))
-    .sort((left, right) => Date.parse(right.latestTask.created_at) - Date.parse(left.latestTask.created_at));
+export function summarizeRunProgress(run, totalStages = 5) {
+  if (!run?.rootTask) {
+    return {
+      completedCount: 0,
+      percent: 0,
+      label: "等待开始",
+    };
+  }
+
+  const storySourceRevision = getStorySourceRevision(run.rootTask);
+  const statuses = [
+    run.rootTask.status,
+    getRunStageStatus(run.latestAnalysisTask, storySourceRevision),
+    getRunStageStatus(run.latestCharacterTask, storySourceRevision),
+    getRunStageStatus(run.latestSceneTask, storySourceRevision),
+    getRunStageStatus(run.latestVideoTask, storySourceRevision),
+  ];
+  const completedCount = statuses.filter((status) => status === "completed").length;
+  return {
+    completedCount,
+    percent: Math.round((completedCount / totalStages) * 100),
+    label: buildPipelineStageLabel(run.latestTask, run) || statusLabel(run.latestTask.status),
+  };
 }
 
 export function buildTaskTitle(task, artifacts) {
@@ -465,6 +517,29 @@ export function buildProjectSummary(project) {
     return `这个故事已经完成 ${project.completed_run_count} 个版本，可以继续补做角色、场景或视频阶段。`;
   }
   return "故事已经创建，正在等待第一版内容完成。";
+}
+
+export function filterProjects(projects, query, status) {
+  const normalizedQuery = String(query || "").trim().toLowerCase();
+  return projects.filter((project) => {
+    if (status && status !== "all" && (project.latest_status || "queued") !== status) {
+      return false;
+    }
+    if (!normalizedQuery) {
+      return true;
+    }
+    const candidates = [
+      project.story_title,
+      project.title_hint,
+      project.latest_status,
+      project.brief?.idea,
+      project.brief?.genre,
+      project.brief?.tone,
+    ]
+      .filter(Boolean)
+      .map((item) => String(item).toLowerCase());
+    return candidates.some((item) => item.includes(normalizedQuery));
+  });
 }
 
 export function escapeHtml(value) {

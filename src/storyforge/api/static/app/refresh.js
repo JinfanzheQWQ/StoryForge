@@ -54,7 +54,7 @@ function isMediaPreviewActive() {
   }
 
   return Array.from(
-    document.querySelectorAll("#project-detail-view video, #queue-detail-view video"),
+    document.querySelectorAll("#project-detail-view video"),
   ).some((media) => !media.paused && !media.ended);
 }
 
@@ -64,14 +64,9 @@ function ensureSelections() {
 
   if (state.lastSubmittedTaskId && taskIds.has(state.lastSubmittedTaskId)) {
     const submittedTask = state.tasks.find((task) => task.task_id === state.lastSubmittedTaskId);
-    state.selectedQueueTaskId = state.lastSubmittedTaskId;
     state.selectedProjectId = submittedTask?.project_id || state.selectedProjectId;
     state.selectedProjectTaskId = submittedTask ? getPipelineRootTaskId(submittedTask) : state.lastSubmittedTaskId;
     state.lastSubmittedTaskId = null;
-  }
-
-  if (!state.selectedQueueTaskId || !taskIds.has(state.selectedQueueTaskId)) {
-    state.selectedQueueTaskId = state.tasks[0]?.task_id || null;
   }
 
   if (!state.selectedProjectId || !projectIds.has(state.selectedProjectId)) {
@@ -111,12 +106,6 @@ export async function refreshSelectedStorySources() {
     if (locator) {
       targets.set(buildStorySourceKey(locator.projectId, locator.sourceTaskId), locator);
     }
-  }
-
-  const queueTask = state.tasks.find((task) => task.task_id === state.selectedQueueTaskId) || null;
-  const queueLocator = queueTask ? resolveStorySourceLocator(queueTask) : null;
-  if (queueLocator) {
-    targets.set(buildStorySourceKey(queueLocator.projectId, queueLocator.sourceTaskId), queueLocator);
   }
 
   await Promise.allSettled(

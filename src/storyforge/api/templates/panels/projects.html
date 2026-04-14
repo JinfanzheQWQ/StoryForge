@@ -3,34 +3,36 @@
     <header class="page-header">
       <div>
         <p class="section-kicker">Story Library</p>
-        <h2>按故事查看版本与作品资产</h2>
-        <p>这里会把同一个故事的不同制作版本整理在一起，方便比较文本、图片和视频结果。</p>
+        <h2>所有故事项目</h2>
+        <p>这里是完整作品库。先在这一页筛选、搜索和浏览项目，再进入单个故事详情页继续推进制作。</p>
       </div>
     </header>
 
-    <div class="management-layout">
-      <aside class="panel list-panel">
-        <div class="panel-head">
-          <p class="section-kicker">Stories</p>
-          <h2>故事列表</h2>
-          <p>选择一个故事，查看它的版本记录、图片素材和成片结果。</p>
+    <section class="panel project-library-panel">
+      <div class="library-toolbar library-toolbar-wide">
+        <label class="library-search">
+          <span>搜索故事</span>
+          <input
+            id="project-search-input"
+            type="search"
+            placeholder="按标题、题材、想法搜索"
+            autocomplete="off"
+          />
+        </label>
+        <div class="filter-chip-row" id="project-status-filters">
+          <button type="button" class="filter-chip active" data-filter-scope="project" data-filter-status="all">全部</button>
+          <button type="button" class="filter-chip" data-filter-scope="project" data-filter-status="running">制作中</button>
+          <button type="button" class="filter-chip" data-filter-scope="project" data-filter-status="completed">已完成</button>
+          <button type="button" class="filter-chip" data-filter-scope="project" data-filter-status="failed">失败</button>
         </div>
-        <div id="project-list" class="list-stack">
-          <article class="empty-state">
-            <h3>还没有故事</h3>
-            <p>先创建一个故事文本任务，完成后这里会出现对应的故事档案。</p>
-          </article>
-        </div>
-      </aside>
+      </div>
 
-      <section class="panel detail-page">
-        <div id="project-detail-view" class="detail-view">
-          <article class="empty-state">
-            <h3>等待选择故事</h3>
-            <p>从左侧选中一个故事，这里会展示版本对比、阶段状态以及图片和视频资产。</p>
-          </article>
-        </div>
-      </section>
-    </div>
+      <div id="project-list" class="project-library-grid">
+        <article class="empty-state">
+          <h3>还没有故事</h3>
+          <p>先创建一个故事文本任务，完成后这里会出现对应的故事档案。</p>
+        </article>
+      </div>
+    </section>
   </div>
 </section>

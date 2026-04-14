@@ -506,13 +506,6 @@ button:disabled {
   line-height: 1.58;
 }
 
-.queue-toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
 .home-stage-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -555,4 +548,3 @@ button:disabled {
     linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(246, 250, 247, 0.82));
   box-shadow: var(--shadow-sm);
 }
-

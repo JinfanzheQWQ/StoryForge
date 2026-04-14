@@ -1,12 +1,16 @@
 import { elements } from "../dom.js";
+import { syncLocationFromState } from "../route_state.js";
 import { state } from "../state.js";
 import { renderHomeOverview } from "./home.js";
 import { renderProjectDetail, renderProjectList } from "./projects.js";
-import { renderQueueDetail, renderQueueList } from "./queue.js";
 
 function renderPageTabs() {
   elements.pageTabs.querySelectorAll("[data-page]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.page === state.currentPage);
+    const matches = (
+      button.dataset.page === state.currentPage
+      || (state.currentPage === "project-detail" && button.dataset.page === "projects")
+    );
+    button.classList.toggle("active", matches);
   });
 
   document.querySelectorAll("[data-page-panel]").forEach((panel) => {
@@ -23,10 +27,9 @@ export function updateStats() {
 
 export function renderApplication() {
   state.galleries.clear();
+  syncLocationFromState();
   renderPageTabs();
   renderHomeOverview();
   renderProjectList();
   renderProjectDetail();
-  renderQueueList();
-  renderQueueDetail();
 }

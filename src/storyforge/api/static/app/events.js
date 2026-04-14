@@ -13,12 +13,11 @@ import {
   prepareRerunProject,
   selectProject,
   selectProjectRun,
-  selectQueueTask,
   setCurrentPage,
 } from "./navigation.js";
 import { refreshTasks } from "./refresh.js";
-import { renderProjectDetail } from "./render/projects.js";
-import { renderQueueDetail } from "./render/queue.js";
+import { renderProjectDetail, renderProjectList } from "./render/projects.js";
+import { syncLocationFromState } from "./route_state.js";
 import {
   saveStorySourceDraft,
   updateStoryChapterDraft,
@@ -32,6 +31,37 @@ function handlePageTabClick(event) {
     return;
   }
   setCurrentPage(button.dataset.page);
+}
+
+function handleLibraryFilterClick(event) {
+  const button = event.target.closest("[data-filter-scope][data-filter-status]");
+  if (!button) {
+    return;
+  }
+
+  const scope = button.dataset.filterScope;
+  const status = button.dataset.filterStatus || "all";
+  if (scope === "project") {
+    state.projectListStatus = status;
+    syncFilterChipGroup(elements.projectStatusFilters, state.projectListStatus);
+    renderProjectList();
+  }
+}
+
+function syncFilterChipGroup(container, activeStatus) {
+  if (!container) {
+    return;
+  }
+  container.querySelectorAll("[data-filter-status]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.filterStatus === activeStatus);
+  });
+}
+
+function handleLibrarySearchInput(event) {
+  if (event.target === elements.projectSearchInput) {
+    state.projectListQuery = elements.projectSearchInput.value;
+    renderProjectList();
+  }
 }
 
 function handleWorkspaceNavigation(event) {
@@ -53,6 +83,18 @@ async function handleProjectListClick(event) {
     return;
   }
   await selectProject(projectButton.dataset.selectProject);
+}
+
+async function handleProjectListKeyDown(event) {
+  const projectCard = event.target.closest("[data-select-project]");
+  if (!projectCard) {
+    return;
+  }
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  event.preventDefault();
+  await selectProject(projectCard.dataset.selectProject);
 }
 
 async function submitStageFromButton(
@@ -130,12 +172,10 @@ function clearDeletedProjectState(projectId) {
   });
   state.projects = state.projects.filter((project) => project.project_id !== projectId);
   state.tasks = state.tasks.filter((task) => task.project_id !== projectId);
-  if (deletedTaskIds.has(state.selectedQueueTaskId)) {
-    state.selectedQueueTaskId = null;
-  }
   if (state.selectedProjectId === projectId) {
     state.selectedProjectId = null;
     state.selectedProjectTaskId = null;
+    state.currentPage = "projects";
   }
 }
 
@@ -187,6 +227,7 @@ async function handleProjectDetailClick(event) {
   const tabButton = event.target.closest("[data-detail-tab]");
   if (tabButton) {
     state.projectDetailTab = tabButton.dataset.detailTab;
+    syncLocationFromState();
     renderProjectDetail();
     return;
   }
@@ -263,51 +304,8 @@ async function handleProjectDetailClick(event) {
   }
 }
 
-function handleQueueListClick(event) {
-  const button = event.target.closest("[data-select-queue-task]");
-  if (!button) {
-    return;
-  }
-  void selectQueueTask(button.dataset.selectQueueTask);
-}
-
-async function handleQueueDetailClick(event) {
-  const tabButton = event.target.closest("[data-detail-tab]");
-  if (tabButton) {
-    state.queueDetailTab = tabButton.dataset.detailTab;
-    renderQueueDetail();
-    return;
-  }
-
-  const saveStoryButton = event.target.closest("[data-save-story-source]");
-  if (saveStoryButton) {
-    try {
-      await saveStorySourceDraft(
-        saveStoryButton.dataset.storySourceProject,
-        saveStoryButton.dataset.saveStorySource,
-      );
-      await refreshTasks();
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "故事文本保存失败。";
-      renderQueueDetail();
-    }
-    return;
-  }
-
-  const analysisButton = event.target.closest("[data-generate-story-analysis]");
-  if (analysisButton) {
-    await submitStoryAnalysisFromButton(analysisButton);
-    return;
-  }
-
-  const previewButton = event.target.closest("[data-preview-group]");
-  if (previewButton) {
-    openLightbox(previewButton.dataset.previewGroup, Number(previewButton.dataset.previewIndex));
-  }
-}
-
-function handleStorySourceInput(event, context) {
-  const container = context === "project" ? elements.projectDetailView : elements.queueDetailView;
+function handleStorySourceInput(event) {
+  const container = elements.projectDetailView;
 
   const titleInput = event.target.closest("[data-story-title-input]");
   if (titleInput) {
@@ -403,25 +401,27 @@ export function bindEvents() {
   elements.projectList.addEventListener("click", (event) => {
     void handleProjectListClick(event);
   });
+  elements.projectList.addEventListener("keydown", (event) => {
+    void handleProjectListKeyDown(event);
+  });
+  elements.projectStatusFilters.addEventListener("click", handleLibraryFilterClick);
+  elements.projectSearchInput.addEventListener("input", handleLibrarySearchInput);
   elements.projectDetailView.addEventListener("click", (event) => {
     void handleProjectDetailClick(event);
   });
   elements.projectDetailView.addEventListener("input", (event) => {
-    handleStorySourceInput(event, "project");
+    handleStorySourceInput(event);
   });
-  elements.queueTaskList.addEventListener("click", handleQueueListClick);
-  elements.queueDetailView.addEventListener("click", (event) => {
-    void handleQueueDetailClick(event);
-  });
-  elements.queueDetailView.addEventListener("input", (event) => {
-    handleStorySourceInput(event, "queue");
-  });
-  elements.refreshButton.addEventListener("click", () => {
-    void refreshTasks();
-  });
+  if (elements.refreshButton) {
+    elements.refreshButton.addEventListener("click", () => {
+      void refreshTasks();
+    });
+  }
   elements.lightbox.addEventListener("click", handleLightboxClick);
   elements.lightboxCloseButton.addEventListener("click", closeLightbox);
   elements.lightboxPrevButton.addEventListener("click", () => stepLightbox(-1));
   elements.lightboxNextButton.addEventListener("click", () => stepLightbox(1));
   window.addEventListener("keydown", handleKeyDown);
+
+  syncFilterChipGroup(elements.projectStatusFilters, state.projectListStatus);
 }

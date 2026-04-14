@@ -60,6 +60,14 @@
     grid-template-columns: 1fr;
   }
 
+  .project-progress-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .project-library-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .project-hero-actions {
     justify-content: flex-start;
   }
@@ -86,9 +94,26 @@
     border-radius: 14px;
   }
 
-  .launch-layout,
-  .management-layout {
+  .launch-layout {
     grid-template-columns: 1fr;
+  }
+
+  .library-toolbar-wide {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .project-group-head,
+  .page-header-detail {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .list-stack,
+  .detail-view,
+  .project-library-grid {
+    max-height: none;
+    overflow: visible;
   }
 
   .launch-footer,
@@ -102,10 +127,16 @@
 
   .project-hero-panel,
   .project-hero-metrics,
+  .progress-hero-panel,
   .run-switch-grid,
   .pipeline-rail,
-  .timeline-preview-grid {
+  .timeline-preview-grid,
+  .project-library-cards {
     grid-template-columns: 1fr;
+  }
+
+  .detail-top-actions {
+    justify-content: flex-start;
   }
 
   .timeline-hero {
@@ -136,7 +167,6 @@
   .home-card,
   .info-panel,
   .form-panel,
-  .list-panel,
   .detail-page {
     padding: 16px;
   }
@@ -159,11 +189,12 @@
   }
 
   .page-header,
+  .project-group-head,
   .story-editor-head,
   .story-chapter-head,
   .doc-section-head,
   .lightbox-head,
-  .queue-toolbar {
+  .workspace-content-head {
     flex-direction: column;
     align-items: flex-start;
   }

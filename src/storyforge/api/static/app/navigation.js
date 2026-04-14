@@ -1,32 +1,25 @@
 import { applyProjectToForm } from "./form.js";
 import { renderApplication } from "./render/application.js";
-import { renderProjectDetail, renderProjectList } from "./render/projects.js";
-import { renderQueueDetail, renderQueueList } from "./render/queue.js";
 import { state } from "./state.js";
 import { refreshSelectedProjectDetail, refreshSelectedStorySources } from "./refresh.js";
 
 export async function selectProject(projectId) {
   state.selectedProjectId = projectId;
   state.projectDetailTab = "overview";
+  state.currentPage = "project-detail";
   await refreshSelectedProjectDetail();
   await refreshSelectedStorySources();
-  renderProjectList();
-  renderProjectDetail();
+  renderApplication();
+  elementsSafeScrollToTop("#project-detail-view");
 }
 
 export async function selectProjectRun(taskId) {
   state.selectedProjectTaskId = taskId;
   state.projectDetailTab = "overview";
+  state.currentPage = "project-detail";
   await refreshSelectedStorySources();
-  renderProjectDetail();
-}
-
-export async function selectQueueTask(taskId) {
-  state.selectedQueueTaskId = taskId;
-  state.queueDetailTab = "overview";
-  await refreshSelectedStorySources();
-  renderQueueList();
-  renderQueueDetail();
+  renderApplication();
+  elementsSafeScrollToTop("#project-detail-view");
 }
 
 export function setCurrentPage(page) {
@@ -42,4 +35,11 @@ export function prepareRerunProject(projectId, onPrepared) {
   applyProjectToForm(detail);
   setCurrentPage("create");
   onPrepared(detail);
+}
+
+function elementsSafeScrollToTop(selector) {
+  const element = document.querySelector(selector);
+  if (element) {
+    element.scrollTo({ top: 0, behavior: "smooth" });
+  }
 }

@@ -225,6 +225,7 @@ class VideoPlanningMixin:
 
     def _build_seedance_manifest(
         self,
+        story_title: str,
         segments: list[VideoSegment],
         scene_images: list[SceneImageTask],
         output_dir: str,
@@ -251,7 +252,7 @@ class VideoPlanningMixin:
             for item in segments
         ]
         return SeedanceManifest(
-            title="segment_video_manifest",
+            title=story_title.strip() or "未命名故事",
             model=self.seedance_config.model,
             base_url=self.seedance_config.base_url,
             clips=clips,

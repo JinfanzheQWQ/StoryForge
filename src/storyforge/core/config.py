@@ -22,8 +22,6 @@ class NovelConfig:
     default_chapter_count: int = 8
     default_chapter_word_target: int = 2500
     chapter_scene_count: int = 3
-    major_character_count: int = 3
-    review_passes: int = 1
 
 
 @dataclass(slots=True)
@@ -140,8 +138,6 @@ class AppConfig:
                 default_chapter_count=novel.get("default_chapter_count", 8),
                 default_chapter_word_target=novel.get("default_chapter_word_target", 2500),
                 chapter_scene_count=novel.get("chapter_scene_count", 3),
-                major_character_count=novel.get("major_character_count", 3),
-                review_passes=novel.get("review_passes", 1),
             ),
             video=VideoConfig(
                 segment_duration_seconds=video.get("segment_duration_seconds", 5),

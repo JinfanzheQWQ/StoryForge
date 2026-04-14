@@ -156,7 +156,12 @@ class NovelToVideoService(
             profile_map,
             output_dir,
         )
-        manifest = self._build_seedance_manifest(segments, scene_images, output_dir)
+        manifest = self._build_seedance_manifest(
+            novel_package.outline.title,
+            segments,
+            scene_images,
+            output_dir,
+        )
 
         return VideoProjectPackage(
             title=novel_package.outline.title,

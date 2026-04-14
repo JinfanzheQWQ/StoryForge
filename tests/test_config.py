@@ -46,7 +46,6 @@ class ConfigTestCase(unittest.TestCase):
         self.assertTrue(config.database.enabled)
         self.assertEqual(config.seedance.subtitle_mode, "burned_in")
         self.assertEqual(config.novel.chapter_scene_count, 1)
-        self.assertEqual(config.novel.major_character_count, 2)
 
     def test_database_password_can_resolve_from_environment(self) -> None:
         with patch.dict(os.environ, {"STORYFORGE_DB_PASSWORD": "root"}, clear=False):

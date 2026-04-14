@@ -24,8 +24,7 @@
 ### Agent / LLM 层
 
 - `LangChain[openai] >= 1.2`
-- `create_agent(...)`
-- `ToolStrategy(schema)`
+- `ChatModel.with_structured_output(...)`
 - `DeepSeek`
 
 ### 媒体与集成层
@@ -70,7 +69,6 @@
 - `Cast Analyzer`
 - `Character Designer`
 - `Chapter Planner`
-- `Chapter Writer`
 - `Editorial Reviewer`
 
 相关代码：
@@ -116,9 +114,15 @@
 
 - 角色化分工
 - 结构化输出
-- deterministic fallback
+- deterministic fallback / repair
 - 可回放中间产物
 - 可插拔模型接入
+
+当前结构化 LLM 调用约定：
+
+- 小说结构化输出使用 LangChain chat model 的 `with_structured_output(method="function_calling")`
+- StoryForge 外层负责 structured retry，默认最多 3 次
+- 不再使用 `create_agent + ToolStrategy` 跑小说结构化输出，避免 DeepSeek OpenAI-compatible 工具消息链兼容问题
 
 当前还没有：
 

@@ -80,6 +80,7 @@
 
   .launch-footer,
   .field-grid,
+  .story-field-grid,
   .detail-metrics,
   .compare-row {
     grid-template-columns: 1fr;
@@ -132,6 +133,9 @@
   }
 
   .page-header,
+  .story-editor-head,
+  .story-chapter-head,
+  .doc-section-head,
   .lightbox-head,
   .queue-toolbar {
     flex-direction: column;

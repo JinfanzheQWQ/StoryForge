@@ -222,6 +222,7 @@ class NovelFallbackMixin:
                         summary="该角色负责向 lead_1 施加现实压力。",
                     )
                 )
+            recommended_count = min(recommended_count, len(slots))
             return CastAnalysisSchema(
                 story_shape="dual_relationship_with_supporting_cast",
                 recommended_core_cast_count=recommended_count,
@@ -301,6 +302,7 @@ class NovelFallbackMixin:
                         notes="作为高频配角存在。",
                     )
                 )
+            recommended_count = min(recommended_count, len(slots))
             return CastAnalysisSchema(
                 story_shape="dual_lead_with_supporting_cast",
                 recommended_core_cast_count=recommended_count,
@@ -384,6 +386,7 @@ class NovelFallbackMixin:
                     notes="承担主要对抗压力。",
                 )
             )
+        recommended_count = min(recommended_count, len(slots))
         return CastAnalysisSchema(
             story_shape="single_lead_with_supporting_cast",
             recommended_core_cast_count=recommended_count,
@@ -410,13 +413,24 @@ class NovelFallbackMixin:
             if story_draft_text
             else len(extract_role_labels_from_brief(brief, limit=6))
         )
+        if extracted_role_count <= 0:
+            extracted_role_count = 0
         if brief.chapter_count <= 1:
-            base_count = 2 if explicit_counterpart else 3
-            return max(base_count, min(extracted_role_count, 4))
+            if explicit_counterpart or requires_dual_leads:
+                if extracted_role_count <= 2:
+                    return 2
+                return min(extracted_role_count, 3)
+            if extracted_role_count <= 1:
+                return 1
+            return min(extracted_role_count, 2)
         if brief.chapter_count <= 3:
-            base_count = 4
-            return max(base_count, min(extracted_role_count, 5))
-        base_count = 5 if requires_dual_leads else 4
+            base_count = 2 if explicit_counterpart or requires_dual_leads else 1
+            if extracted_role_count <= 0:
+                return base_count
+            return max(base_count, min(extracted_role_count, 4))
+        base_count = 3 if requires_dual_leads else 2
+        if extracted_role_count <= 0:
+            return base_count
         return max(base_count, min(extracted_role_count, 5))
 
     def _story_draft_text(
@@ -440,20 +454,7 @@ class NovelFallbackMixin:
         analysis = cast_analysis or self._fallback_cast_analysis(brief, architecture)
         slots = analysis.primary_slots(max(1, analysis.recommended_core_cast_count))
         characters = []
-        target_count = max(self.major_character_count, max(1, analysis.recommended_core_cast_count))
-        for index in range(target_count):
-            slot = slots[index] if index < len(slots) else CastSlotSchema(
-                slot_id=f"supporting_{index - len(slots) + 1}",
-                tier="supporting",
-                story_function="supporting",
-                brief_label=f"补位角色 {index + 1}",
-                source_evidence=[],
-                gender_hint="未指定",
-                objective="补充信息、制造环境压力或支撑场景成立。",
-                must_appear_in=[],
-                order_priority=index + 1,
-                notes="补位生成的 supporting 角色。",
-            )
+        for index, slot in enumerate(slots):
             name = next(names)
             role = self._role_from_cast_slot(slot)
             gender = self._resolved_cast_slot_gender(slot, brief, index)

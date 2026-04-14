@@ -92,7 +92,16 @@ class MySQLBackend:
         }
         if use_database:
             params["database"] = self._config.database
-        return self._pymysql.connect(**params)
+        try:
+            return self._pymysql.connect(**params)
+        except Exception as exc:
+            database_label = self._config.database if use_database else "<server>"
+            raise RuntimeError(
+                "MySQL connection failed. "
+                f"host={self._config.host} port={self._config.port} "
+                f"user={self._config.user} database={database_label}. "
+                "Check whether MySQL is running and whether the configured password is correct."
+            ) from exc
 
     @staticmethod
     def _quote_identifier(value: str) -> str:

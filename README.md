@@ -29,32 +29,37 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
 - `FastAPI` + 异步任务队列 + 项目 / 任务持久化
-- 浏览器端四步式工作台、CLI 和 HTTP API 三种入口
+- 浏览器端五步式工作台、CLI 和 HTTP API 三种入口
 
 ## 核心工作流
 
-StoryForge 默认采用四步式分阶段工作流，而不是一键全跑：
+StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 
-1. 生成小说
-2. 生成角色图
-3. 生成场景图
-4. 生成视频
+1. 生成小说正文
+2. 生成结构化信息
+3. 生成角色图
+4. 生成场景图
+5. 生成视频
 
-这样做的目的是让每个阶段的中间产物都可审计、可预览、可重试，便于控制成本和排查问题。
+在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`，再决定是否继续进入结构化与媒体阶段。
 
 ## 主要特性
 
-- 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Chapter Writer`、`Editorial Reviewer`
-- 小说链路改为 story-first：先生成完整小说草稿，再从草稿里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
+- 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Editorial Reviewer`
+- 小说链路改为 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
+- Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，旧的结构化结果和媒体资产会被标记为需要重做
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做 fallback / repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
-- 运行时已移除 DryRun / 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
+- LangChain 结构化输出当前使用 `ChatModel.with_structured_output(method="function_calling")`，避免 DeepSeek OpenAI-compatible 接口在 agent 工具消息链里报 `tool_calls` 错误
+- 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
+- Seedance manifest 标题继承真实小说标题，旧产物重载时会优先从 `novel_package.json` / `story_source.json` 恢复标题
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
 - 项目级管理：支持同一项目下多次运行结果追踪
 - 元数据持久化：支持本地 JSON 或 MySQL
-- 自动产物落盘：JSON、Markdown、图片、视频、拼接脚本都会保存到输出目录
+- 页面会展示任务和各阶段失败原因，便于定位 LLM schema、Seedream、Seedance 或下载失败
+- 自动产物落盘：核心 JSON、图片、视频和执行报告会保存到输出目录
 
 ## 技术栈
 
@@ -90,7 +95,7 @@ StoryForge 默认采用四步式分阶段工作流，而不是一键全跑：
 
 - 首页 / 品牌展示截图
 - 项目详情与资产页截图
-- 四步工作流或视频生产页截图
+- 五步工作流或视频生产页截图
 
 ## 快速开始
 
@@ -139,7 +144,7 @@ STORYFORGE_DB_PASSWORD=...
 ### 4. 启动 Web 控制台与 API
 
 ```bash
-uv run storyforge api serve --reload
+uv run storyforge api serve
 ```
 
 启动后访问：
@@ -147,12 +152,16 @@ uv run storyforge api serve --reload
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/docs`
 
-### 5. 按四步流程执行
+开发页面样式或前端模块时可以临时加 `--reload`。跑 Seedream / Seedance 这类长任务时不要使用 `--reload`，否则代码保存会触发服务热重载，中断正在执行的任务。
+
+### 5. 按页面流程执行
 
 1. 在页面创建故事并生成小说
-2. 在项目详情页生成角色图
-3. 基于同一条 story run 生成场景图
-4. 生成视频片段，并在条件满足时自动合并总片
+2. 在“小说”标签页审阅并按需修改正文
+3. 手动触发结构化信息生成
+4. 在同一条 story run 上生成角色图
+5. 基于同一条 story run 生成场景图
+6. 生成视频片段，并在条件满足时自动合并总片
 
 ## CLI 用法
 
@@ -162,7 +171,7 @@ uv run storyforge api serve --reload
 uv run storyforge init
 ```
 
-运行 demo：
+运行 demo brief。该命令同样需要真实 DeepSeek 配置：
 
 ```bash
 uv run storyforge pipeline demo
@@ -191,11 +200,14 @@ uv run storyforge video plan \
 主要接口：
 
 - `POST /v1/projects/novel`
+- `POST /v1/projects/story-analysis`
 - `POST /v1/projects/characters`
 - `POST /v1/projects/scenes`
 - `POST /v1/projects/videos`
 - `GET /v1/projects`
 - `GET /v1/projects/{project_id}`
+- `GET /v1/projects/{project_id}/story-source/{source_task_id}`
+- `PUT /v1/projects/{project_id}/story-source/{source_task_id}`
 - `GET /v1/tasks/{task_id}`
 - `GET /v1/tasks/{task_id}/artifacts`
 
@@ -205,21 +217,22 @@ uv run storyforge video plan \
 
 典型输出包括：
 
-- `outline.json`
+- `story_source.json`
 - `novel_package.json`
-- `editorial_review.json`
-- `workflow_trace.json`
+- `novel_audit.json`
 - `character_visual_bible.json`
 - `character_image_manifest.json`
 - `segment_plan.json`
 - `scene_image_manifest.json`
+- `seedream_character_execution.json`
+- `seedream_scene_execution.json`
 - `seedance_manifest.json`
 - `seedance_execution.json`
 - `rendered/*.mp4`
 - `rendered/full_story.mp4`
 
 CLI 直接运行时，默认输出到 `outputs/<story-slug>/`。  
-通过四步式项目任务运行时，后续阶段会复用同一个 `output_dir`。
+通过五步式项目任务运行时，后续阶段会复用同一个 `output_dir`。
 
 ## 仓库结构
 
@@ -253,12 +266,14 @@ StoryForge/
 - `ffmpeg` 片段合并
 - Web 控制台
 - 项目 / 任务持久化
+- 服务重启时，残留的 `running` 任务会重新排回队列，而不是直接标记失败
+- 前端失败原因展示
 - 前后端首轮模块化
 - 后端核心域服务拆分与测试基线恢复
 
 当前仍未完成或仍需按环境继续补强：
 
-- 持久化执行队列
+- 生产级持久化执行队列
 - 对象存储与公网素材管理
 - 更强的角色一致性控制
 - 更强的声音一致性控制

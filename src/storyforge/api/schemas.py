@@ -36,6 +36,26 @@ class CreateStageTaskRequest(BaseModel):
     use_llm: bool | None = None
 
 
+class StorySourceChapterInput(BaseModel):
+    number: int
+    title: str
+    summary: str
+    markdown: str
+
+
+class StorySourceResponse(BaseModel):
+    project_id: str
+    source_task_id: str
+    story_title: str
+    story_source_revision: str | None = None
+    chapters: list[StorySourceChapterInput] = Field(default_factory=list)
+
+
+class UpdateStorySourceRequest(BaseModel):
+    story_title: str
+    chapters: list[StorySourceChapterInput] = Field(default_factory=list)
+
+
 class JobAcceptedResponse(BaseModel):
     project_id: str
     task_id: str
@@ -65,7 +85,6 @@ class TaskArtifactsResponse(BaseModel):
     story_title: str | None = None
     output_dir: str | None = None
     documents: list[ArtifactItem] = Field(default_factory=list)
-    chapters: list[ArtifactItem] = Field(default_factory=list)
     character_images: list[ArtifactItem] = Field(default_factory=list)
     scene_frames: list[ArtifactItem] = Field(default_factory=list)
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)

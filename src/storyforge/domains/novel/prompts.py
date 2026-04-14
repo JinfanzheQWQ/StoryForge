@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from storyforge.domains.novel.contracts import ChapterPlan, DraftChapter, StoryBrief, StoryOutline
+from storyforge.domains.novel.contracts import DraftChapter, StoryBrief, StoryOutline
 from storyforge.domains.novel.schemas import CastAnalysisSchema, CastSlotSchema
 
 
@@ -15,8 +15,31 @@ def build_architect_system_prompt() -> str:
     )
 
 
-def build_architect_user_prompt(brief: StoryBrief) -> str:
+def build_architect_user_prompt(
+    brief: StoryBrief,
+    story_draft_context: str = "",
+) -> str:
     project_scope = _project_scope(brief)
+    if story_draft_context.strip():
+        return f"""
+请基于这部已经完成的小说正文，提炼出当前项目的结构化底稿。
+
+- 标题参考：{brief.title_hint}
+- 核心创意：{brief.idea}
+- 类型：{brief.genre}
+- 语气：{brief.tone}
+- 目标读者：{brief.target_audience}
+- 章节数：{brief.chapter_count}
+- 总字数目标：{brief.total_word_target}
+- 已有小说正文：
+{story_draft_context}
+
+要求：
+1. 以已有小说正文为事实基础，不要反过来用 brief 覆盖正文里已经成立的故事设定
+2. 提炼出 title、premise、theme、setting、story_engine、visual_motifs、tone_notes
+3. 这是分析阶段，不要重写小说，也不要输出章节正文
+4. visual_motifs 和 tone_notes 要能服务后续角色图、场景图和视频镜头规划
+""".strip()
     return f"""
 请把以下创意 brief 提炼成{project_scope}底稿。
 
@@ -126,6 +149,10 @@ def build_cast_user_prompt(
 16. cast_strategy 必须写成后续角色生成必须遵守的明确约束，尤其要说明哪些槽位绝不能丢
 17. gender_hint 优先依据小说草稿中的明确性别线索；没有线索才回退到 brief；都没有就写“未指定”
 18. 如果是恋爱、告白、暧昧、情侣、前任、重逢类故事，且小说草稿与 brief 都没明确同性关系，可以设置 prefers_male_female_pair=true；但如果草稿已给出性别线索，必须遵守
+19. source_evidence 必须尽量直接引用小说草稿里的短语、称呼或原文片段，不能写“关系见证者”“外部阻力来源”“补位角色”这类抽象概括来冒充证据
+20. 如果某个角色没有在小说草稿中稳定出场，或无法用 source_evidence 明确指向，就不要为它创建 slot；宁可少，不要为了凑阵容补人
+21. 对单章或短篇故事，如果小说草稿稳定成立的关键角色只有 1 到 2 个，就只输出这 1 到 2 个核心槽位，不要额外补 core_support
+22. recommended_core_cast_count 必须等于当前真正需要稳定命名建卡的核心槽位数，不能大于 slots 数量，也不要为了后续扩写而抬高
 """.strip()
 
 
@@ -148,7 +175,10 @@ def build_character_user_prompt(
         if brief.chapter_count <= 1
         else "每个角色都要能持续参与多个章节"
     )
-    primary_slots = cast_analysis.primary_slots(2)
+    intended_slots = cast_analysis.primary_slots(
+        max(1, cast_analysis.recommended_core_cast_count)
+    )
+    primary_slots = intended_slots[:2]
     if cast_analysis.explicit_counterpart:
         dual_lead_rule = (
             "这是明确的双人关系故事，characters 数组前两位必须就是这段关系的双方。"
@@ -165,17 +195,33 @@ def build_character_user_prompt(
         if cast_analysis.prefers_male_female_pair
         else "角色性别按故事需要设计，但必须明确、稳定、可用于后续生图"
     )
-    slot_mapping_rule = (
-        "characters 中的每个角色都必须显式填写 cast_slot_id，并一一对应到上游 cast slots。"
+    intended_slot_ids = [slot.slot_id for slot in intended_slots]
+    intended_slot_summary = (
+        "；".join(
+            f"{slot.slot_id}={slot.brief_label}（证据：{' / '.join(slot.source_evidence)}）"
+            for slot in intended_slots
+        )
+        if intended_slots
+        else "无"
     )
-    slot_evidence_rule = "同时参考每个 slot 的 source_evidence，不要把多个 brief 指代压成一个角色。"
+    exact_character_rule = (
+        f"characters 数组长度必须恰好等于 {len(intended_slot_ids)}，不多不少。"
+    )
+    slot_mapping_rule = (
+        "characters 中的每个角色都必须显式填写 cast_slot_id，并与上游 cast slots 一一对应。"
+    )
+    slot_set_rule = (
+        "只允许输出这些 cast_slot_id："
+        + ("、".join(intended_slot_ids) if intended_slot_ids else "无")
+        + "；不得遗漏，不得新增，也不得重复。"
+    )
+    slot_evidence_rule = (
+        "同时参考每个 slot 的 source_evidence，不要把多个指代压成一个角色，也不要把不存在于上游 slots 的人写进角色表。"
+    )
     counterpart_rule = (
         "前两名核心角色都要写清对另一方的态度、互动目标和关系风险；如果 cast slots 已明确双方顺序，前两位角色必须严格按 slot 优先级输出"
         if cast_analysis.explicit_counterpart
         else "每个角色都要写清自己与其他核心角色的关系和冲突，并与对应 slot 的 story_function 对齐"
-    )
-    minimum_character_rule = (
-        f"至少输出 {max(1, cast_analysis.recommended_core_cast_count)} 个核心角色，不要低于上游 cast analysis 给出的数量"
     )
     slot_priority_rule = (
         "前两位角色必须对应最高优先级 slots："
@@ -196,24 +242,30 @@ def build_character_user_prompt(
 {story_draft_context or "无"}
 - 上游 Cast Analysis：
 {_build_cast_analysis_context(cast_analysis)}
+- 本次必须严格覆盖的 slots：
+{intended_slot_summary}
 - 风格关键词：{", ".join(brief.style_keywords) if brief.style_keywords else "无"}
 
 要求：
 1. 必须以上游 Cast Analysis 结果为准，并以已生成小说草稿为事实基础，不要凭空发明与草稿不一致的新核心角色
-2. {minimum_character_rule}
+2. {exact_character_rule}
 3. {slot_mapping_rule}
-4. {slot_evidence_rule}
-5. {slot_priority_rule}
-6. 角色之间形成互补和对冲
-7. 角色外观与气质可直接用于角色图 prompt
-8. {participation_rule}
-9. 每个角色都要输出一句 voice_style 总结
-10. 每个角色都要输出结构化 voice_profile，至少包含 timbre、speaking_rate、emotional_baseline、accent_or_texture、dialogue_delivery、forbidden_voice_changes
-11. forbidden_voice_changes 必须明确写出不能出现的变声、年龄感漂移、语速漂移或口音漂移
-12. 每个角色必须明确输出 gender 字段，角色图 prompt 中也必须写清性别、年龄段和体型，避免文生图随机偏差
-13. {dual_lead_rule}
-14. {counterpart_rule}
-15. {gender_pair_rule}
+4. {slot_set_rule}
+5. {slot_evidence_rule}
+6. {slot_priority_rule}
+7. 角色之间形成互补和对冲
+8. 角色外观与气质可直接用于角色图 prompt
+9. {participation_rule}
+10. 每个角色都要输出一句 voice_style 总结
+11. 每个角色都要输出结构化 voice_profile，至少包含 timbre、speaking_rate、emotional_baseline、accent_or_texture、dialogue_delivery、forbidden_voice_changes
+12. forbidden_voice_changes 必须明确写出不能出现的变声、年龄感漂移、语速漂移或口音漂移
+13. 每个角色必须明确输出 gender 字段，角色图 prompt 中也必须写清性别、年龄段和体型，避免文生图随机偏差
+14. 所有核心角色名必须唯一，不得出现两个角色使用同一个正式名字，也不要只靠“她 / 他 / 对方”充当角色名
+15. 所有 cast_slot_id 必须唯一，严禁出现两个角色共用同一个 cast_slot_id
+16. 如果某个 slot 在小说草稿里找不到对应角色，就应该回到该 slot 的 source_evidence 去还原同一人，而不是凭空新造一个名字
+17. {dual_lead_rule}
+18. {counterpart_rule}
+19. {gender_pair_rule}
 """.strip()
 
 
@@ -272,85 +324,6 @@ def build_chapter_planner_user_prompt(
 7. {dual_scene_rule}
 8. {interaction_rule}
 """.strip()
-
-
-def build_writer_system_prompt() -> str:
-    return (
-        "你是章节写作 Agent。"
-        "请写出兼顾小说阅读感和影视化想象空间的章节草稿，"
-        "不要空洞概述，要有真实场景、动作和情绪推进。"
-    )
-
-
-def build_writer_user_prompt(
-    brief: StoryBrief,
-    outline: StoryOutline,
-    chapter: ChapterPlan,
-    previous_chapters: list[DraftChapter],
-    cast_analysis: CastAnalysisSchema,
-    source_chapter: DraftChapter | None = None,
-) -> str:
-    previous_summary = "\n".join(
-        f"- 第 {item.number} 章：{item.summary}" for item in previous_chapters[-2:]
-    ) or "无前文摘要"
-    character_context = _build_character_context(outline, chapter.featured_characters)
-    word_target = _chapter_word_target(brief)
-    lower_bound = max(120, int(word_target * 0.8))
-    upper_bound = max(lower_bound, int(word_target * 1.2))
-    short_form_rule = (
-        "这是单章短篇，必须在本章内完成一个完整微型故事，不要扩写成长篇开头。"
-        if brief.chapter_count <= 1
-        else "按章节规划推进长线故事，不要跳过本章核心冲突。"
-    )
-    interaction_rule = (
-        "这是双人关系故事，本章必须让关系双方都实际出场并发生动作、对白或明确回应，不能只让另一方停留在回忆、旁白或代称里。"
-        if cast_analysis.explicit_counterpart
-        else "重点角色要以实际场景行动推动情节，并优先保证 lead 与 core_support 角色的存在感。"
-    )
-    source_chapter_context = (
-        f"- 已生成小说草稿本章标题：{source_chapter.title}\n"
-        f"- 已生成小说草稿本章摘要：{source_chapter.summary}\n"
-        f"- 已生成小说草稿本章正文：\n{source_chapter.markdown}"
-        if source_chapter is not None
-        else "- 已生成小说草稿本章正文：无"
-    )
-    return f"""
-请根据以下内容生成章节草稿。
-
-- 小说标题：{outline.title}
-- premise：{outline.premise}
-- 主题：{outline.theme}
-- 类型：{brief.genre}
-- 风格：{brief.tone}
-- 上游 Cast Analysis：
-{_build_cast_analysis_context(cast_analysis)}
-- 已生成小说草稿本章：
-{source_chapter_context}
-- 前文摘要：
-{previous_summary}
-- 当前章节标题：{chapter.title}
-- 本章目标：{chapter.goal}
-- 本章摘要：{chapter.summary}
-- 关键冲突：{chapter.key_conflict}
-- 场景节拍：{", ".join(chapter.beats)}
-- 重点角色：{", ".join(chapter.featured_characters) if chapter.featured_characters else "无"}
-- 重点角色设定：
-{character_context}
-- 章末钩子：{chapter.cliffhanger}
-- 本章字数硬目标：{word_target} 字，允许范围 {lower_bound}-{upper_bound} 字
-
-要求：
-1. 输出可以直接保存成 Markdown 章节
-2. 必须延续已生成小说草稿、上游 Cast Analysis 和章节规划，不要自行重写人物层级和关系结构
-3. {short_form_rule}
-4. 本章主要事件顺序、核心冲突和结果必须与已生成小说草稿一致，只允许做语言润色、角色命名统一和声线强化
-5. 保留适合拆视频的视觉锚点
-6. 重点角色对白要保持各自 voice_profile，不要所有人说话像同一个人
-7. 严格控制篇幅，不要超过本章字数允许范围；如果信息过多，优先压缩环境描写和解释性背景
-8. {interaction_rule}
-""".strip()
-
-
 def build_editor_system_prompt() -> str:
     return (
         "你是编辑审校 Agent。"

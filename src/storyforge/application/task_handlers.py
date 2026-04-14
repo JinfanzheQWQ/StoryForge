@@ -8,6 +8,7 @@ from storyforge.application.task_support import (
     build_requested_media_error,
     build_requested_video_error,
     load_novel_package,
+    load_story_source,
     persist_task_progress,
     propagate_shared_result,
     resolve_output_dir,
@@ -17,7 +18,10 @@ from storyforge.application.task_support import (
 )
 from storyforge.application.tasks import QueuedTask, TaskExecutionError, utc_now
 from storyforge.domains.novel.contracts import StoryBrief
-from storyforge.pipelines.story_pipeline import run_story_pipeline
+from storyforge.pipelines.story_pipeline import (
+    run_story_analysis_pipeline,
+    run_story_generation_pipeline,
+)
 from storyforge.pipelines.video_pipeline import (
     run_character_image_pipeline,
     run_image_pipeline,
@@ -34,7 +38,7 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
     brief = StoryBrief.from_dict(task.payload["brief"])
     use_llm = bool(task.payload.get("use_llm", True))
     output_root = _build_story_output_root(context, task)
-    story_result = run_story_pipeline(
+    story_result = run_story_generation_pipeline(
         brief=brief,
         config=context.config,
         project_root=context.project_root,
@@ -43,16 +47,62 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
     )
     response = {
         "project_id": task.project_id,
-        "story_title": story_result.novel_package.outline.title,
+        "story_title": story_result.story_source.title,
         "output_dir": str(story_result.output_dir),
-        "novel_package_path": str(story_result.novel_package_path),
-        "pipeline_stage": "story_completed",
+        "story_source_path": str(story_result.story_source_path),
+        "story_source_revision": utc_now(),
+        "pipeline_stage": "story_source_completed",
         "task_stage": "story",
         "pipeline_root_task_id": task.task_id,
         "source_task_id": task.task_id,
         "artifact_revision": utc_now(),
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
+    return response
+
+
+def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
+    source_task = resolve_source_task(context, task)
+    output_dir = resolve_output_dir(source_task)
+    story_source = load_story_source(source_task)
+    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
+    pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    partial_response = {
+        "project_id": task.project_id,
+        "story_title": story_source.title,
+        "output_dir": str(output_dir),
+        "story_source_path": str(source_task.result["story_source_path"]),
+        "story_source_revision": str(source_task.result.get("story_source_revision", utc_now())),
+        "pipeline_stage": "story_analysis_started",
+        "task_stage": "story_analysis",
+        "pipeline_root_task_id": pipeline_root_task_id,
+        "source_task_id": str(task.payload["source_task_id"]),
+        "artifact_revision": utc_now(),
+    }
+    persist_task_progress(context, task, partial_response)
+
+    analysis_result = run_story_analysis_pipeline(
+        story_source=story_source,
+        config=context.config,
+        project_root=context.project_root,
+        use_llm=use_llm,
+        output_root=output_dir,
+    )
+    response = {
+        **partial_response,
+        "story_title": analysis_result.novel_package.outline.title,
+        "novel_package_path": str(analysis_result.novel_package_path),
+        "novel_audit_path": str(analysis_result.novel_audit_path),
+        "pipeline_stage": "story_analysis_completed",
+        "artifact_revision": utc_now(),
+    }
+    context.project_store.mark_task_result(task.project_id, task.task_id, response)
+    propagate_shared_result(
+        context,
+        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+        result=response,
+        exclude_task_id=task.task_id,
+    )
     return response
 
 
@@ -258,7 +308,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
     submit_seedance = bool(task.payload.get("submit_seedance", False))
     output_root = _build_story_output_root(context, task)
 
-    story_result = run_story_pipeline(
+    story_result = run_story_generation_pipeline(
         brief=brief,
         config=context.config,
         project_root=context.project_root,
@@ -267,10 +317,11 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
     )
     partial_response: dict[str, object] = {
         "project_id": task.project_id,
-        "story_title": story_result.novel_package.outline.title,
+        "story_title": story_result.story_source.title,
         "output_dir": str(story_result.output_dir),
-        "novel_package_path": str(story_result.novel_package_path),
-        "pipeline_stage": "story_completed",
+        "story_source_path": str(story_result.story_source_path),
+        "story_source_revision": utc_now(),
+        "pipeline_stage": "story_source_completed",
         "task_stage": "full",
         "pipeline_root_task_id": task.task_id,
         "source_task_id": task.task_id,
@@ -278,8 +329,26 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
     }
     persist_task_progress(context, task, partial_response)
 
+    analysis_result = run_story_analysis_pipeline(
+        story_source=story_result.story_source,
+        config=context.config,
+        project_root=context.project_root,
+        use_llm=use_llm,
+        output_root=story_result.output_dir,
+    )
+    partial_response.update(
+        {
+            "story_title": analysis_result.novel_package.outline.title,
+            "novel_package_path": str(analysis_result.novel_package_path),
+            "novel_audit_path": str(analysis_result.novel_audit_path),
+            "pipeline_stage": "story_analysis_completed",
+            "artifact_revision": utc_now(),
+        }
+    )
+    persist_task_progress(context, task, partial_response)
+
     video_result = run_video_pipeline(
-        novel_package=story_result.novel_package,
+        novel_package=analysis_result.novel_package,
         config=context.config,
         project_root=context.project_root,
         output_root=story_result.output_dir,
@@ -289,9 +358,12 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
 
     response: dict[str, object] = {
         "project_id": task.project_id,
-        "story_title": story_result.novel_package.outline.title,
+        "story_title": analysis_result.novel_package.outline.title,
         "output_dir": str(story_result.output_dir),
-        "novel_package_path": str(story_result.novel_package_path),
+        "story_source_path": str(story_result.story_source_path),
+        "story_source_revision": partial_response["story_source_revision"],
+        "novel_package_path": str(analysis_result.novel_package_path),
+        "novel_audit_path": str(analysis_result.novel_audit_path),
         "seedream_execution_path": str(video_result.seedream_execution_path),
         "seedance_manifest_path": str(video_result.manifest_path),
         "seedance_execution_path": str(video_result.seedance_execution_path),
@@ -342,6 +414,12 @@ def _build_stage_response(
         "story_title": resolve_story_title(source_task),
         "output_dir": str(output_dir),
         "novel_package_path": str(source_task.result["novel_package_path"]),
+        "novel_audit_path": (
+            str(source_task.result["novel_audit_path"])
+            if source_task.result and source_task.result.get("novel_audit_path")
+            else None
+        ),
+        "story_source_revision": str(source_task.result.get("story_source_revision", "")),
         "pipeline_stage": pipeline_stage,
         "task_stage": task_stage,
         "pipeline_root_task_id": pipeline_root_task_id,

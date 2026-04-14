@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class StoryArchitectureSchema(BaseModel):
@@ -61,6 +61,55 @@ class CastAnalysisSchema(BaseModel):
     slots: list[CastSlotSchema] = Field(description="角色槽位定义")
     relationships: list[CastRelationshipSchema] = Field(description="核心关系图")
 
+    @model_validator(mode="after")
+    def validate_slot_contract(self) -> "CastAnalysisSchema":
+        if not self.slots:
+            raise ValueError("cast analysis 至少需要 1 个角色槽位。")
+
+        seen_slot_ids: dict[str, str] = {}
+        duplicate_slot_ids: list[str] = []
+        missing_evidence_slots: list[str] = []
+
+        for item in self.slots:
+            slot_id = item.slot_id.strip()
+            if not slot_id:
+                missing_evidence_slots.append(item.brief_label.strip() or "未命名槽位")
+                continue
+            if slot_id in seen_slot_ids:
+                duplicate_slot_ids.extend([seen_slot_ids[slot_id], slot_id])
+            else:
+                seen_slot_ids[slot_id] = slot_id
+
+            evidence = [token.strip() for token in item.source_evidence if token.strip()]
+            if not evidence:
+                missing_evidence_slots.append(slot_id)
+
+        if duplicate_slot_ids:
+            ordered_duplicates = list(dict.fromkeys(duplicate_slot_ids))
+            raise ValueError(
+                "cast slot_id 必须唯一，检测到重复槽位："
+                + "、".join(ordered_duplicates)
+            )
+
+        if missing_evidence_slots:
+            ordered_missing = list(dict.fromkeys(missing_evidence_slots))
+            raise ValueError(
+                "每个 cast slot 都必须提供 source_evidence，缺失槽位："
+                + "、".join(ordered_missing)
+            )
+
+        if self.recommended_core_cast_count > len(self.slots):
+            raise ValueError(
+                "recommended_core_cast_count 不能大于 slots 数量。"
+            )
+
+        if (self.explicit_counterpart or self.requires_dual_leads) and len(self.slots) < 2:
+            raise ValueError("双人关系或双主导故事至少需要 2 个 cast slot。")
+
+        if (self.explicit_counterpart or self.requires_dual_leads) and self.recommended_core_cast_count < 2:
+            raise ValueError("双人关系或双主导故事的 recommended_core_cast_count 不能小于 2。")
+        return self
+
     def ordered_slots(self) -> list[CastSlotSchema]:
         return sorted(self.slots, key=lambda item: (item.order_priority, item.slot_id))
 
@@ -106,6 +155,55 @@ class CharacterSheetSchema(BaseModel):
 
 class CharacterRosterSchema(BaseModel):
     characters: list[CharacterSheetSchema] = Field(description="主角色名单")
+
+    @model_validator(mode="after")
+    def validate_unique_character_names(self) -> "CharacterRosterSchema":
+        # Duplicate canonical names must fail validation so the live LLM path
+        # retries with the validation error, instead of silently repairing names locally.
+        seen: dict[str, str] = {}
+        duplicates: list[str] = []
+        for item in self.characters:
+            normalized = "".join(item.name.split()).casefold()
+            if not normalized:
+                continue
+            if normalized in seen:
+                duplicates.extend([seen[normalized], item.name])
+                continue
+            seen[normalized] = item.name
+        if duplicates:
+            ordered_duplicates = list(dict.fromkeys(duplicates))
+            raise ValueError(
+                "角色正式名字必须唯一，检测到重名角色："
+                + "、".join(ordered_duplicates)
+            )
+
+        seen_slot_ids: dict[str, str] = {}
+        duplicate_slot_ids: list[str] = []
+        missing_slot_ids: list[str] = []
+        for item in self.characters:
+            slot_id = item.cast_slot_id.strip()
+            if not slot_id:
+                missing_slot_ids.append(item.name.strip() or "未命名角色")
+                continue
+            if slot_id in seen_slot_ids:
+                duplicate_slot_ids.extend([seen_slot_ids[slot_id], slot_id])
+                continue
+            seen_slot_ids[slot_id] = slot_id
+
+        if missing_slot_ids:
+            ordered_missing = list(dict.fromkeys(missing_slot_ids))
+            raise ValueError(
+                "每个角色都必须绑定 cast_slot_id，缺失角色："
+                + "、".join(ordered_missing)
+            )
+
+        if duplicate_slot_ids:
+            ordered_duplicates = list(dict.fromkeys(duplicate_slot_ids))
+            raise ValueError(
+                "角色 cast_slot_id 必须唯一，检测到重复槽位："
+                + "、".join(ordered_duplicates)
+            )
+        return self
 
 
 class ChapterBlueprintSchema(BaseModel):

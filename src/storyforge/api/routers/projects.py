@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Request, status
 
 from storyforge.api.serializers import (
@@ -13,6 +15,16 @@ from storyforge.api.schemas import (
     JobAcceptedResponse,
     ProjectDetailResponse,
     ProjectSummaryResponse,
+    StorySourceResponse,
+    UpdateStorySourceRequest,
+)
+from storyforge.application.tasks import utc_now
+from storyforge.core.io import read_json
+from storyforge.domains.novel.contracts import DraftChapter, StorySourcePackage
+from storyforge.pipelines.story_files import (
+    clear_story_derived_artifacts,
+    prune_story_derived_result,
+    write_story_source_files,
 )
 
 
@@ -97,6 +109,34 @@ async def create_image_job(
         project_id=payload.project_id,
         task_type="project.images",
         payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/story-analysis", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_story_analysis_job(
+    payload: CreateStageTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.story_analysis",
+        payload={
+            "project_id": payload.project_id,
+            "source_task_id": payload.source_task_id,
+            "use_llm": True if payload.use_llm is None else payload.use_llm,
+        },
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
     return JobAcceptedResponse(
@@ -220,3 +260,134 @@ async def create_project_job(
     )
     project_store.attach_task(project_id, record.task_id, payload.brief.model_dump())
     return JobAcceptedResponse(project_id=project_id, task_id=record.task_id, status=record.status)
+
+
+@router.get("/{project_id}/story-source/{source_task_id}", response_model=StorySourceResponse)
+async def get_story_source(
+    project_id: str,
+    source_task_id: str,
+    request: Request,
+) -> StorySourceResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    story_source = StorySourcePackage.from_dict(read_json(_story_source_path(source_task)))
+    return _build_story_source_response(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        story_source=story_source,
+        story_source_revision=(
+            str(source_task.result.get("story_source_revision"))
+            if source_task.result and source_task.result.get("story_source_revision")
+            else None
+        ),
+    )
+
+
+@router.put("/{project_id}/story-source/{source_task_id}", response_model=StorySourceResponse)
+async def update_story_source(
+    project_id: str,
+    source_task_id: str,
+    payload: UpdateStorySourceRequest,
+    request: Request,
+) -> StorySourceResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    output_dir = _output_dir(source_task)
+
+    existing = StorySourcePackage.from_dict(read_json(_story_source_path(source_task)))
+    updated_story_source = StorySourcePackage(
+        brief=existing.brief,
+        title=payload.story_title.strip() or existing.title,
+        chapters=[
+            DraftChapter(
+                number=item.number,
+                title=item.title.strip() or f"第 {item.number} 章",
+                summary=item.summary.strip(),
+                markdown=item.markdown.strip(),
+                agent_notes="user-edited",
+            )
+            for item in payload.chapters
+        ],
+    )
+    if not updated_story_source.chapters:
+        raise HTTPException(status_code=400, detail="Story source must contain at least one chapter.")
+
+    story_files = write_story_source_files(output_dir, updated_story_source)
+
+    clear_story_derived_artifacts(output_dir)
+
+    updated_revision = utc_now()
+    updated_result = prune_story_derived_result(source_task.result or {})
+    updated_result.update(
+        {
+            "project_id": project_id,
+            "story_title": updated_story_source.title,
+            "output_dir": str(output_dir),
+            "story_source_path": str(story_files.story_source_path),
+            "story_source_revision": updated_revision,
+            "pipeline_stage": "story_source_completed",
+            "task_stage": "story",
+            "pipeline_root_task_id": source_task.task_id,
+            "source_task_id": source_task.task_id,
+            "artifact_revision": updated_revision,
+        }
+    )
+    container.task_queue.store.update_result(source_task.task_id, updated_result)
+    container.project_store.mark_task_result(project_id, source_task.task_id, updated_result)
+
+    return _build_story_source_response(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        story_source=updated_story_source,
+        story_source_revision=updated_revision,
+    )
+
+
+def _resolve_story_source_task(container, project_id: str, source_task_id: str):
+    project = container.project_store.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    source_task = container.task_queue.store.get(source_task_id)
+    if source_task is None or source_task.project_id != project_id:
+        raise HTTPException(status_code=404, detail=f"Source task {source_task_id} not found")
+    if not source_task.result or not source_task.result.get("story_source_path"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task {source_task_id} does not have editable story source output.",
+        )
+    return source_task
+
+
+def _story_source_path(source_task) -> Path:
+    return Path(str(source_task.result["story_source_path"]))
+
+
+def _output_dir(source_task) -> Path:
+    raw_output_dir = source_task.result.get("output_dir") if source_task.result else None
+    if not raw_output_dir:
+        raise HTTPException(status_code=400, detail=f"Task {source_task.task_id} has no output_dir.")
+    return Path(str(raw_output_dir))
+
+
+def _build_story_source_response(
+    project_id: str,
+    source_task_id: str,
+    story_source: StorySourcePackage,
+    story_source_revision: str | None,
+) -> StorySourceResponse:
+    return StorySourceResponse(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        story_title=story_source.title,
+        story_source_revision=story_source_revision,
+        chapters=[
+            {
+                "number": chapter.number,
+                "title": chapter.title,
+                "summary": chapter.summary,
+                "markdown": chapter.markdown,
+            }
+            for chapter in story_source.chapters
+        ],
+    )

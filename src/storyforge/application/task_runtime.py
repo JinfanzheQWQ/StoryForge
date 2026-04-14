@@ -8,6 +8,7 @@ from storyforge.application.projects import ProjectStore
 from storyforge.application.task_handlers import (
     run_characters_task,
     run_full_pipeline_task,
+    run_story_analysis_task,
     run_images_task,
     run_scenes_task,
     run_story_task,
@@ -39,6 +40,7 @@ def dispatch_task(
     handlers = {
         "project.build": run_full_pipeline_task,
         "project.story": run_story_task,
+        "project.story_analysis": run_story_analysis_task,
         "project.characters": run_characters_task,
         "project.scenes": run_scenes_task,
         "project.images": run_images_task,

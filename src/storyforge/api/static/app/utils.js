@@ -4,12 +4,48 @@ export function getPipelineRootTaskId(task) {
   return task.result?.pipeline_root_task_id || task.payload?.pipeline_root_task_id || task.task_id;
 }
 
+export function getStorySourceRevision(task) {
+  return task?.result?.story_source_revision || "";
+}
+
+export function isTaskCurrent(task, storySourceRevision) {
+  if (!task || !storySourceRevision) {
+    return false;
+  }
+  return task.status === "completed" && getStorySourceRevision(task) === storySourceRevision;
+}
+
+export function getRunStageStatus(task, storySourceRevision) {
+  if (!task) {
+    return "idle";
+  }
+  if (task.status === "completed" && storySourceRevision && getStorySourceRevision(task) !== storySourceRevision) {
+    return "stale";
+  }
+  return task.status;
+}
+
+export function buildTaskErrorMessage(task) {
+  if (!task || task.status !== "failed") {
+    return "";
+  }
+  const candidates = [
+    task.error,
+    task.result?.error,
+    task.result?.message,
+    task.result?.detail,
+  ];
+  const message = candidates.find((item) => typeof item === "string" && item.trim());
+  return message ? message.trim() : "后端没有返回具体失败原因，请查看服务端日志。";
+}
+
 function buildRunGroup(rootTaskId, tasks) {
   const sortedTasks = [...tasks].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
   );
   const rootTask = sortedTasks.find((task) => task.task_id === rootTaskId) || sortedTasks[sortedTasks.length - 1];
   const latestTask = sortedTasks[0];
+  const analysisTasks = sortedTasks.filter((task) => task.task_type === "project.story_analysis");
   const characterTasks = sortedTasks.filter(
     (task) => task.task_type === "project.characters" || task.task_type === "project.images",
   );
@@ -23,6 +59,7 @@ function buildRunGroup(rootTaskId, tasks) {
     rootTask,
     latestTask,
     tasks: sortedTasks,
+    latestAnalysisTask: analysisTasks[0] || null,
     latestCharacterTask: characterTasks[0] || null,
     latestSceneTask: sceneTasks[0] || null,
     latestVideoTask: videoTasks[0] || null,
@@ -59,6 +96,10 @@ export function buildTaskTitle(task, artifacts) {
 
 export function buildTaskExcerpt(task, artifacts) {
   const stageText = buildPipelineStageLabel(task);
+  const errorMessage = buildTaskErrorMessage(task);
+  if (errorMessage) {
+    return stageText ? `${stageText} / ${errorMessage}` : errorMessage;
+  }
   if (artifacts?.available) {
     const parts = [
       `${artifacts.character_images.length} 张角色图`,
@@ -86,6 +127,11 @@ export function buildTaskDetailSubtitle(task, run = null) {
 
 export function buildOverviewNote(task, artifacts, run = null) {
   const effectiveTask = run?.latestTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : getStorySourceRevision(task);
+  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
+  const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
+  const sceneStatus = run ? getRunStageStatus(run.latestSceneTask, storySourceRevision) : "idle";
+  const videoStatus = run ? getRunStageStatus(run.latestVideoTask, storySourceRevision) : "idle";
   if (effectiveTask.status === "queued") {
     return "任务已经创建，正在等待系统开始制作。";
   }
@@ -99,16 +145,31 @@ export function buildOverviewNote(task, artifacts, run = null) {
     return "当前阶段已完成，但页面还在整理可展示的内容索引。";
   }
   if (run?.latestTask.task_type === "project.story") {
-    return "故事文本已经完成。确认内容无误后，再继续生成角色图。";
+    return "故事文本已经完成。先在“小说”页确认或修改正文，再继续生成结构化信息。";
+  }
+  if (analysisStatus === "stale") {
+    return "故事正文已经更新，当前结构化结果已过期。请先重新生成结构化信息，再继续图片和视频阶段。";
+  }
+  if (run?.latestTask.task_type === "project.story_analysis") {
+    return "结构化信息已经完成。确认角色和章节拆分准确后，再继续生成角色图。";
+  }
+  if (characterStatus === "stale") {
+    return "角色图仍然对应旧文本版本。请先重新生成角色图，再继续场景图。";
   }
   if (run?.latestTask.task_type === "project.characters") {
     return "角色设定已经完成。确认人物稳定后，再继续生成场景图。";
+  }
+  if (sceneStatus === "stale") {
+    return "场景图仍然对应旧文本版本。请先重新生成场景图，再继续视频。";
   }
   if (run?.latestTask.task_type === "project.scenes") {
     return "场景镜头已经完成。确认首尾帧满意后，再继续生成视频。";
   }
   if (run?.latestTask.task_type === "project.images") {
     return "图片阶段已经完成。确认角色和场景一致后，再继续生成视频。";
+  }
+  if (videoStatus === "stale") {
+    return "视频仍然对应旧文本版本。请按新的正文重新生成视频。";
   }
   return artifacts.full_story
     ? "这个版本已经产出完整成片，可以继续和同故事的其它版本对比。"
@@ -117,9 +178,16 @@ export function buildOverviewNote(task, artifacts, run = null) {
 
 export function buildArtifactPendingMessage(task, kind, run = null) {
   const effectiveTask = run?.latestTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : getStorySourceRevision(task);
+  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
+  const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
+  const sceneStatus = run ? getRunStageStatus(run.latestSceneTask, storySourceRevision) : "idle";
   if (effectiveTask.status === "running") {
     if (effectiveTask.task_type === "project.story" && kind !== "docs") {
       return "故事文本还在生成，先等待第一步完成。";
+    }
+    if (effectiveTask.task_type === "project.story_analysis" && kind !== "docs") {
+      return "结构化信息正在生成，完成后才能继续图片和视频阶段。";
     }
     if (effectiveTask.task_type === "project.characters" && kind === "characters") {
       return "角色图正在生成，页面会自动刷新。";
@@ -139,12 +207,23 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
     return "这一阶段出现异常，只能展示当前已经产出的部分内容。";
   }
   if (run?.latestTask.task_type === "project.story") {
+    if (kind === "images" || kind === "characters" || kind === "scenes" || kind === "videos") {
+      return "故事文本已经完成，但结构化信息阶段还没开始。请先生成结构化信息。";
+    }
+  }
+  if (analysisStatus === "stale") {
+    return "故事正文已经修改，旧的结构化结果已过期。请先重新生成结构化信息。";
+  }
+  if (run?.latestTask.task_type === "project.story_analysis") {
     if (kind === "images" || kind === "characters") {
-      return "故事文本已经完成，但角色图阶段还没开始。请先生成角色图。";
+      return "结构化信息已经完成，但角色图阶段还没开始。请先生成角色图。";
     }
-    if (kind === "scenes") {
-      return "角色图和场景图阶段都还没开始，建议先生成角色图。";
+    if (kind === "scenes" || kind === "videos") {
+      return "角色图和后续媒体阶段都还没开始，建议先生成角色图。";
     }
+  }
+  if (characterStatus === "stale") {
+    return "角色图仍然对应旧文本版本。请先重新生成角色图。";
   }
   if (run?.latestTask.task_type === "project.characters") {
     if (kind === "scenes") {
@@ -160,16 +239,41 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
   ) {
     return "场景图已经完成，但视频阶段还没开始。请继续生成视频。";
   }
+  if (sceneStatus === "stale") {
+    return "场景图仍然对应旧文本版本。请先重新生成场景图。";
+  }
   return "页面还在整理这一阶段可展示的内容索引。";
 }
 
 export function buildPipelineStageLabel(task, run = null) {
   const effectiveTask = run?.latestTask || task;
+  const propagatedStage = effectiveTask.result?.pipeline_stage;
+  if (propagatedStage === "story_analysis_started" && effectiveTask.status === "running") {
+    return "结构化信息生成中";
+  }
+  if (propagatedStage === "story_analysis_completed") {
+    return "结构化信息已完成";
+  }
+  if (propagatedStage === "characters_completed") {
+    return "角色图已完成";
+  }
+  if (propagatedStage === "scenes_completed") {
+    return "场景图已完成";
+  }
+  if (propagatedStage === "video_completed") {
+    return "视频已完成";
+  }
   if (effectiveTask.task_type === "project.story") {
     if (effectiveTask.status === "queued") return "等待故事文本";
     if (effectiveTask.status === "running") return "故事文本生成中";
     if (effectiveTask.status === "completed") return "故事文本已完成";
     if (effectiveTask.status === "failed") return "故事文本生成失败";
+  }
+  if (effectiveTask.task_type === "project.story_analysis") {
+    if (effectiveTask.status === "queued") return "等待结构化解析";
+    if (effectiveTask.status === "running") return "结构化信息生成中";
+    if (effectiveTask.status === "completed") return "结构化信息已完成";
+    if (effectiveTask.status === "failed") return "结构化信息生成失败";
   }
   if (effectiveTask.task_type === "project.characters") {
     if (effectiveTask.status === "queued") return "等待角色设定图";
@@ -197,8 +301,11 @@ export function buildPipelineStageLabel(task, run = null) {
   }
   if (effectiveTask.task_type === "project.build") {
     const stage = effectiveTask.result?.pipeline_stage;
-    if (effectiveTask.status === "running" && stage === "story_completed") {
-      return "小说已完成，媒体生成中";
+    if (effectiveTask.status === "running" && stage === "story_source_completed") {
+      return "故事正文已完成，结构与媒体生成中";
+    }
+    if (effectiveTask.status === "running" && stage === "story_analysis_completed") {
+      return "文本与结构已完成，媒体生成中";
     }
     if (effectiveTask.status === "running") {
       return "全链路生成中";
@@ -206,8 +313,11 @@ export function buildPipelineStageLabel(task, run = null) {
     if (stage === "video_completed" || effectiveTask.status === "completed") {
       return "全链路完成";
     }
-    if (effectiveTask.status === "failed" && stage === "story_completed") {
-      return "小说完成，媒体阶段失败";
+    if (effectiveTask.status === "failed" && stage === "story_analysis_completed") {
+      return "文本与结构完成，媒体阶段失败";
+    }
+    if (effectiveTask.status === "failed" && stage === "story_source_completed") {
+      return "故事正文完成，后续阶段失败";
     }
   }
   return "";
@@ -217,6 +327,9 @@ export function runModeLabel(task) {
   const llmLabel = "DeepSeek";
   if (task.task_type === "project.story") {
     return `${llmLabel} / 故事文本`;
+  }
+  if (task.task_type === "project.story_analysis") {
+    return `${llmLabel} / 结构解析`;
   }
   if (task.task_type === "project.characters") {
     return "Seedream / 角色设定";
@@ -238,6 +351,7 @@ export function runModeLabel(task) {
 
 export function taskTypeLabel(task) {
   if (task.task_type === "project.story") return "故事文本";
+  if (task.task_type === "project.story_analysis") return "结构化信息";
   if (task.task_type === "project.characters") return "角色设定图";
   if (task.task_type === "project.scenes") return "场景镜头图";
   if (task.task_type === "project.images") return "图片";
@@ -287,6 +401,7 @@ export function statusLabel(status) {
 
 export function stageStatusLabel(status) {
   if (status === "idle") return "未开始";
+  if (status === "stale") return "待更新";
   return statusLabel(status);
 }
 

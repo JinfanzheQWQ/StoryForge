@@ -78,29 +78,24 @@ class LangChainTextAgentBackend(AgentBackend):
         return AgentResult(content=content, provider="langchain", raw=raw)
 
     def generate_structured(self, request: PromptRequest, schema: type[BaseModel]) -> BaseModel:
-        from langchain.agents import create_agent
-        from langchain.agents.structured_output import ToolStrategy
+        from langchain_core.messages import HumanMessage, SystemMessage
 
         model = self._build_model()
-        agent = create_agent(
-            model=model,
-            tools=[],
-            system_prompt=request.system_prompt,
-            response_format=ToolStrategy(schema),
+        structured_model = model.with_structured_output(
+            schema,
+            # Keep structured generation inside LangChain, but avoid
+            # create_agent + ToolStrategy's multi-turn tool repair flow.
+            # DeepSeek's OpenAI-compatible endpoint is happier with a direct
+            # single-turn structured call.
+            method="function_calling",
+            strict=True,
         )
-        raw = agent.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": request.user_prompt,
-                    }
-                ]
-            }
+        structured = structured_model.invoke(
+            [
+                SystemMessage(content=request.system_prompt),
+                HumanMessage(content=request.user_prompt),
+            ]
         )
-        structured = raw.get("structured_response")
-        if structured is None:
-            raise RuntimeError("LangChain agent did not return structured_response.")
         if isinstance(structured, schema):
             return structured
         return schema.model_validate(structured)

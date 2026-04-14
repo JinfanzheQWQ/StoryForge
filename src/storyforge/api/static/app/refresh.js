@@ -9,6 +9,11 @@ import { elements } from "./dom.js";
 import { applyBootstrapToForm } from "./form.js";
 import { renderApplication, updateStats } from "./render/application.js";
 import { state } from "./state.js";
+import {
+  buildStorySourceKey,
+  ensureStorySourceLoaded,
+  resolveStorySourceLocator,
+} from "./story_source.js";
 import { getPipelineRootTaskId, getProjectRuns } from "./utils.js";
 
 export async function loadBootstrap() {
@@ -80,6 +85,35 @@ export async function refreshSelectedProjectDetail() {
   }
 }
 
+export async function refreshSelectedStorySources() {
+  const targets = new Map();
+
+  const detail = state.projectDetails.get(state.selectedProjectId);
+  if (detail) {
+    const runs = getProjectRuns(detail);
+    const selectedRun =
+      runs.find((run) => run.rootTask?.task_id === state.selectedProjectTaskId) || runs[0] || null;
+    const locator = selectedRun?.rootTask
+      ? resolveStorySourceLocator(selectedRun.rootTask, selectedRun)
+      : null;
+    if (locator) {
+      targets.set(buildStorySourceKey(locator.projectId, locator.sourceTaskId), locator);
+    }
+  }
+
+  const queueTask = state.tasks.find((task) => task.task_id === state.selectedQueueTaskId) || null;
+  const queueLocator = queueTask ? resolveStorySourceLocator(queueTask) : null;
+  if (queueLocator) {
+    targets.set(buildStorySourceKey(queueLocator.projectId, queueLocator.sourceTaskId), queueLocator);
+  }
+
+  await Promise.allSettled(
+    Array.from(targets.values()).map((target) =>
+      ensureStorySourceLoaded(target.projectId, target.sourceTaskId),
+    ),
+  );
+}
+
 export async function refreshTasks() {
   elements.pollIndicator.textContent = "同步中";
 
@@ -91,7 +125,18 @@ export async function refreshTasks() {
     await Promise.allSettled(state.tasks.map(loadArtifactsIfNeeded));
     ensureSelections();
     await refreshSelectedProjectDetail();
+    await refreshSelectedStorySources();
+    const activeElement = document.activeElement;
+    const isEditingStorySource = Boolean(
+      activeElement
+      && activeElement.matches
+      && activeElement.matches("[data-story-title-input], [data-story-chapter-field]"),
+    );
     updateStats();
+    if (isEditingStorySource && state.storySourceDirtyKeys.size > 0) {
+      elements.pollIndicator.textContent = "编辑中，已暂停详情区重绘";
+      return;
+    }
     renderApplication();
     elements.pollIndicator.textContent = `已同步 ${new Date().toLocaleTimeString()}`;
   } catch (error) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TypeVar
 
 from pydantic import BaseModel
@@ -19,6 +20,7 @@ from storyforge.domains.novel.contracts import (
     EditorialReview,
     NovelPackage,
     StoryBrief,
+    StorySourcePackage,
     StoryOutline,
 )
 from storyforge.domains.novel.errors import NovelStructuredGenerationError
@@ -37,8 +39,6 @@ from storyforge.domains.novel.prompts import (
     build_chapter_planner_user_prompt,
     build_editor_system_prompt,
     build_editor_user_prompt,
-    build_writer_system_prompt,
-    build_writer_user_prompt,
 )
 from storyforge.domains.novel.repair import NovelRepairMixin
 from storyforge.domains.novel.rules import NovelRuleMixin
@@ -65,17 +65,19 @@ class NovelGeneratorService(
         self,
         backend: AgentBackend | None = None,
         chapter_scene_count: int = 3,
-        major_character_count: int = 3,
         structured_retry_attempts: int = 3,
     ) -> None:
         self.backend = backend or UnavailableAgentBackend(
             "NovelGeneratorService requires a live LLM backend."
         )
         self.chapter_scene_count = chapter_scene_count
-        self.major_character_count = major_character_count
         self.structured_retry_attempts = max(1, structured_retry_attempts)
 
     def build_novel_package(self, brief: StoryBrief) -> NovelPackage:
+        story_source = self.build_story_source(brief)
+        return self.build_novel_package_from_story_source(story_source)
+
+    def build_story_source(self, brief: StoryBrief) -> StorySourcePackage:
         architecture = self._run_structured_agent(
             schema=StoryArchitectureSchema,
             request=PromptRequest(
@@ -104,7 +106,34 @@ class NovelGeneratorService(
             architecture,
         )
         story_draft_chapters = self._assemble_seed_chapters(story_draft_set)
-        story_draft_context = build_story_draft_context(story_draft_chapters)
+        return StorySourcePackage(
+            brief=brief,
+            title=architecture.title.strip() or brief.title_hint,
+            chapters=story_draft_chapters,
+        )
+
+    def build_novel_package_from_story_source(
+        self,
+        story_source: StorySourcePackage,
+    ) -> NovelPackage:
+        brief = story_source.brief
+        story_draft_set = StoryDraftSetSchema(
+            chapters=[self._chapter_schema_from_seed(item) for item in story_source.chapters]
+        )
+        story_draft_context = build_story_draft_context(story_source.chapters)
+
+        architecture = self._run_structured_agent(
+            schema=StoryArchitectureSchema,
+            request=PromptRequest(
+                system_prompt=build_architect_system_prompt(),
+                user_prompt=build_architect_user_prompt(
+                    brief,
+                    story_draft_context=story_draft_context,
+                ),
+                metadata={"task": "story-architect-analysis"},
+            ),
+            fallback=self._fallback_architecture(brief),
+        )
 
         # Agreement: LLM-based cast analysis is the primary source of truth
         # for role structure. Heuristics only remain as repair and fallback backstops.
@@ -122,6 +151,10 @@ class NovelGeneratorService(
             fallback=self._fallback_cast_analysis(
                 brief,
                 architecture,
+                story_draft_set=story_draft_set,
+            ),
+            validator=lambda value: self._validate_cast_analysis_output(
+                value,
                 story_draft_set=story_draft_set,
             ),
         )
@@ -147,6 +180,10 @@ class NovelGeneratorService(
             fallback=self._fallback_character_roster(
                 brief,
                 architecture,
+                cast_analysis=cast_analysis,
+            ),
+            validator=lambda value: self._validate_character_roster_output(
+                value,
                 cast_analysis=cast_analysis,
             ),
         )
@@ -186,12 +223,7 @@ class NovelGeneratorService(
         )
 
         outline = self._assemble_outline(architecture, character_roster, chapter_plan_set)
-        chapters = self._build_chapters(
-            brief,
-            outline,
-            cast_analysis,
-            seed_chapters=story_draft_chapters,
-        )
+        chapters = list(story_source.chapters)
         review = self._run_structured_agent(
             schema=EditorialReviewSchema,
             request=PromptRequest(
@@ -214,7 +246,15 @@ class NovelGeneratorService(
             ),
             workflow_trace={
                 "story_architect": architecture.model_dump(),
-                "story_drafter": story_draft_set.model_dump(),
+                "story_drafter": {
+                    "source": "story_source",
+                    "title": story_source.title,
+                    "chapter_count": len(story_source.chapters),
+                },
+                "story_source": {
+                    "title": story_source.title,
+                    "chapter_count": len(story_source.chapters),
+                },
                 "cast_analyzer": cast_analysis.model_dump(),
                 "character_designer": character_roster.model_dump(),
                 "chapter_planner": chapter_plan_set.model_dump(),
@@ -271,50 +311,6 @@ class NovelGeneratorService(
             ),
         )
 
-    def _build_chapters(
-        self,
-        brief: StoryBrief,
-        outline: StoryOutline,
-        cast_analysis: CastAnalysisSchema,
-        seed_chapters: list[DraftChapter] | None = None,
-    ) -> list[DraftChapter]:
-        drafted: list[DraftChapter] = []
-        seed_by_number = {item.number: item for item in (seed_chapters or [])}
-        for chapter in outline.chapters:
-            source_chapter = seed_by_number.get(chapter.number)
-            chapter_payload = self._run_structured_agent(
-                schema=ChapterDraftSchema,
-                request=PromptRequest(
-                    system_prompt=build_writer_system_prompt(),
-                    user_prompt=build_writer_user_prompt(
-                        brief=brief,
-                        outline=outline,
-                        chapter=chapter,
-                        previous_chapters=drafted,
-                        cast_analysis=cast_analysis,
-                        source_chapter=source_chapter,
-                    ),
-                    metadata={"task": f"chapter-writer-{chapter.number:02d}"},
-                ),
-                fallback=(
-                    self._chapter_schema_from_seed(source_chapter)
-                    if source_chapter is not None
-                    else self._fallback_chapter_draft(brief, outline, chapter)
-                ),
-            )
-            drafted.append(
-                DraftChapter(
-                    number=chapter_payload.number,
-                    title=chapter_payload.title,
-                    markdown=chapter_payload.markdown,
-                    summary=chapter_payload.summary,
-                    agent_notes=f"goal={chapter.goal}",
-                    visual_hooks=chapter_payload.visual_hooks,
-                    continuity_refs=chapter_payload.continuity_refs,
-                )
-            )
-        return drafted
-
     def _assemble_seed_chapters(
         self,
         story_draft_set: StoryDraftSetSchema,
@@ -350,6 +346,7 @@ class NovelGeneratorService(
         schema: type[StructuredModelT],
         request: PromptRequest,
         fallback: StructuredModelT,
+        validator: Callable[[StructuredModelT], StructuredModelT] | None = None,
     ) -> StructuredModelT:
         # Dry-run remains deterministic for tests and demos. Live LLM execution is
         # fail-fast: invalid structured output is retried, then raised explicitly.
@@ -357,12 +354,18 @@ class NovelGeneratorService(
             return fallback
         last_error: Exception | None = None
         for attempt in range(1, self.structured_retry_attempts + 1):
-            attempt_request = self._build_retry_request(request, schema, attempt)
+            attempt_request = self._build_retry_request(
+                request,
+                schema,
+                attempt,
+                last_error,
+            )
             try:
                 response = self.backend.generate_structured(attempt_request, schema)
-                if isinstance(response, schema):
-                    return response
-                return schema.model_validate(response)
+                candidate = response if isinstance(response, schema) else schema.model_validate(response)
+                if validator is not None:
+                    return validator(candidate)
+                return candidate
             except AgentBackendUnavailableError:
                 raise
             except Exception as exc:
@@ -380,13 +383,20 @@ class NovelGeneratorService(
         request: PromptRequest,
         schema: type[StructuredModelT],
         attempt: int,
+        last_error: Exception | None = None,
     ) -> PromptRequest:
         if attempt <= 1:
             return request
 
+        error_text = ""
+        if last_error is not None:
+            normalized_error = " ".join(str(last_error).split())
+            if normalized_error:
+                error_text = f"失败原因：{normalized_error}。"
         retry_note = (
             "\n\n上一次输出未通过结构化校验。"
             f"这是第 {attempt} 次尝试。"
+            f"{error_text}"
             f"请严格按 {schema.__name__} 对应结构返回，不要输出解释，不要输出 Markdown 代码块，"
             "不要遗漏字段。"
         )
@@ -397,3 +407,73 @@ class NovelGeneratorService(
             user_prompt=request.user_prompt + retry_note,
             metadata=metadata,
         )
+
+    def _validate_cast_analysis_output(
+        self,
+        analysis: CastAnalysisSchema,
+        *,
+        story_draft_set: StoryDraftSetSchema,
+    ) -> CastAnalysisSchema:
+        story_text = self._normalize_story_evidence_text(
+            self._story_draft_text(story_draft_set)
+        )
+        if not story_text:
+            return analysis
+
+        unsupported_slots: list[str] = []
+        for slot in analysis.slots:
+            evidence_tokens = [
+                item.strip()
+                for item in slot.source_evidence
+                if item.strip()
+            ]
+            if not evidence_tokens:
+                unsupported_slots.append(f"{slot.slot_id}:{slot.brief_label}")
+                continue
+            if not any(self._story_evidence_supported(token, story_text) for token in evidence_tokens):
+                unsupported_slots.append(f"{slot.slot_id}:{slot.brief_label}")
+
+        if unsupported_slots:
+            raise ValueError(
+                "以下 cast slot 缺少可在小说正文中定位的 source_evidence："
+                + "、".join(unsupported_slots)
+            )
+        return analysis
+
+    def _validate_character_roster_output(
+        self,
+        roster: CharacterRosterSchema,
+        *,
+        cast_analysis: CastAnalysisSchema,
+    ) -> CharacterRosterSchema:
+        expected_slots = [
+            item.slot_id
+            for item in cast_analysis.primary_slots(
+                max(1, cast_analysis.recommended_core_cast_count)
+            )
+        ]
+        actual_slots = [item.cast_slot_id.strip() for item in roster.characters]
+
+        if len(actual_slots) != len(expected_slots):
+            raise ValueError(
+                f"角色数量必须与目标 slots 数一致。期望 {len(expected_slots)} 个，实际 {len(actual_slots)} 个。"
+            )
+        if actual_slots != expected_slots:
+            raise ValueError(
+                "角色 cast_slot_id 必须与上游 slots 完全一致且顺序一致。"
+                f"期望：{expected_slots}；实际：{actual_slots}。"
+            )
+        return roster
+
+    def _normalize_story_evidence_text(self, text: str) -> str:
+        return "".join(text.split())
+
+    def _story_evidence_supported(
+        self,
+        evidence: str,
+        normalized_story_text: str,
+    ) -> bool:
+        normalized_evidence = self._normalize_story_evidence_text(evidence)
+        if len(normalized_evidence) < 2:
+            return False
+        return normalized_evidence in normalized_story_text

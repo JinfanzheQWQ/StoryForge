@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from storyforge.application.tasks import QueuedTask, TaskRecord
 from storyforge.core.io import read_json
-from storyforge.domains.novel.contracts import NovelPackage
+from storyforge.domains.novel.contracts import NovelPackage, StorySourcePackage
 
 if TYPE_CHECKING:
     from storyforge.application.task_runtime import TaskExecutionContext
@@ -48,6 +48,16 @@ def load_novel_package(source_task: TaskRecord) -> NovelPackage:
     if not package_path.exists():
         raise FileNotFoundError(f"Novel package not found at {package_path}")
     return NovelPackage.from_dict(read_json(package_path))
+
+
+def load_story_source(source_task: TaskRecord) -> StorySourcePackage:
+    raw_story_source_path = source_task.result.get("story_source_path") if source_task.result else None
+    if not raw_story_source_path:
+        raise ValueError(f"Source task {source_task.task_id} has no story_source_path")
+    story_source_path = Path(str(raw_story_source_path))
+    if not story_source_path.exists():
+        raise FileNotFoundError(f"Story source not found at {story_source_path}")
+    return StorySourcePackage.from_dict(read_json(story_source_path))
 
 
 def resolve_story_title(source_task: TaskRecord) -> str:

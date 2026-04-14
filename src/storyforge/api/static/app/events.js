@@ -17,6 +17,11 @@ import {
 import { refreshTasks } from "./refresh.js";
 import { renderProjectDetail } from "./render/projects.js";
 import { renderQueueDetail } from "./render/queue.js";
+import {
+  saveStorySourceDraft,
+  updateStoryChapterDraft,
+  updateStoryTitleDraft,
+} from "./story_source.js";
 import { state } from "./state.js";
 
 function handlePageTabClick(event) {
@@ -59,7 +64,7 @@ async function handleProjectDetailClick(event) {
 
   const runButton = event.target.closest("[data-select-project-run]");
   if (runButton) {
-    selectProjectRun(runButton.dataset.selectProjectRun);
+    await selectProjectRun(runButton.dataset.selectProjectRun);
     return;
   }
 
@@ -67,6 +72,38 @@ async function handleProjectDetailClick(event) {
   if (tabButton) {
     state.projectDetailTab = tabButton.dataset.detailTab;
     renderProjectDetail();
+    return;
+  }
+
+  const saveStoryButton = event.target.closest("[data-save-story-source]");
+  if (saveStoryButton) {
+    try {
+      await saveStorySourceDraft(
+        saveStoryButton.dataset.storySourceProject,
+        saveStoryButton.dataset.saveStorySource,
+      );
+      await refreshTasks();
+    } catch (error) {
+      elements.pollIndicator.textContent = error.message || "故事文本保存失败。";
+      renderProjectDetail();
+    }
+    return;
+  }
+
+  const analysisButton = event.target.closest("[data-generate-story-analysis]");
+  if (analysisButton) {
+    try {
+      await submitStageJob(
+        "/v1/projects/story-analysis",
+        {
+          project_id: analysisButton.dataset.storySourceProject,
+          source_task_id: analysisButton.dataset.generateStoryAnalysis,
+        },
+        "结构化任务已创建",
+      );
+    } catch (error) {
+      elements.pollIndicator.textContent = error.message || "结构化任务提交失败。";
+    }
     return;
   }
 
@@ -132,10 +169,10 @@ function handleQueueListClick(event) {
   if (!button) {
     return;
   }
-  selectQueueTask(button.dataset.selectQueueTask);
+  void selectQueueTask(button.dataset.selectQueueTask);
 }
 
-function handleQueueDetailClick(event) {
+async function handleQueueDetailClick(event) {
   const tabButton = event.target.closest("[data-detail-tab]");
   if (tabButton) {
     state.queueDetailTab = tabButton.dataset.detailTab;
@@ -143,10 +180,96 @@ function handleQueueDetailClick(event) {
     return;
   }
 
+  const saveStoryButton = event.target.closest("[data-save-story-source]");
+  if (saveStoryButton) {
+    try {
+      await saveStorySourceDraft(
+        saveStoryButton.dataset.storySourceProject,
+        saveStoryButton.dataset.saveStorySource,
+      );
+      await refreshTasks();
+    } catch (error) {
+      elements.pollIndicator.textContent = error.message || "故事文本保存失败。";
+      renderQueueDetail();
+    }
+    return;
+  }
+
+  const analysisButton = event.target.closest("[data-generate-story-analysis]");
+  if (analysisButton) {
+    try {
+      await submitStageJob(
+        "/v1/projects/story-analysis",
+        {
+          project_id: analysisButton.dataset.storySourceProject,
+          source_task_id: analysisButton.dataset.generateStoryAnalysis,
+        },
+        "结构化任务已创建",
+      );
+    } catch (error) {
+      elements.pollIndicator.textContent = error.message || "结构化任务提交失败。";
+    }
+    return;
+  }
+
   const previewButton = event.target.closest("[data-preview-group]");
   if (previewButton) {
     openLightbox(previewButton.dataset.previewGroup, Number(previewButton.dataset.previewIndex));
   }
+}
+
+function handleStorySourceInput(event, context) {
+  const container = context === "project" ? elements.projectDetailView : elements.queueDetailView;
+
+  const titleInput = event.target.closest("[data-story-title-input]");
+  if (titleInput) {
+    updateStoryTitleDraft(
+      titleInput.dataset.storySourceProject,
+      titleInput.dataset.storySourceTask,
+      titleInput.value,
+    );
+    titleInput.setAttribute("value", titleInput.value);
+    syncStorySourceEditorChrome(container, titleInput.dataset.storySourceTask);
+    return;
+  }
+
+  const chapterField = event.target.closest("[data-story-chapter-field]");
+  if (!chapterField) {
+    return;
+  }
+
+  updateStoryChapterDraft(
+    chapterField.dataset.storySourceProject,
+    chapterField.dataset.storySourceTask,
+    Number(chapterField.dataset.storyChapterIndex),
+    chapterField.dataset.storyChapterField,
+    chapterField.value,
+  );
+  if (chapterField.tagName === "TEXTAREA") {
+    chapterField.textContent = chapterField.value;
+  } else {
+    chapterField.setAttribute("value", chapterField.value);
+  }
+  syncStorySourceEditorChrome(container, chapterField.dataset.storySourceTask);
+}
+
+function syncStorySourceEditorChrome(container, sourceTaskId) {
+  container
+    .querySelectorAll(`[data-save-story-source="${CSS.escape(sourceTaskId)}"]`)
+    .forEach((button) => {
+      button.disabled = false;
+      button.textContent = "保存正文";
+    });
+  container
+    .querySelectorAll(`[data-generate-story-analysis="${CSS.escape(sourceTaskId)}"]`)
+    .forEach((button) => {
+      button.disabled = true;
+    });
+  container
+    .querySelectorAll(`[data-story-status-note="${CSS.escape(sourceTaskId)}"]`)
+    .forEach((node) => {
+      node.textContent = "文本已修改，尚未保存。保存后再重新生成结构化信息。";
+    });
 }
 
 function handleLightboxClick(event) {
@@ -195,8 +318,16 @@ export function bindEvents() {
   elements.projectDetailView.addEventListener("click", (event) => {
     void handleProjectDetailClick(event);
   });
+  elements.projectDetailView.addEventListener("input", (event) => {
+    handleStorySourceInput(event, "project");
+  });
   elements.queueTaskList.addEventListener("click", handleQueueListClick);
-  elements.queueDetailView.addEventListener("click", handleQueueDetailClick);
+  elements.queueDetailView.addEventListener("click", (event) => {
+    void handleQueueDetailClick(event);
+  });
+  elements.queueDetailView.addEventListener("input", (event) => {
+    handleStorySourceInput(event, "queue");
+  });
   elements.refreshButton.addEventListener("click", () => {
     void refreshTasks();
   });

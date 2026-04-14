@@ -71,24 +71,26 @@ class NovelRepairMixin:
             explicit_counterpart=explicit_counterpart,
             story_draft_set=story_draft_set,
         )
-        recommended_core_cast_count = max(
-            1,
-            analysis.recommended_core_cast_count,
-            fallback.recommended_core_cast_count,
-        )
         prefers_male_female_pair = (
             analysis.prefers_male_female_pair
             or self._brief_prefers_male_female_pair(brief, analysis)
         )
         expected_pair = self._expected_primary_character_genders(brief, analysis)
+        requested_core_cast_count = max(1, analysis.recommended_core_cast_count)
 
         repaired_slots = self._repair_cast_slots(
             analysis.slots,
             fallback.slots,
-            recommended_core_cast_count=recommended_core_cast_count,
             explicit_counterpart=explicit_counterpart,
             expected_pair=expected_pair,
         )
+        if repaired_slots:
+            recommended_core_cast_count = min(
+                requested_core_cast_count,
+                len(repaired_slots),
+            )
+        else:
+            recommended_core_cast_count = 1
         repaired_relationships = self._repair_cast_relationships(
             analysis.relationships,
             repaired_slots,
@@ -158,14 +160,14 @@ class NovelRepairMixin:
         slots: list[CastSlotSchema],
         fallback_slots: list[CastSlotSchema],
         *,
-        recommended_core_cast_count: int,
         explicit_counterpart: bool,
         expected_pair: tuple[str, str] | None,
     ) -> list[CastSlotSchema]:
         repaired: list[CastSlotSchema] = []
         seen_slot_ids: set[str] = set()
 
-        for index, slot in enumerate(slots):
+        source_slots = slots or fallback_slots[:1]
+        for index, slot in enumerate(source_slots):
             fallback_slot = fallback_slots[index % len(fallback_slots)]
             slot_id = slot.slot_id.strip() or fallback_slot.slot_id
             if slot_id in seen_slot_ids:
@@ -195,14 +197,6 @@ class NovelRepairMixin:
                 )
             )
             seen_slot_ids.add(slot_id)
-
-        for fallback_slot in fallback_slots:
-            if len(repaired) >= recommended_core_cast_count:
-                break
-            if fallback_slot.slot_id in seen_slot_ids:
-                continue
-            repaired.append(fallback_slot)
-            seen_slot_ids.add(fallback_slot.slot_id)
 
         repaired.sort(key=lambda item: (item.order_priority, item.slot_id))
         if explicit_counterpart and len(repaired) >= 2:
@@ -253,13 +247,17 @@ class NovelRepairMixin:
             architecture,
             cast_analysis=cast_analysis,
         )
-        minimum_count = self._minimum_core_character_count(brief, cast_analysis)
+        expected_slot_ids = self._expected_character_slot_ids(cast_analysis, fallback)
+        fallback_by_slot = {item.cast_slot_id: item for item in fallback.characters}
         repaired = []
         seen_names: set[str] = set()
+        seen_slot_ids: set[str] = set()
 
-        for index, item in enumerate(roster.characters):
-            fallback_item = fallback.characters[index % len(fallback.characters)]
-            cast_slot_id = item.cast_slot_id.strip() or fallback_item.cast_slot_id
+        for item in roster.characters:
+            cast_slot_id = item.cast_slot_id.strip()
+            if not cast_slot_id or cast_slot_id not in expected_slot_ids or cast_slot_id in seen_slot_ids:
+                continue
+            fallback_item = fallback_by_slot.get(cast_slot_id) or fallback.characters[0]
             name = item.name.strip() or fallback_item.name
             if name in seen_names:
                 continue
@@ -278,14 +276,19 @@ class NovelRepairMixin:
                 )
             )
             seen_names.add(name)
+            seen_slot_ids.add(cast_slot_id)
 
-        for fallback_item in fallback.characters:
-            if len(repaired) >= minimum_count:
-                break
+        for cast_slot_id in expected_slot_ids:
+            if cast_slot_id in seen_slot_ids:
+                continue
+            fallback_item = fallback_by_slot.get(cast_slot_id)
+            if fallback_item is None:
+                continue
             if fallback_item.name in seen_names:
                 continue
             repaired.append(fallback_item)
             seen_names.add(fallback_item.name)
+            seen_slot_ids.add(cast_slot_id)
 
         repaired = self._repair_primary_character_genders(
             repaired,
@@ -437,12 +440,33 @@ class NovelRepairMixin:
         characters: list,
         fallback: CharacterRosterSchema,
     ) -> list:
-        repaired = list(characters)
-        for index, item in enumerate(repaired):
-            fallback_item = fallback.characters[index % len(fallback.characters)]
-            cast_slot_id = item.cast_slot_id.strip() or fallback_item.cast_slot_id
-            repaired[index] = item.model_copy(update={"cast_slot_id": cast_slot_id})
+        repaired = []
+        fallback_slots = [item.cast_slot_id for item in fallback.characters]
+        seen_slot_ids: set[str] = set()
+
+        for item in characters:
+            cast_slot_id = item.cast_slot_id.strip()
+            if not cast_slot_id or cast_slot_id in seen_slot_ids:
+                cast_slot_id = next(
+                    (slot_id for slot_id in fallback_slots if slot_id not in seen_slot_ids),
+                    fallback_slots[0],
+                )
+            repaired.append(item.model_copy(update={"cast_slot_id": cast_slot_id}))
+            seen_slot_ids.add(cast_slot_id)
         return repaired
+
+    def _expected_character_slot_ids(
+        self,
+        cast_analysis: CastAnalysisSchema | None,
+        fallback: CharacterRosterSchema,
+    ) -> list[str]:
+        if cast_analysis is not None:
+            slots = cast_analysis.primary_slots(
+                max(1, cast_analysis.recommended_core_cast_count)
+            )
+            if slots:
+                return [item.slot_id for item in slots]
+        return [item.cast_slot_id for item in fallback.characters]
 
     def _minimum_featured_character_count(
         self,

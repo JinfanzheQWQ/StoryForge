@@ -87,8 +87,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 3. `Cast Analyzer`
 4. `Character Designer`
 5. `Chapter Planner`
-6. `Chapter Writer`
-7. `Editorial Reviewer`
+6. `Editorial Reviewer`
 
 如果要改“角色层级”“角色数量判断”“前两位角色顺序”“主配角关系图”这类行为，优先顺序必须是：
 
@@ -107,11 +106,13 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 4. 每个 slot 都必须保留 `brief_label`
 5. 每个 slot 都应尽量保留 `source_evidence`
 6. `Character Designer` 必须一一消费这些 slot，并回填 `cast_slot_id`
-7. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
-8. `Chapter Writer` 负责基于小说草稿做统一命名、角色一致性补强和文本润色
-9. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
-10. live LLM 模式下，结构化输出如果坏 JSON、缺失 `structured_response` 或 schema 校验失败，最多重试 3 次；仍失败就直接抛错，不再 silent fallback
-11. 运行时不要再依赖 DryRun；如果缺少 DeepSeek 配置，应明确报错。测试如需 deterministic backend，必须在测试代码里显式 patch 注入
+7. 角色正式名字必须全表唯一；该约束由 `CharacterRosterSchema` 强制校验
+8. 如果 LLM 输出同名角色，必须直接触发 structured retry；重试仍失败就显式报错，不再本地偷偷改名
+9. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
+10. 当前 `story_source` 就是正文真源；结构化分析阶段不再额外重写章节正文
+11. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
+12. live LLM 模式下，结构化输出如果坏 JSON、缺失 `structured_response` 或 schema 校验失败，最多重试 3 次；仍失败就直接抛错，不再 silent fallback
+13. 运行时不要再依赖 DryRun；如果缺少 DeepSeek 配置，应明确报错。测试如需 deterministic backend，必须在测试代码里显式 patch 注入
 
 如果未来再遇到“明明是多角色故事，却只被压成一个或两个人”的问题，优先检查：
 
@@ -187,10 +188,12 @@ uv run pytest tests/test_api.py tests/test_pipelines.py
 启动 Web / API：
 
 ```bash
-uv run storyforge api serve --reload
+uv run storyforge api serve
 ```
 
-运行 demo：
+需要调前端样式或接口热加载时，可以临时使用 `--reload`。不要在真实图片 / 视频长任务执行时使用 `--reload`，否则保存文件会触发服务重启，导致任务被中断并重新排队。
+
+运行 demo brief。该命令同样需要真实 DeepSeek 配置：
 
 ```bash
 uv run storyforge pipeline demo
@@ -241,10 +244,17 @@ scripts/clean-local-artifacts.sh --deep
 
 建议优先级：
 
-1. 持久化执行队列
+1. 生产级持久化执行队列
 2. Seedance 下载器 / 对象存储适配
-3. 生产级任务治理与失败恢复
+3. 生产级任务治理、幂等与失败恢复
 4. 更强的角色一致性 / 声音一致性控制
+
+## 已知实现约定
+
+- 结构化 LLM 输出仍然通过 LangChain 实现，但不要再回到 `create_agent + ToolStrategy` 做小说结构化输出；当前使用 `ChatModel.with_structured_output(method="function_calling")`，由 StoryForge 外层负责 3 次 structured retry。
+- `SeedanceManifest.title` 只能表示故事标题，不能写成 `segment_video_manifest` 这类文件用途名；读取旧产物时应优先从 `novel_package.json` / `story_source.json` 恢复标题。
+- 任务失败原因必须写入 `TaskRecord.error` / MySQL `error_text`，前端依赖该字段展示失败信息。
+- 服务启动时会把残留 `running` 任务重新排回 `queued`；这只是开发期恢复策略，不等价于生产级幂等队列。
 
 ## 相关文档
 

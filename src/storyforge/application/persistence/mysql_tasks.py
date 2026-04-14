@@ -241,12 +241,12 @@ class MySQLTaskStore(TaskStore):
                     """
                     UPDATE tasks
                     SET
-                        status = 'failed',
-                        error_text = %s,
-                        finished_at = %s
+                        status = 'queued',
+                        started_at = NULL,
+                        finished_at = NULL,
+                        error_text = NULL
                     WHERE status = 'running'
                     """,
-                    ("Task was interrupted by a service restart.", utc_now()),
                 )
         finally:
             connection.close()

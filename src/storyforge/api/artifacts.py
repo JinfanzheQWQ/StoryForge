@@ -11,6 +11,19 @@ from storyforge.core.config import AppConfig
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".m4v"}
+DOCUMENT_PRIORITY = {
+    "story_source.json": 10,
+    "novel_package.json": 20,
+    "novel_audit.json": 30,
+    "character_visual_bible.json": 40,
+    "character_image_manifest.json": 50,
+    "segment_plan.json": 60,
+    "scene_image_manifest.json": 70,
+    "seedream_character_execution.json": 80,
+    "seedream_scene_execution.json": 90,
+    "seedance_manifest.json": 100,
+    "seedance_execution.json": 110,
+}
 
 
 def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
@@ -56,10 +69,9 @@ def build_task_artifacts(
 
     documents = [
         _to_artifact_item(path, resolved_output_root)
-        for path in _sorted_paths(output_dir.iterdir())
+        for path in _sorted_document_paths(output_dir.iterdir())
         if path.is_file()
     ]
-    chapters = _collect_artifacts(output_dir / "chapters", resolved_output_root)
     character_images = _collect_artifacts(
         output_dir / "assets" / "characters",
         resolved_output_root,
@@ -85,7 +97,6 @@ def build_task_artifacts(
         story_title=str(task.result.get("story_title") or output_dir.name),
         output_dir=str(output_dir),
         documents=documents,
-        chapters=chapters,
         character_images=character_images,
         scene_frames=scene_frames,
         rendered_clips=rendered_clips,
@@ -115,6 +126,17 @@ def _sorted_paths(paths: Iterable[Path]) -> list[Path]:
     return sorted(
         list(paths),
         key=lambda item: (item.is_dir(), item.name.lower()),
+    )
+
+
+def _sorted_document_paths(paths: Iterable[Path]) -> list[Path]:
+    return sorted(
+        list(paths),
+        key=lambda item: (
+            item.is_dir(),
+            DOCUMENT_PRIORITY.get(item.name, 999),
+            item.name.lower(),
+        ),
     )
 
 

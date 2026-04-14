@@ -18,9 +18,6 @@ class VideoPipelineResult:
     manifest_path: Path
     seedream_execution_path: Path
     seedance_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
-    workflow_trace_path: Path
     rendered_clip_paths: list[Path]
     full_story_path: Path | None
     project_package: VideoProjectPackage
@@ -39,9 +36,6 @@ class CharacterImagePipelineResult:
     manifest_path: Path
     seedream_execution_path: Path
     character_seedream_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
-    workflow_trace_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
     seedream_execution: SeedreamExecutionReport | None
@@ -58,9 +52,6 @@ class SceneImagePipelineResult:
     seedream_execution_path: Path
     character_seedream_execution_path: Path
     scene_seedream_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
-    workflow_trace_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
     seedream_execution: SeedreamExecutionReport | None
@@ -77,9 +68,6 @@ class ImagePipelineResult:
     seedream_execution_path: Path
     character_seedream_execution_path: Path
     scene_seedream_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
-    workflow_trace_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
     seedream_execution: SeedreamExecutionReport | None
@@ -90,8 +78,6 @@ class VideoRenderResult:
     output_dir: Path
     manifest_path: Path
     seedance_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
     rendered_clip_paths: list[Path]
     full_story_path: Path | None
     manifest: SeedanceManifest
@@ -106,11 +92,5 @@ class VideoPlanningArtifacts:
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path
-    seedream_execution_path: Path
-    seedance_execution_path: Path
-    concat_script_path: Path
-    concat_list_path: Path
-    workflow_trace_path: Path
-    full_story_output_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest

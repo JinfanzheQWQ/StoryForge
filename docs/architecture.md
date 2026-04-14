@@ -59,40 +59,40 @@ Integrations
 3. `Cast Analyzer`
 4. `Character Designer`
 5. `Chapter Planner`
-6. `Chapter Writer`
-7. `Editorial Reviewer`
+6. `Editorial Reviewer`
 
-生成流程：
+当前已经拆成两个明确阶段：
 
 ```text
 StoryBrief
   -> StoryArchitectureSchema
   -> StoryDraftSetSchema
+  -> StorySourcePackage
+  -> [用户可审阅 / 编辑]
+  -> StoryArchitectureSchema (analysis)
   -> CastAnalysisSchema
   -> CharacterRosterSchema
   -> ChapterPlanSetSchema
   -> StoryOutline
-  -> DraftChapter[]
   -> EditorialReview
   -> NovelPackage
 ```
 
+其中：
+
+- `project.story` 只负责生成 `StorySourcePackage`
+- `project.story_analysis` 只负责从 `story_source` 生成 `NovelPackage`
+
 关键中间产物：
 
-- `outline.json`
+- `story_source.json`
 - `novel_package.json`
-- `editorial_review.json`
-- `workflow_trace.json`
-- `chapters/*.md`
+- `novel_audit.json`
 
-`workflow_trace.json` 中当前会记录：
+其中：
 
-- `story_architect`
-- `story_drafter`
-- `cast_analyzer`
-- `character_designer`
-- `chapter_planner`
-- `editor_review`
+- `novel_package.json` 是运行态最小包，包含 `brief`、精简后的 `outline` 和精简后的 `chapters`
+- `novel_audit.json` 保存 `review`、`workflow_trace`，以及从运行包剥离出来的分析上下文
 
 ### 小说链路约定
 
@@ -102,7 +102,7 @@ StoryBrief
 - **角色结构、层级、排序与关系图以 `Cast Analyzer` 的 LLM 解析结果为主**
 - **`Story Architect` 只负责故事引擎、主题、舞台和视觉母题，不负责预设最终角色人数**
 - **live LLM 模式下，结构化阶段失败会先重试 3 次，仍失败则显式终止任务，不再用旧的 brief-first 结果静默顶替**
-- **运行时已移除 DryRun / 演示模式，真实任务必须带可用 DeepSeek 配置**
+- **运行时已移除 DryRun / 非 LLM 演示模式，真实任务必须带可用 DeepSeek 配置**
 - `heuristics` 只负责 fallback 和 repair，不再主导“到底有几个核心角色、谁和谁是关系双方”
 
 这意味着：
@@ -112,8 +112,11 @@ StoryBrief
 3. 再由 `Cast Analyzer` 基于小说草稿解析 cast slots、角色层级、关系图与排序规则
 4. cast slots 会尽量保留小说草稿中的角色指代和 `source_evidence`，避免把“记者 / 线人 / 前任 / 退休警察”压扁成泛化配角
 5. `Character Designer` 与 `Chapter Planner` 再消费这份草稿与 cast 结构
-6. `Chapter Writer` 最后基于小说草稿原章内容做统一命名、声线强化和结构化润色
+6. 当前 `story_source` 就是正文真源；结构化分析阶段不再重写章节正文，而是直接分析这份正文
 7. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics 补位
+8. `Cast Analyzer` 的每个 slot 都必须带 `source_evidence`，且证据需要能在小说正文里定位；没有正文证据的角色不应进入核心 cast
+9. `Character Designer` 现在必须严格覆盖上游目标 slots：角色数量必须与目标 slots 数量一致，`cast_slot_id` 不能重复，不能额外新增正文里没有支撑的人物
+10. story 阶段会保留 2 个运行核心文件：`story_source.json`、`novel_package.json`；另有 1 个审计文件 `novel_audit.json`
 
 ### 小说域内部拆分
 
@@ -187,6 +190,7 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 任务入口：
 
 - `project.story`
+- `project.story_analysis`
 - `project.characters`
 - `project.scenes`
 - `project.images`
@@ -207,6 +211,8 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 - 队列负责执行和状态切换
 - 阶段任务复用同一个 `output_dir`
 - 任务结果驱动前端实时预览
+- 任务失败时 `error` 会进入任务记录，并在前端详情页和阶段卡片中展示
+- 服务启动时，残留的 `running` 任务会重新回到 `queued`，避免热重载或进程重启直接把长任务标记为失败
 
 ## 持久化
 
@@ -223,6 +229,32 @@ MySQL 实现位于：
 - [`../src/storyforge/application/persistence/mysql_utils.py`](../src/storyforge/application/persistence/mysql_utils.py)
 
 当前执行队列本身仍然是内存态；元数据可持久化，但任务执行状态还不是生产级持久化队列。
+
+当前恢复策略：
+
+- 本地 JSON 与 MySQL 都会在服务启动时扫描 `running` 任务
+- 这些任务会被重排为 `queued`
+- 已经落盘的 `result` 会被保留，用于前端继续展示已生成产物
+- 这不是严格的幂等执行队列；如果外部模型已经接收过请求，重启后仍可能出现重复提交风险
+
+生产环境仍建议替换为 Redis / Celery / Arq / TaskIQ 等真正持久化队列，并引入外部任务幂等键。
+
+## 前端与静态资源
+
+前端当前是原生 HTML / CSS / ES Module 结构，不使用 React。
+
+关键模块：
+
+- [`../src/storyforge/api/templates/console.html`](../src/storyforge/api/templates/console.html)
+- [`../src/storyforge/api/static/app`](../src/storyforge/api/static/app)
+- [`../src/storyforge/api/static/styles`](../src/storyforge/api/static/styles)
+
+静态资源响应使用 `no-store`，避免浏览器缓存导致新旧 ES Module 混用。
+
+## 已修复的关键兼容问题
+
+- DeepSeek OpenAI-compatible 接口不稳定接受 LangChain `create_agent + ToolStrategy` 的多轮工具消息链；结构化输出已改为 `ChatModel.with_structured_output(method="function_calling")`。
+- `SeedanceManifest.title` 曾被硬编码为 `segment_video_manifest`，会污染项目标题；现在新 manifest 使用小说标题，旧产物重载时优先从 `novel_package.json` / `story_source.json` 恢复真实标题。
 
 ## 模块职责约定
 

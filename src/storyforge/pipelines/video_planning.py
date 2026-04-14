@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from storyforge.core.config import AppConfig
-from storyforge.core.io import read_json, write_json, write_text
-from storyforge.domains.novel.contracts import NovelPackage
+from storyforge.core.io import read_json, write_json
+from storyforge.domains.novel.contracts import NovelPackage, StorySourcePackage
 from storyforge.domains.video.contracts import (
     CharacterImageTask,
     CharacterVisualProfile,
@@ -14,7 +14,6 @@ from storyforge.domains.video.contracts import (
     VideoSegment,
 )
 from storyforge.domains.video.service import NovelToVideoService
-from storyforge.integrations.ffmpeg_adapter import build_concat_list, build_concat_script
 from storyforge.integrations.llm import build_agent_backend
 from storyforge.pipelines.video_models import VideoPlanningArtifacts
 
@@ -46,24 +45,12 @@ def build_video_planning_artifacts(
     segment_plan_path = output_dir / "segment_plan.json"
     scene_images_path = output_dir / "scene_image_manifest.json"
     manifest_path = output_dir / "seedance_manifest.json"
-    seedream_execution_path = output_dir / "seedream_execution.json"
-    seedance_execution_path = output_dir / "seedance_execution.json"
-    concat_script_path = output_dir / "ffmpeg_concat.sh"
-    concat_list_path = output_dir / "concat_list.txt"
-    full_story_output_path = output_dir / "rendered" / "full_story.mp4"
-    workflow_trace_path = output_dir / "video_workflow_trace.json"
 
     write_json(character_bible_path, project_package.character_profiles)
     write_json(character_images_path, project_package.character_images)
     write_json(segment_plan_path, project_package.segments)
     write_json(scene_images_path, project_package.scene_images)
     write_json(manifest_path, manifest)
-    write_text(
-        concat_script_path,
-        build_concat_script(manifest, output_path=str(full_story_output_path)),
-    )
-    write_text(concat_list_path, build_concat_list(manifest))
-    write_json(workflow_trace_path, project_package.workflow_trace)
 
     return VideoPlanningArtifacts(
         output_dir=output_dir,
@@ -72,12 +59,6 @@ def build_video_planning_artifacts(
         segment_plan_path=segment_plan_path,
         scene_images_path=scene_images_path,
         manifest_path=manifest_path,
-        seedream_execution_path=seedream_execution_path,
-        seedance_execution_path=seedance_execution_path,
-        concat_script_path=concat_script_path,
-        concat_list_path=concat_list_path,
-        workflow_trace_path=workflow_trace_path,
-        full_story_output_path=full_story_output_path,
         project_package=project_package,
         manifest=manifest,
     )
@@ -89,12 +70,6 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
     segment_plan_path = output_dir / "segment_plan.json"
     scene_images_path = output_dir / "scene_image_manifest.json"
     manifest_path = output_dir / "seedance_manifest.json"
-    seedream_execution_path = output_dir / "seedream_execution.json"
-    seedance_execution_path = output_dir / "seedance_execution.json"
-    concat_script_path = output_dir / "ffmpeg_concat.sh"
-    concat_list_path = output_dir / "concat_list.txt"
-    full_story_output_path = output_dir / "rendered" / "full_story.mp4"
-    workflow_trace_path = output_dir / "video_workflow_trace.json"
 
     required_paths = {
         "character_visual_bible.json": character_bible_path,
@@ -110,9 +85,10 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
             + ", ".join(missing_files)
         )
 
-    workflow_trace = read_json(workflow_trace_path) if workflow_trace_path.exists() else {}
+    manifest = SeedanceManifest.from_dict(read_json(manifest_path))
+
     project_package = VideoProjectPackage(
-        title=str(SeedanceManifest.from_dict(read_json(manifest_path)).title),
+        title=_resolve_video_project_title(output_dir, manifest),
         character_profiles=[
             CharacterVisualProfile.from_dict(item)
             for item in read_json(character_bible_path)
@@ -129,8 +105,8 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
             SceneImageTask.from_dict(item)
             for item in read_json(scene_images_path)
         ],
-        seedance_manifest=SeedanceManifest.from_dict(read_json(manifest_path)),
-        workflow_trace=workflow_trace if isinstance(workflow_trace, dict) else {},
+        seedance_manifest=manifest,
+        workflow_trace={},
     )
 
     return VideoPlanningArtifacts(
@@ -140,12 +116,31 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
         segment_plan_path=segment_plan_path,
         scene_images_path=scene_images_path,
         manifest_path=manifest_path,
-        seedream_execution_path=seedream_execution_path,
-        seedance_execution_path=seedance_execution_path,
-        concat_script_path=concat_script_path,
-        concat_list_path=concat_list_path,
-        workflow_trace_path=workflow_trace_path,
-        full_story_output_path=full_story_output_path,
         project_package=project_package,
         manifest=project_package.seedance_manifest,
     )
+
+
+def _resolve_video_project_title(output_dir: Path, manifest: SeedanceManifest) -> str:
+    novel_package_path = output_dir / "novel_package.json"
+    if novel_package_path.exists():
+        payload = read_json(novel_package_path)
+        if isinstance(payload, dict):
+            outline = payload.get("outline")
+            if isinstance(outline, dict):
+                title = str(outline.get("title", "")).strip()
+                if title:
+                    return title
+
+    story_source_path = output_dir / "story_source.json"
+    if story_source_path.exists():
+        payload = read_json(story_source_path)
+        if isinstance(payload, dict):
+            title = StorySourcePackage.from_dict(payload).title.strip()
+            if title:
+                return title
+
+    manifest_title = manifest.title.strip()
+    if manifest_title and manifest_title not in {"segment_video_manifest", "seedance_manifest"}:
+        return manifest_title
+    return output_dir.name

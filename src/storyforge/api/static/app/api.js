@@ -58,6 +58,26 @@ export async function fetchProjectDetail(projectId) {
   return response.json();
 }
 
+export async function fetchStorySource(projectId, sourceTaskId) {
+  const response = await fetch(`/v1/projects/${projectId}/story-source/${sourceTaskId}`);
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function updateStorySource(projectId, sourceTaskId, payload) {
+  const response = await fetch(`/v1/projects/${projectId}/story-source/${sourceTaskId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
 export async function fetchTaskArtifacts(taskId) {
   const response = await fetch(`/v1/tasks/${taskId}/artifacts`);
   if (!response.ok) {

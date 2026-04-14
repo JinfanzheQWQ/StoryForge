@@ -126,9 +126,13 @@ class TaskStore:
         for record in self._tasks.values():
             if record.status != "running":
                 continue
-            record.status = "failed"
-            record.error = "Task was interrupted by a service restart."
-            record.finished_at = utc_now()
+            # A process restart should not permanently fail a long-running job.
+            # Keep partial result data and send it back to the queue so the task
+            # can resume from the last persisted stage inputs.
+            record.status = "queued"
+            record.started_at = None
+            record.finished_at = None
+            record.error = None
             changed = True
         if changed:
             self._save()
@@ -137,6 +141,8 @@ class TaskStore:
         record = self._tasks[task_id]
         record.status = "running"
         record.started_at = utc_now()
+        record.finished_at = None
+        record.error = None
         self._save()
 
     def mark_completed(self, task_id: str, result: dict[str, Any]) -> None:

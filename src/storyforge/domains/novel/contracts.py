@@ -163,8 +163,8 @@ class StoryOutline:
     def from_dict(cls, raw: dict[str, Any]) -> "StoryOutline":
         return cls(
             title=raw["title"],
-            premise=raw["premise"],
-            theme=raw["theme"],
+            premise=raw.get("premise", ""),
+            theme=raw.get("theme", ""),
             visual_motifs=list(raw.get("visual_motifs", [])),
             characters=[CharacterProfile.from_dict(item) for item in raw.get("characters", [])],
             chapters=[ChapterPlan.from_dict(item) for item in raw.get("chapters", [])],
@@ -192,6 +192,21 @@ class DraftChapter:
             agent_notes=raw.get("agent_notes", ""),
             visual_hooks=list(raw.get("visual_hooks", [])),
             continuity_refs=list(raw.get("continuity_refs", [])),
+        )
+
+
+@dataclass(slots=True)
+class StorySourcePackage:
+    brief: StoryBrief
+    title: str
+    chapters: list[DraftChapter]
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StorySourcePackage":
+        return cls(
+            brief=StoryBrief.from_dict(raw["brief"]),
+            title=raw.get("title", raw.get("brief", {}).get("title_hint", "未命名故事")),
+            chapters=[DraftChapter.from_dict(item) for item in raw.get("chapters", [])],
         )
 
 

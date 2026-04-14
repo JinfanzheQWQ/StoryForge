@@ -3,6 +3,7 @@ import { state } from "../state.js";
 import {
   buildPipelineStageLabel,
   buildProjectSummary,
+  buildTaskErrorMessage,
   chip,
   compactId,
   emptyStateCard,
@@ -50,6 +51,7 @@ function renderCompareRow(run) {
   const task = run.rootTask;
   const displayTask = run.latestTask;
   const artifacts = run.latestArtifacts;
+  const errorMessage = buildTaskErrorMessage(displayTask);
   const summary = artifacts?.available
     ? `角色图 ${artifacts.character_images.length} / 场景帧 ${artifacts.scene_frames.length} / 片段 ${artifacts.rendered_clips.length}${artifacts.full_story ? " / 总片" : ""}`
     : "等待产物";
@@ -73,6 +75,7 @@ function renderCompareRow(run) {
         <small>
           <button type="button" class="topbar-link" data-select-project-run="${escapeAttr(task.task_id)}">查看这个版本</button>
         </small>
+        ${errorMessage ? `<small class="compare-error">失败原因：${escapeHtml(errorMessage)}</small>` : ""}
       </div>
     </article>
   `;

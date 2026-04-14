@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -12,6 +13,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from storyforge.core.config import AppConfig  # noqa: E402
+from storyforge.core.io import read_json  # noqa: E402
 from storyforge.agents.base import DryRunAgentBackend, PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
 from storyforge.domains.novel.errors import NovelStructuredGenerationError  # noqa: E402
@@ -20,7 +22,15 @@ from storyforge.domains.novel.prompts import (  # noqa: E402
     build_character_user_prompt,
     build_chapter_planner_user_prompt,
 )
-from storyforge.domains.novel.schemas import StoryArchitectureSchema  # noqa: E402
+from storyforge.domains.novel.schemas import (  # noqa: E402
+    CastAnalysisSchema,
+    CastRelationshipSchema,
+    CastSlotSchema,
+    ChapterDraftSchema,
+    CharacterRosterSchema,
+    StoryArchitectureSchema,
+    StoryDraftSetSchema,
+)
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
 from storyforge.domains.video.contracts import CharacterVisualProfile, VideoSegment  # noqa: E402
 from storyforge.domains.video.schemas import CharacterVisualBibleSchema, VideoSegmentPlanSchema  # noqa: E402
@@ -29,6 +39,10 @@ from storyforge.integrations.seedance import SeedanceExecutionReport  # noqa: E4
 from storyforge.integrations.seedream import SeedreamExecutionReport  # noqa: E402
 from storyforge.pipelines.story_pipeline import run_story_pipeline  # noqa: E402
 from storyforge.pipelines.video_pipeline import run_video_pipeline  # noqa: E402
+from storyforge.pipelines.video_planning import (  # noqa: E402
+    build_video_planning_artifacts,
+    load_video_planning_artifacts,
+)
 
 
 class PipelineTestCase(unittest.TestCase):
@@ -103,6 +117,69 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 3)
         self.assertIn("上一次输出未通过结构化校验", service.backend.requests[-1].user_prompt)
 
+    def test_video_planning_manifest_title_uses_story_title(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一场在末班列车前发生的告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        planning = build_video_planning_artifacts(
+            novel_package=story_result.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            use_llm=False,
+        )
+
+        self.assertEqual(planning.manifest.title, story_result.novel_package.outline.title)
+
+    def test_load_video_planning_artifacts_restores_story_title_from_novel_package(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一场在末班列车前发生的告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        planning = build_video_planning_artifacts(
+            novel_package=story_result.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            use_llm=False,
+        )
+        manifest_payload = read_json(planning.manifest_path)
+        manifest_payload["title"] = "segment_video_manifest"
+        planning.manifest_path.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        loaded = load_video_planning_artifacts(story_result.output_dir)
+
+        self.assertEqual(loaded.project_package.title, story_result.novel_package.outline.title)
+        self.assertEqual(loaded.manifest.title, "segment_video_manifest")
+
     def test_live_structured_generation_raises_after_retry_limit(self) -> None:
         class AlwaysFailBackend:
             def __init__(self) -> None:
@@ -139,6 +216,306 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(service.backend.calls, 3)
         self.assertIn("task=story-architect", str(ctx.exception))
 
+    def test_character_roster_duplicate_names_trigger_structured_retry(self) -> None:
+        class DuplicateNameBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "characters": [
+                            {
+                                "cast_slot_id": "lead_1",
+                                "name": "程野",
+                                "role": "主角",
+                                "gender": "男",
+                                "desire": "推进故事",
+                                "conflict": "面对阻力",
+                                "arc": "学会回应",
+                                "visual_signature": ["站台"],
+                                "voice_style": "克制",
+                                "voice_profile": {
+                                    "voice_style": "克制",
+                                    "timbre": "清亮",
+                                    "speaking_rate": "中速",
+                                    "emotional_baseline": "紧张",
+                                    "accent_or_texture": "",
+                                    "dialogue_delivery": "",
+                                    "forbidden_voice_changes": ["不要突然变老"],
+                                },
+                                "image_prompt": "程野，男，站台上的人。",
+                            },
+                            {
+                                "cast_slot_id": "lead_2",
+                                "name": "程野",
+                                "role": "对位角色",
+                                "gender": "女",
+                                "desire": "作出回应",
+                                "conflict": "不敢坦白",
+                                "arc": "学会表达",
+                                "visual_signature": ["列车"],
+                                "voice_style": "克制",
+                                "voice_profile": {
+                                    "voice_style": "克制",
+                                    "timbre": "柔和",
+                                    "speaking_rate": "中速",
+                                    "emotional_baseline": "克制",
+                                    "accent_or_texture": "",
+                                    "dialogue_delivery": "",
+                                    "forbidden_voice_changes": ["不要突然变老"],
+                                },
+                                "image_prompt": "程野，女，列车旁的人。",
+                            },
+                        ]
+                    }
+                return {
+                    "characters": [
+                        {
+                            "cast_slot_id": "lead_1",
+                            "name": "程野",
+                            "role": "主角",
+                            "gender": "男",
+                            "desire": "推进故事",
+                            "conflict": "面对阻力",
+                            "arc": "学会回应",
+                            "visual_signature": ["站台"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "清亮",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "紧张",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "程野，男，站台上的人。",
+                        },
+                        {
+                            "cast_slot_id": "lead_2",
+                            "name": "苏晚",
+                            "role": "对位角色",
+                            "gender": "女",
+                            "desire": "作出回应",
+                            "conflict": "不敢坦白",
+                            "arc": "学会表达",
+                            "visual_signature": ["列车"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "柔和",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "克制",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "苏晚，女，列车旁的人。",
+                        },
+                    ]
+                }
+
+        service = NovelGeneratorService(backend=DuplicateNameBackend())
+        fallback = CharacterRosterSchema.model_validate(
+            {
+                "characters": [
+                    {
+                        "cast_slot_id": "lead_1",
+                        "name": "林雾",
+                        "role": "主角",
+                        "gender": "男",
+                        "desire": "推进故事",
+                        "conflict": "面对阻力",
+                        "arc": "学会回应",
+                        "visual_signature": ["站台"],
+                        "voice_style": "克制",
+                        "voice_profile": {
+                            "voice_style": "克制",
+                            "timbre": "清亮",
+                            "speaking_rate": "中速",
+                            "emotional_baseline": "紧张",
+                            "accent_or_texture": "",
+                            "dialogue_delivery": "",
+                            "forbidden_voice_changes": ["不要突然变老"],
+                        },
+                        "image_prompt": "林雾，男，站台上的人。",
+                    }
+                ]
+            }
+        )
+
+        result = service._run_structured_agent(
+            schema=CharacterRosterSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "character-designer"},
+            ),
+            fallback=fallback,
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertEqual([item.name for item in result.characters], ["程野", "苏晚"])
+        self.assertIn("重名角色", service.backend.requests[-1].user_prompt)
+        self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
+
+    def test_character_roster_duplicate_slot_ids_trigger_structured_retry(self) -> None:
+        class DuplicateSlotBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "characters": [
+                            {
+                                "cast_slot_id": "lead_1",
+                                "name": "程野",
+                                "role": "主角",
+                                "gender": "男",
+                                "desire": "推进故事",
+                                "conflict": "面对阻力",
+                                "arc": "学会回应",
+                                "visual_signature": ["站台"],
+                                "voice_style": "克制",
+                                "voice_profile": {
+                                    "voice_style": "克制",
+                                    "timbre": "清亮",
+                                    "speaking_rate": "中速",
+                                    "emotional_baseline": "紧张",
+                                    "accent_or_texture": "",
+                                    "dialogue_delivery": "",
+                                    "forbidden_voice_changes": ["不要突然变老"],
+                                },
+                                "image_prompt": "程野，男，站台上的人。",
+                            },
+                            {
+                                "cast_slot_id": "lead_1",
+                                "name": "苏晚",
+                                "role": "对位角色",
+                                "gender": "女",
+                                "desire": "作出回应",
+                                "conflict": "不敢坦白",
+                                "arc": "学会表达",
+                                "visual_signature": ["列车"],
+                                "voice_style": "克制",
+                                "voice_profile": {
+                                    "voice_style": "克制",
+                                    "timbre": "柔和",
+                                    "speaking_rate": "中速",
+                                    "emotional_baseline": "克制",
+                                    "accent_or_texture": "",
+                                    "dialogue_delivery": "",
+                                    "forbidden_voice_changes": ["不要突然变老"],
+                                },
+                                "image_prompt": "苏晚，女，列车旁的人。",
+                            },
+                        ]
+                    }
+                return {
+                    "characters": [
+                        {
+                            "cast_slot_id": "lead_1",
+                            "name": "程野",
+                            "role": "主角",
+                            "gender": "男",
+                            "desire": "推进故事",
+                            "conflict": "面对阻力",
+                            "arc": "学会回应",
+                            "visual_signature": ["站台"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "清亮",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "紧张",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "程野，男，站台上的人。",
+                        },
+                        {
+                            "cast_slot_id": "lead_2",
+                            "name": "苏晚",
+                            "role": "对位角色",
+                            "gender": "女",
+                            "desire": "作出回应",
+                            "conflict": "不敢坦白",
+                            "arc": "学会表达",
+                            "visual_signature": ["列车"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "柔和",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "克制",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "苏晚，女，列车旁的人。",
+                        },
+                    ]
+                }
+
+        service = NovelGeneratorService(backend=DuplicateSlotBackend())
+        fallback = CharacterRosterSchema.model_validate(
+            {
+                "characters": [
+                    {
+                        "cast_slot_id": "lead_1",
+                        "name": "林雾",
+                        "role": "主角",
+                        "gender": "男",
+                        "desire": "推进故事",
+                        "conflict": "面对阻力",
+                        "arc": "学会回应",
+                        "visual_signature": ["站台"],
+                        "voice_style": "克制",
+                        "voice_profile": {
+                            "voice_style": "克制",
+                            "timbre": "清亮",
+                            "speaking_rate": "中速",
+                            "emotional_baseline": "紧张",
+                            "accent_or_texture": "",
+                            "dialogue_delivery": "",
+                            "forbidden_voice_changes": ["不要突然变老"],
+                        },
+                        "image_prompt": "林雾，男，站台上的人。",
+                    }
+                ]
+            }
+        )
+
+        result = service._run_structured_agent(
+            schema=CharacterRosterSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "character-designer"},
+            ),
+            fallback=fallback,
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertEqual([item.cast_slot_id for item in result.characters], ["lead_1", "lead_2"])
+        self.assertIn("重复槽位", service.backend.requests[-1].user_prompt)
+        self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
+
     def test_story_and_video_pipeline(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
@@ -149,13 +526,29 @@ class PipelineTestCase(unittest.TestCase):
             project_root=ROOT,
             output_root=self.temp_root,
         )
-        self.assertTrue(story_result.outline_path.exists())
-        self.assertTrue((story_result.output_dir / "workflow_trace.json").exists())
-        self.assertEqual(len(story_result.chapter_paths), brief.chapter_count)
+        self.assertTrue(story_result.story_source_path.exists())
+        self.assertTrue(story_result.novel_package_path.exists())
+        self.assertTrue(story_result.novel_audit_path.exists())
+        self.assertFalse((story_result.output_dir / "story.md").exists())
+        self.assertFalse((story_result.output_dir / "outline.json").exists())
+        self.assertFalse((story_result.output_dir / "workflow_trace.json").exists())
         self.assertIsNotNone(story_result.novel_package.review)
         self.assertIn("story_architect", story_result.novel_package.workflow_trace)
         self.assertIn("story_drafter", story_result.novel_package.workflow_trace)
         self.assertIn("cast_analyzer", story_result.novel_package.workflow_trace)
+        persisted_novel_package = read_json(story_result.novel_package_path)
+        persisted_novel_audit = read_json(story_result.novel_audit_path)
+        self.assertNotIn("review", persisted_novel_package)
+        self.assertNotIn("workflow_trace", persisted_novel_package)
+        self.assertNotIn("premise", persisted_novel_package["outline"])
+        self.assertNotIn("theme", persisted_novel_package["outline"])
+        self.assertNotIn("agent_notes", persisted_novel_package["outline"])
+        self.assertNotIn("visual_hooks", persisted_novel_package["chapters"][0])
+        self.assertNotIn("continuity_refs", persisted_novel_package["chapters"][0])
+        self.assertIn("review", persisted_novel_audit)
+        self.assertIn("workflow_trace", persisted_novel_audit)
+        self.assertIn("outline_context", persisted_novel_audit)
+        self.assertIn("chapter_context", persisted_novel_audit)
         self.assertTrue(
             all(item.voice_profile.voice_style for item in story_result.novel_package.outline.characters)
         )
@@ -165,7 +558,6 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all(item.voice_profile.forbidden_voice_changes for item in story_result.novel_package.outline.characters)
         )
-
         video_result = run_video_pipeline(
             novel_package=story_result.novel_package,
             config=config,
@@ -177,7 +569,6 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(video_result.manifest_path.exists())
         self.assertTrue(video_result.seedream_execution_path.exists())
         self.assertTrue(video_result.seedance_execution_path.exists())
-        self.assertTrue(video_result.concat_script_path.exists())
         self.assertIsNone(video_result.full_story_path)
         self.assertGreater(len(video_result.project_package.segments), 0)
         self.assertGreater(len(video_result.project_package.seedance_manifest.clips), 0)
@@ -241,6 +632,157 @@ class PipelineTestCase(unittest.TestCase):
         )
         self.assertFalse(video_result.seedream_execution.submitted)
         self.assertFalse(video_result.seedance_execution.submitted)
+
+    def test_cast_analysis_source_evidence_must_exist_in_story_draft(self) -> None:
+        service = NovelGeneratorService()
+        story_draft_set = StoryDraftSetSchema(
+            chapters=[
+                ChapterDraftSchema(
+                    number=1,
+                    title="雨夜",
+                    summary="林深在废弃站台调查异常广播。",
+                    markdown="林深站在暴雨里的旧站台，反复核对广播记录。",
+                    visual_hooks=["暴雨", "站台"],
+                    continuity_refs=["异常广播"],
+                )
+            ]
+        )
+        analysis = CastAnalysisSchema(
+            story_shape="single_lead_with_supporting_cast",
+            recommended_core_cast_count=2,
+            requires_dual_leads=False,
+            explicit_counterpart=False,
+            prefers_male_female_pair=False,
+            cast_strategy="先稳定主角，再补配角。",
+            chapter_participation_rule="主角贯穿始终。",
+            ordering_rule="按优先级排序。",
+            slots=[
+                CastSlotSchema(
+                    slot_id="lead_1",
+                    tier="lead",
+                    story_function="protagonist",
+                    brief_label="调查员",
+                    source_evidence=["林深"],
+                    gender_hint="男",
+                    objective="查清真相",
+                    must_appear_in=["opening", "climax"],
+                    order_priority=1,
+                    notes="主角",
+                ),
+                CastSlotSchema(
+                    slot_id="core_support_1",
+                    tier="core_support",
+                    story_function="ally",
+                    brief_label="外部阻力",
+                    source_evidence=["沈砚"],
+                    gender_hint="男",
+                    objective="制造压力",
+                    must_appear_in=["midpoint"],
+                    order_priority=2,
+                    notes="不存在于正文",
+                ),
+            ],
+            relationships=[
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="core_support_1",
+                    relationship_type="pressure",
+                    priority=1,
+                    summary="制造阻力。",
+                )
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "source_evidence"):
+            service._validate_cast_analysis_output(
+                analysis,
+                story_draft_set=story_draft_set,
+            )
+
+    def test_fallback_character_roster_only_covers_requested_slots(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="站台告白",
+            idea="一个女生在列车离站前向喜欢多年的男生告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        architecture = StoryArchitectureSchema(
+            title="站台告白",
+            premise="列车离站前的告白。",
+            theme="告别与勇气",
+            setting="夜晚站台",
+            story_engine="离站倒计时逼迫关系表态。",
+            visual_motifs=["站台", "列车", "夜风"],
+            tone_notes=["克制", "电影感"],
+        )
+        cast_analysis = CastAnalysisSchema(
+            story_shape="dual_relationship_with_supporting_cast",
+            recommended_core_cast_count=2,
+            requires_dual_leads=True,
+            explicit_counterpart=True,
+            prefers_male_female_pair=True,
+            cast_strategy="只稳定关系双方。",
+            chapter_participation_rule="双方必须共同参与。",
+            ordering_rule="lead_1, lead_2。",
+            slots=[
+                CastSlotSchema(
+                    slot_id="lead_1",
+                    tier="lead",
+                    story_function="protagonist",
+                    brief_label="女生",
+                    source_evidence=["女生"],
+                    gender_hint="女",
+                    objective="告白",
+                    must_appear_in=["opening", "climax"],
+                    order_priority=1,
+                    notes="主动方",
+                ),
+                CastSlotSchema(
+                    slot_id="lead_2",
+                    tier="lead",
+                    story_function="love_interest",
+                    brief_label="男生",
+                    source_evidence=["男生"],
+                    gender_hint="男",
+                    objective="回应",
+                    must_appear_in=["opening", "climax"],
+                    order_priority=2,
+                    notes="回应方",
+                ),
+                CastSlotSchema(
+                    slot_id="core_support_1",
+                    tier="core_support",
+                    story_function="ally",
+                    brief_label="朋友",
+                    source_evidence=["朋友"],
+                    gender_hint="女",
+                    objective="助推关系",
+                    must_appear_in=["midpoint"],
+                    order_priority=3,
+                    notes="不应进入本次角色卡",
+                ),
+            ],
+            relationships=[
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="lead_2",
+                    relationship_type="core_relationship",
+                    priority=1,
+                    summary="核心关系。",
+                )
+            ],
+        )
+
+        roster = service._fallback_character_roster(
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertEqual([item.cast_slot_id for item in roster.characters], ["lead_1", "lead_2"])
 
     @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
@@ -316,8 +858,7 @@ class PipelineTestCase(unittest.TestCase):
 
         expected_full_story_path = story_result.output_dir / "rendered" / "full_story.mp4"
 
-        def fake_concat_manifest_clips(manifest, concat_list_path, output_path):
-            self.assertTrue(concat_list_path.exists())
+        def fake_concat_manifest_clips(manifest, output_path):
             self.assertEqual(output_path, expected_full_story_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(b"merged video bytes")
@@ -894,7 +1435,8 @@ class PipelineTestCase(unittest.TestCase):
 
         cast_analysis = service._fallback_cast_analysis(brief, architecture)
 
-        self.assertGreaterEqual(cast_analysis.recommended_core_cast_count, 4)
+        self.assertGreaterEqual(cast_analysis.recommended_core_cast_count, 3)
+        self.assertLessEqual(cast_analysis.recommended_core_cast_count, len(cast_analysis.slots))
         self.assertGreaterEqual(len(cast_analysis.slots), 3)
         self.assertEqual(cast_analysis.slots[0].tier, "lead")
 

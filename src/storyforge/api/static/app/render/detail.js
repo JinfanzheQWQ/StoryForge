@@ -1,6 +1,7 @@
 import { DETAIL_TABS, state } from "../state.js";
 import {
   buildTaskDetailSubtitle,
+  buildTaskErrorMessage,
   buildTaskTitle,
   buildPipelineStageLabel,
   chip,
@@ -30,6 +31,7 @@ export function renderRunDetail(task, artifacts, context, run = null) {
   const activeTab = context === "project" ? state.projectDetailTab : state.queueDetailTab;
   const displayTask = run?.latestTask || task;
   const stageText = buildPipelineStageLabel(displayTask, run);
+  const errorMessage = buildTaskErrorMessage(displayTask);
 
   return `
     <div class="detail-header">
@@ -50,6 +52,16 @@ export function renderRunDetail(task, artifacts, context, run = null) {
         ${stageText ? chip(stageText) : ""}
       </div>
       ${artifacts?.output_dir ? `<div class="path-line">素材目录: ${escapeHtml(artifacts.output_dir)}</div>` : ""}
+      ${
+        errorMessage
+          ? `
+            <article class="task-error-card">
+              <strong>失败原因</strong>
+              <p>${escapeHtml(errorMessage)}</p>
+            </article>
+          `
+          : ""
+      }
       ${context === "project" && run ? renderRunStageActions(run) : ""}
     </section>
 

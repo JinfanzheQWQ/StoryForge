@@ -14,6 +14,23 @@ from storyforge.application.persistence.mysql_tasks import MySQLTaskStore  # noq
 
 
 class MySQLTaskStoreTestCase(unittest.TestCase):
+    def test_recover_running_tasks_requeues_instead_of_failing(self) -> None:
+        cursor = _Cursor()
+        connection = _Connection(cursor)
+        backend = Mock()
+        backend.connect.return_value = connection
+        store = MySQLTaskStore(backend)
+
+        store.recover_running_tasks()
+
+        sql, params = cursor.executed[0]
+        self.assertIn("UPDATE tasks", sql)
+        self.assertIn("status = 'queued'", sql)
+        self.assertIn("started_at = NULL", sql)
+        self.assertIn("finished_at = NULL", sql)
+        self.assertIn("error_text = NULL", sql)
+        self.assertIsNone(params)
+
     def test_update_result_merges_under_row_lock(self) -> None:
         cursor = _Cursor(
             fetchone_results=[{"result_json": '{"pipeline_stage":"story_completed","count":1}'}]

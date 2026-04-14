@@ -59,8 +59,6 @@ class ApiTestCase(unittest.TestCase):
                 default_chapter_count = 8
                 default_chapter_word_target = 2500
                 chapter_scene_count = 3
-                major_character_count = 3
-                review_passes = 1
 
                 [video]
                 segment_duration_seconds = 5
@@ -142,10 +140,18 @@ class ApiTestCase(unittest.TestCase):
             static_js = client.get("/static/app.js")
             self.assertEqual(static_js.status_code, 200)
             self.assertIn('import { initApp } from "./app/main.js";', static_js.text)
+            self.assertEqual(
+                static_js.headers.get("cache-control"),
+                "no-store, no-cache, must-revalidate",
+            )
 
             static_main_js = client.get("/static/app/main.js")
             self.assertEqual(static_main_js.status_code, 200)
             self.assertIn("refreshTasks", static_main_js.text)
+            self.assertEqual(
+                static_main_js.headers.get("cache-control"),
+                "no-store, no-cache, must-revalidate",
+            )
 
             bootstrap = client.get("/v1/ui/bootstrap")
             self.assertEqual(bootstrap.status_code, 200)
@@ -193,12 +199,18 @@ class ApiTestCase(unittest.TestCase):
             artifacts = artifacts_response.json()
             self.assertTrue(artifacts["available"])
             self.assertTrue(artifacts["documents"])
-            self.assertTrue(artifacts["chapters"])
+            self.assertNotIn("chapters", artifacts)
+            document_names = {item["name"] for item in artifacts["documents"]}
+            self.assertIn("story_source.json", document_names)
+            self.assertIn("novel_package.json", document_names)
+            self.assertIn("novel_audit.json", document_names)
 
-            chapter_url = artifacts["chapters"][0]["url"]
-            chapter_response = client.get(chapter_url)
-            self.assertEqual(chapter_response.status_code, 200)
-            self.assertTrue(chapter_response.text.strip())
+            story_source_item = next(
+                item for item in artifacts["documents"] if item["name"] == "story_source.json"
+            )
+            story_source_response = client.get(story_source_item["url"])
+            self.assertEqual(story_source_response.status_code, 200)
+            self.assertIn("chapters", story_source_response.text)
 
             projects_response = client.get("/v1/projects")
             self.assertEqual(projects_response.status_code, 200)
@@ -231,7 +243,7 @@ class ApiTestCase(unittest.TestCase):
         def fake_run_video_pipeline(*args, **kwargs):
             output_dir = kwargs["output_root"]
             segment_plan_path = output_dir / "segment_plan.json"
-            seedream_execution_path = output_dir / "seedream_execution.json"
+            seedream_execution_path = output_dir / "seedream_scene_execution.json"
             manifest_path = output_dir / "seedance_manifest.json"
             seedance_execution_path = output_dir / "seedance_execution.json"
             time.sleep(0.3)
@@ -284,7 +296,7 @@ class ApiTestCase(unittest.TestCase):
                 if (
                     payload["status"] == "running"
                     and isinstance(payload.get("result"), dict)
-                    and payload["result"].get("pipeline_stage") == "story_completed"
+                    and payload["result"].get("pipeline_stage") == "story_analysis_completed"
                 ):
                     running_payload = payload
                     break
@@ -296,7 +308,11 @@ class ApiTestCase(unittest.TestCase):
             artifacts = artifacts_response.json()
             self.assertTrue(artifacts["available"])
             self.assertTrue(artifacts["documents"])
-            self.assertTrue(artifacts["chapters"])
+            self.assertNotIn("chapters", artifacts)
+            document_names = {item["name"] for item in artifacts["documents"]}
+            self.assertIn("story_source.json", document_names)
+            self.assertIn("novel_package.json", document_names)
+            self.assertIn("novel_audit.json", document_names)
 
             final_payload = self._wait_for_completion(client, task_id)
             self.assertEqual(final_payload["status"], "completed")
@@ -347,10 +363,7 @@ class ApiTestCase(unittest.TestCase):
             segment_plan_path = output_dir / "segment_plan.json"
             scene_images_path = output_dir / "scene_image_manifest.json"
             manifest_path = output_dir / "seedance_manifest.json"
-            seedream_execution_path = output_dir / "seedream_execution.json"
-            concat_script_path = output_dir / "ffmpeg_concat.sh"
-            concat_list_path = output_dir / "concat_list.txt"
-            workflow_trace_path = output_dir / "video_workflow_trace.json"
+            seedream_execution_path = output_dir / "seedream_character_execution.json"
 
             for path in (
                 character_bible_path,
@@ -359,11 +372,8 @@ class ApiTestCase(unittest.TestCase):
                 scene_images_path,
                 manifest_path,
                 seedream_execution_path,
-                workflow_trace_path,
             ):
                 path.write_text("{}", encoding="utf-8")
-            concat_script_path.write_text("#!/bin/sh\n", encoding="utf-8")
-            concat_list_path.write_text("", encoding="utf-8")
             (characters_dir / "hero.png").write_bytes(b"fake image")
 
             return SimpleNamespace(
@@ -375,9 +385,6 @@ class ApiTestCase(unittest.TestCase):
                 manifest_path=manifest_path,
                 seedream_execution_path=seedream_execution_path,
                 character_seedream_execution_path=seedream_execution_path,
-                concat_script_path=concat_script_path,
-                concat_list_path=concat_list_path,
-                workflow_trace_path=workflow_trace_path,
                 project_package=SimpleNamespace(title="阶段化测试故事"),
                 manifest=SimpleNamespace(title="阶段化测试故事"),
                 seedream_execution=SimpleNamespace(submitted=True, failed_count=0),
@@ -394,12 +401,8 @@ class ApiTestCase(unittest.TestCase):
             segment_plan_path = output_dir / "segment_plan.json"
             scene_images_path = output_dir / "scene_image_manifest.json"
             manifest_path = output_dir / "seedance_manifest.json"
-            aggregate_seedream_execution_path = output_dir / "seedream_execution.json"
             character_seedream_execution_path = output_dir / "seedream_character_execution.json"
             scene_seedream_execution_path = output_dir / "seedream_scene_execution.json"
-            concat_script_path = output_dir / "ffmpeg_concat.sh"
-            concat_list_path = output_dir / "concat_list.txt"
-            workflow_trace_path = output_dir / "video_workflow_trace.json"
 
             for path in (
                 character_bible_path,
@@ -407,14 +410,10 @@ class ApiTestCase(unittest.TestCase):
                 segment_plan_path,
                 scene_images_path,
                 manifest_path,
-                aggregate_seedream_execution_path,
                 character_seedream_execution_path,
                 scene_seedream_execution_path,
-                workflow_trace_path,
             ):
                 path.write_text("{}", encoding="utf-8")
-            concat_script_path.write_text("#!/bin/sh\n", encoding="utf-8")
-            concat_list_path.write_text("", encoding="utf-8")
             (frames_dir / "segment-01_start.png").write_bytes(b"fake image")
             (frames_dir / "segment-01_end.png").write_bytes(b"fake image")
 
@@ -425,12 +424,9 @@ class ApiTestCase(unittest.TestCase):
                 segment_plan_path=segment_plan_path,
                 scene_images_path=scene_images_path,
                 manifest_path=manifest_path,
-                seedream_execution_path=aggregate_seedream_execution_path,
+                seedream_execution_path=scene_seedream_execution_path,
                 character_seedream_execution_path=character_seedream_execution_path,
                 scene_seedream_execution_path=scene_seedream_execution_path,
-                concat_script_path=concat_script_path,
-                concat_list_path=concat_list_path,
-                workflow_trace_path=workflow_trace_path,
                 project_package=SimpleNamespace(title="阶段化测试故事"),
                 manifest=SimpleNamespace(title="阶段化测试故事"),
                 seedream_execution=SimpleNamespace(submitted=True, failed_count=0),
@@ -443,15 +439,11 @@ class ApiTestCase(unittest.TestCase):
 
             manifest_path = output_dir / "seedance_manifest.json"
             seedance_execution_path = output_dir / "seedance_execution.json"
-            concat_script_path = output_dir / "ffmpeg_concat.sh"
-            concat_list_path = output_dir / "concat_list.txt"
             clip_path = rendered_dir / "segment-01.mp4"
             full_story_path = rendered_dir / "full_story.mp4"
 
             manifest_path.write_text("{}", encoding="utf-8")
             seedance_execution_path.write_text("{}", encoding="utf-8")
-            concat_script_path.write_text("#!/bin/sh\n", encoding="utf-8")
-            concat_list_path.write_text("file 'segment-01.mp4'\n", encoding="utf-8")
             clip_path.write_bytes(b"fake mp4 bytes")
             full_story_path.write_bytes(b"merged mp4 bytes")
 
@@ -459,8 +451,6 @@ class ApiTestCase(unittest.TestCase):
                 output_dir=output_dir,
                 manifest_path=manifest_path,
                 seedance_execution_path=seedance_execution_path,
-                concat_script_path=concat_script_path,
-                concat_list_path=concat_list_path,
                 rendered_clip_paths=[clip_path],
                 full_story_path=full_story_path,
                 manifest=SimpleNamespace(title="阶段化测试故事"),
@@ -498,6 +488,30 @@ class ApiTestCase(unittest.TestCase):
             story_payload = self._wait_for_completion(client, story_task_id)
             self.assertEqual(story_payload["status"], "completed")
             self.assertEqual(story_payload["result"]["task_stage"], "story")
+            self.assertIn("story_source_path", story_payload["result"])
+
+            story_source_response = client.get(
+                f"/v1/projects/{project_id}/story-source/{story_task_id}",
+            )
+            self.assertEqual(story_source_response.status_code, 200)
+            story_source_payload = story_source_response.json()
+            self.assertTrue(story_source_payload["chapters"])
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+
+            analysis_payload = self._wait_for_completion(client, analysis_task_id)
+            self.assertEqual(analysis_payload["status"], "completed")
+            self.assertEqual(analysis_payload["result"]["task_stage"], "story_analysis")
+            self.assertIn("novel_package_path", analysis_payload["result"])
+            self.assertIn("novel_audit_path", analysis_payload["result"])
 
             character_response = client.post(
                 "/v1/projects/characters",
@@ -574,7 +588,7 @@ class ApiTestCase(unittest.TestCase):
             detail_response = client.get(f"/v1/projects/{project_id}")
             self.assertEqual(detail_response.status_code, 200)
             detail = detail_response.json()
-            self.assertEqual(len(detail["tasks"]), 4)
+            self.assertEqual(len(detail["tasks"]), 5)
             self.assertEqual(
                 {task["result"]["pipeline_root_task_id"] for task in detail["tasks"] if task["result"]},
                 {story_task_id},

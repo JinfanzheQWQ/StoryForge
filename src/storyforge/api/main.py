@@ -19,6 +19,17 @@ from storyforge.core.env import load_env_file
 CONFIG_PATH_ENV = "STORYFORGE_CONFIG_PATH"
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve frontend assets without browser caching to avoid stale ES modules."""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+
+
 def resolve_project_root() -> Path:
     cwd = Path.cwd()
     if (cwd / "pyproject.toml").exists():
@@ -52,7 +63,7 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
     )
     static_dir = root / "src" / "storyforge" / "api" / "static"
     output_dir = root / config.paths.output_dir
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
     app.mount("/outputs", StaticFiles(directory=output_dir), name="outputs")
     app.include_router(ui_router)
     app.include_router(health_router)

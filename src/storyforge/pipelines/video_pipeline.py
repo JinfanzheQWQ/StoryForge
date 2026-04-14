@@ -3,12 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from storyforge.core.config import AppConfig
-from storyforge.core.io import read_json, write_json, write_text
+from storyforge.core.io import read_json, write_json
 from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.contracts import SeedanceManifest
 from storyforge.integrations.ffmpeg_adapter import (
-    build_concat_list,
-    build_concat_script,
     concat_manifest_clips,
 )
 from storyforge.integrations.seedance import SeedanceClient, SeedanceExecutionReport
@@ -71,9 +69,6 @@ def run_video_pipeline(
             manifest_path=image_result.manifest_path,
             seedream_execution_path=image_result.seedream_execution_path,
             seedance_execution_path=seedance_execution_path,
-            concat_script_path=image_result.concat_script_path,
-            concat_list_path=image_result.concat_list_path,
-            workflow_trace_path=image_result.workflow_trace_path,
             rendered_clip_paths=[],
             full_story_path=None,
             project_package=image_result.project_package,
@@ -97,9 +92,6 @@ def run_video_pipeline(
         manifest_path=video_render_result.manifest_path,
         seedream_execution_path=image_result.seedream_execution_path,
         seedance_execution_path=video_render_result.seedance_execution_path,
-        concat_script_path=video_render_result.concat_script_path,
-        concat_list_path=video_render_result.concat_list_path,
-        workflow_trace_path=image_result.workflow_trace_path,
         rendered_clip_paths=video_render_result.rendered_clip_paths,
         full_story_path=video_render_result.full_story_path,
         project_package=image_result.project_package,
@@ -143,9 +135,6 @@ def run_image_pipeline(
         seedream_execution_path=scene_result.seedream_execution_path,
         character_seedream_execution_path=scene_result.character_seedream_execution_path,
         scene_seedream_execution_path=scene_result.scene_seedream_execution_path,
-        concat_script_path=scene_result.concat_script_path,
-        concat_list_path=scene_result.concat_list_path,
-        workflow_trace_path=scene_result.workflow_trace_path,
         project_package=scene_result.project_package,
         manifest=scene_result.manifest,
         seedream_execution=scene_result.seedream_execution,
@@ -172,14 +161,12 @@ def run_character_image_pipeline(
         planning.project_package,
         force_submit=submit_characters,
     )
-    aggregate_execution_path = planning.output_dir / "seedream_execution.json"
     character_execution_path = planning.output_dir / "seedream_character_execution.json"
 
     write_json(planning.character_images_path, planning.project_package.character_images)
     write_json(planning.scene_images_path, planning.project_package.scene_images)
     write_json(planning.manifest_path, planning.manifest)
     write_json(character_execution_path, character_execution)
-    write_json(aggregate_execution_path, character_execution)
 
     return CharacterImagePipelineResult(
         output_dir=planning.output_dir,
@@ -188,11 +175,8 @@ def run_character_image_pipeline(
         segment_plan_path=planning.segment_plan_path,
         scene_images_path=planning.scene_images_path,
         manifest_path=planning.manifest_path,
-        seedream_execution_path=aggregate_execution_path,
+        seedream_execution_path=character_execution_path,
         character_seedream_execution_path=character_execution_path,
-        concat_script_path=planning.concat_script_path,
-        concat_list_path=planning.concat_list_path,
-        workflow_trace_path=planning.workflow_trace_path,
         project_package=planning.project_package,
         manifest=planning.manifest,
         seedream_execution=character_execution,
@@ -213,7 +197,6 @@ def run_scene_image_pipeline(
         force_submit=submit_scenes,
     )
 
-    aggregate_execution_path = output_dir / "seedream_execution.json"
     character_execution_path = output_dir / "seedream_character_execution.json"
     scene_execution_path = output_dir / "seedream_scene_execution.json"
     character_execution = read_seedream_execution_report(character_execution_path)
@@ -223,7 +206,6 @@ def run_scene_image_pipeline(
     write_json(planning.scene_images_path, planning.project_package.scene_images)
     write_json(planning.manifest_path, planning.manifest)
     write_json(scene_execution_path, scene_execution)
-    write_json(aggregate_execution_path, combined_execution)
 
     return SceneImagePipelineResult(
         output_dir=planning.output_dir,
@@ -232,12 +214,9 @@ def run_scene_image_pipeline(
         segment_plan_path=planning.segment_plan_path,
         scene_images_path=planning.scene_images_path,
         manifest_path=planning.manifest_path,
-        seedream_execution_path=aggregate_execution_path,
+        seedream_execution_path=scene_execution_path,
         character_seedream_execution_path=character_execution_path,
         scene_seedream_execution_path=scene_execution_path,
-        concat_script_path=planning.concat_script_path,
-        concat_list_path=planning.concat_list_path,
-        workflow_trace_path=planning.workflow_trace_path,
         project_package=planning.project_package,
         manifest=planning.manifest,
         seedream_execution=combined_execution,
@@ -267,17 +246,10 @@ def run_video_render_pipeline(
     )
 
     seedance_execution_path = output_dir / "seedance_execution.json"
-    concat_script_path = output_dir / "ffmpeg_concat.sh"
-    concat_list_path = output_dir / "concat_list.txt"
     full_story_output_path = output_dir / "rendered" / "full_story.mp4"
 
     write_json(manifest_path, manifest)
     write_json(seedance_execution_path, seedance_execution)
-    write_text(
-        concat_script_path,
-        build_concat_script(manifest, output_path=str(full_story_output_path)),
-    )
-    write_text(concat_list_path, build_concat_list(manifest))
 
     rendered_clip_paths = [
         Path(clip.downloaded_path)
@@ -289,7 +261,6 @@ def run_video_render_pipeline(
     if should_concat_rendered_clips(manifest, seedance_execution):
         full_story_path = concat_manifest_clips(
             manifest=manifest,
-            concat_list_path=concat_list_path,
             output_path=full_story_output_path,
         )
 
@@ -297,8 +268,6 @@ def run_video_render_pipeline(
         output_dir=output_dir,
         manifest_path=manifest_path,
         seedance_execution_path=seedance_execution_path,
-        concat_script_path=concat_script_path,
-        concat_list_path=concat_list_path,
         rendered_clip_paths=rendered_clip_paths,
         full_story_path=full_story_path,
         manifest=manifest,

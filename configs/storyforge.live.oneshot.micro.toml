@@ -11,8 +11,6 @@ timeout_seconds = 120
 default_chapter_count = 1
 default_chapter_word_target = 500
 chapter_scene_count = 1
-major_character_count = 2
-review_passes = 1
 
 [video]
 segment_duration_seconds = 6

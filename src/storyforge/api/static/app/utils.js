@@ -67,6 +67,19 @@ function buildRunGroup(rootTaskId, tasks) {
   };
 }
 
+export function getTaskRun(taskId, tasks = state.tasks) {
+  const task = tasks.find((item) => item.task_id === taskId);
+  if (!task) {
+    return null;
+  }
+  const rootTaskId = getPipelineRootTaskId(task);
+  const runTasks = tasks.filter((item) => getPipelineRootTaskId(item) === rootTaskId);
+  if (!runTasks.length) {
+    return null;
+  }
+  return buildRunGroup(rootTaskId, runTasks);
+}
+
 export function getProjectRuns(detail) {
   const runMap = new Map();
 

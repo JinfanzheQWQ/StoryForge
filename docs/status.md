@@ -37,6 +37,9 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - cast slots 会尽量保留小说草稿中的角色指代和 `source_evidence`，复杂 brief 不再默认压成固定双人模板
 - 角色正式名字唯一性已下沉到 `CharacterRosterSchema` 校验；一旦重名会触发 LLM structured retry，连续失败则显式报错
 - `cast_slot_id` 唯一性已下沉到 `CharacterRosterSchema` 校验；重复槽位会触发 structured retry，避免两个角色共用 `lead_1`
+- `Character Designer` prompt 已改成固定索引合同：会明确列出 `characters[0]`、`characters[1]` 分别必须对应哪个 `cast_slot_id`，数量不匹配时重试也会重复下发这份合同
+- 如果 `Character Designer` 首次只返回了部分角色，系统会对缺失 slot 再发一次结构化补生请求，再合并回完整角色表
+- LangChain structured output 已开启 raw 响应回收：如果 DeepSeek 没有触发 tool call 但返回了 JSON 文本，会提取 JSON 后再校验；如果返回空结构，会给出明确失败原因，不再暴露 Pydantic 的 `input_value=None`
 - `Cast Analyzer` 输出现在要求 `source_evidence` 必须能在小说正文中定位，减少“正文没出现的人却被补进角色表”的情况
 - fallback 角色卡已改为只覆盖目标 slots，不再按旧的补位策略自动多塞一个核心角色
 - 已删除旧配置残留 `major_character_count` 与 `review_passes`，角色数量改由小说正文、cast slots 和结构化校验共同约束
@@ -67,6 +70,8 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 资产页视频预览轮询稳定性修复
 - 故事正文保存后自动清理旧的结构化和媒体派生产物
 - 服务启动时残留的 `running` 任务会重新排回 `queued`，不再因为一次重启直接标记为失败
+- `project.story_analysis` 已增加后端幂等保护：同一故事正文修订已经存在 queued / running / completed 结构化任务时，不再重复创建新任务
+- 任务详情页已按 `pipeline_root_task_id` 聚合同一版本阶段状态，结构化完成后按钮会禁用；提交按钮逻辑已抽成共用 helper，避免重复 try/catch 和双击重复提交
 
 ### 代码结构
 
@@ -81,15 +86,15 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `uv run ruff check src/storyforge tests`
   - `All checks passed!`
 - `uv run pytest`
-  - `56 passed`
+  - `60 passed`
 
 最近一次真实故障定位：
 
 - 时间：`2026-04-14`
 - 阶段：`project.story_analysis`
 - 任务：`character-designer`
-- 根因：LangChain `create_agent + ToolStrategy` 会走 agent 工具消息回合，DeepSeek OpenAI-compatible 接口在该链路下报错 `assistant message with 'tool_calls' must be followed by tool messages`
-- 修复：结构化输出改为 LangChain `ChatModel.with_structured_output(method="function_calling")` 的单轮结构化调用，继续保留 StoryForge 外层 structured retry
+- 根因：DeepSeek OpenAI-compatible 接口在结构化链路中可能出现两类问题：`create_agent + ToolStrategy` 多轮工具消息不兼容，或 `with_structured_output` 没有返回 parsed tool 结果
+- 修复：结构化输出改为 LangChain `ChatModel.with_structured_output(method="function_calling", include_raw=True)` 的单轮结构化调用；raw 内容如果是 JSON 会被回收解析，空结构会显式报错并进入 StoryForge 外层 structured retry
 
 最近一次视频任务故障定位：
 
@@ -122,12 +127,17 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 媒体质量
 
 - 角色一致性仍以“参考图 + prompt 锁定”为主
+- 角色定妆图已简化为 `SF-TURN-01` 横版 16:9 白底三视图 prompt，只保留角色姓名和人物描述，输出正面、左侧面、背面；不再要求信息格、色卡、材质块或灰底设计板
 - 声音一致性仍是 prompt 级，不是声纹级
 - 硬字幕主要依赖模型生成，缺少稳定的后处理兜底
 
 ### 小说理解
 
 - cast 解析已经从 heuristics 主导改为 LLM 主导，但仍然没有审校后自动回改闭环
+
+### 内容与上下文
+
+- 内容合规当前完全依赖接入的 LLM / Seed 模型供应商策略，后端不再做本地规则拦截
 - 长篇上下文仍主要依赖阶段输入和最近章节摘要，不是长期记忆式写作
 
 ### 生产可用性

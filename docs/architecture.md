@@ -165,6 +165,7 @@ NovelPackage
 `character_visual_bible.json`、`character_image_manifest.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 在 `project.story_analysis` 阶段随结构化小说包一起生成。
 后续 `project.characters`、`project.scenes`、`project.videos` 只读取并更新这些规划文件，避免到角色图阶段才临时拆分视频。
 视频分段 prompt 和归一化层会按中文自然口播语速估算对白、旁白和硬字幕预算，单段说不完时拆成多个 Seedance 安全片段。
+角色定妆图 prompt 会统一追加 `SF-TURN-01` 横版 16:9 白底三视图模板，让所有角色使用相同的纯白背景、正面 / 左侧面 / 背面三栏站姿、人物比例和画风。图上唯一允许出现角色中文姓名，性别、身份和职业只作为内部造型参考，不允许写到图上。
 
 ### 视频域内部拆分
 
@@ -216,7 +217,20 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 - 阶段任务复用同一个 `output_dir`
 - 任务结果驱动前端实时预览
 - 任务失败时 `error` 会进入任务记录，并在前端详情页和阶段卡片中展示
+- `project.story_analysis` 对同一 `source_task_id` + `story_source_revision` 做幂等保护，已存在 queued / running / completed 任务时直接返回已有任务
+- Web 详情页按 `pipeline_root_task_id` 聚合同一制作版本的阶段任务，避免队列详情页误判某个阶段还未执行
 - 服务启动时，残留的 `running` 任务会重新回到 `queued`，避免热重载或进程重启直接把长任务标记为失败
+
+## LangChain 结构化输出策略
+
+StoryForge 当前仍通过 LangChain 接入 DeepSeek，但不再使用 `create_agent + ToolStrategy` 执行结构化生成。
+
+当前策略：
+
+- 结构化任务使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`
+- 优先消费 LangChain 返回的 `parsed` Pydantic 对象
+- 如果模型没有返回 tool call，但 raw content 是 JSON 或 Markdown JSON 代码块，会提取 JSON 后再做 Pydantic 校验
+- 如果 parsed、tool call 和 raw JSON 都不存在，会抛出明确错误，让外层 structured retry 继续重试，最终将清晰失败原因写入任务记录
 
 ## 持久化
 
@@ -257,7 +271,7 @@ MySQL 实现位于：
 
 ## 已修复的关键兼容问题
 
-- DeepSeek OpenAI-compatible 接口不稳定接受 LangChain `create_agent + ToolStrategy` 的多轮工具消息链；结构化输出已改为 `ChatModel.with_structured_output(method="function_calling")`。
+- DeepSeek OpenAI-compatible 接口不稳定接受 LangChain `create_agent + ToolStrategy` 的多轮工具消息链；结构化输出已改为 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，并会回收 raw JSON 文本作为 structured fallback。
 - `SeedanceManifest.title` 曾被硬编码为 `segment_video_manifest`，会污染项目标题；现在新 manifest 使用小说标题，旧产物重载时优先从 `novel_package.json` / `story_source.json` 恢复真实标题。
 
 ## 模块职责约定

@@ -66,6 +66,7 @@ class UiBootstrapResponse(BaseModel):
     default_brief: StoryBriefInput
     use_llm: bool
     submit_seedance: bool
+    llm_provider: str
     llm_model: str
     seedream_model: str
     seedance_model: str

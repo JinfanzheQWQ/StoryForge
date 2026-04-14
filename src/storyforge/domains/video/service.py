@@ -104,7 +104,6 @@ class NovelToVideoService(
                     gender=item.gender,
                     appearance=item.appearance,
                     outfit=item.outfit,
-                    color_palette=item.color_palette,
                     source_prompt=item.portrait_prompt,
                 ),
             )

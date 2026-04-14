@@ -157,6 +157,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(bootstrap.status_code, 200)
             payload = bootstrap.json()
             self.assertIn("default_brief", payload)
+            self.assertIn("llm_provider", payload)
             self.assertIn("llm_model", payload)
             self.assertIn("seedream_model", payload)
             self.assertIn("seedance_model", payload)
@@ -516,6 +517,17 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("segment_plan_path", analysis_payload["result"])
             self.assertIn("scene_images_path", analysis_payload["result"])
             self.assertIn("seedance_manifest_path", analysis_payload["result"])
+
+            duplicate_analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                },
+            )
+            self.assertEqual(duplicate_analysis_response.status_code, 202)
+            self.assertEqual(duplicate_analysis_response.json()["task_id"], analysis_task_id)
+            self.assertEqual(duplicate_analysis_response.json()["status"], "completed")
 
             character_response = client.post(
                 "/v1/projects/characters",

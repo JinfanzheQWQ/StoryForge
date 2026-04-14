@@ -34,6 +34,7 @@ from storyforge.domains.novel.prompts import (
     build_cast_system_prompt,
     build_cast_user_prompt,
     build_character_system_prompt,
+    build_character_slot_contract,
     build_character_user_prompt,
     build_chapter_planner_system_prompt,
     build_chapter_planner_user_prompt,
@@ -175,7 +176,25 @@ class NovelGeneratorService(
                     cast_analysis=cast_analysis,
                     story_draft_context=story_draft_context,
                 ),
-                metadata={"task": "character-designer"},
+                metadata={
+                    "task": "character-designer",
+                    "expected_character_count": len(
+                        cast_analysis.primary_slots(
+                            max(1, cast_analysis.recommended_core_cast_count)
+                        )
+                    ),
+                    "expected_cast_slot_ids": [
+                        item.slot_id
+                        for item in cast_analysis.primary_slots(
+                            max(1, cast_analysis.recommended_core_cast_count)
+                        )
+                    ],
+                    "character_slot_contract": build_character_slot_contract(
+                        cast_analysis.primary_slots(
+                            max(1, cast_analysis.recommended_core_cast_count)
+                        )
+                    ),
+                },
             ),
             fallback=self._fallback_character_roster(
                 brief,
@@ -362,9 +381,21 @@ class NovelGeneratorService(
             )
             try:
                 response = self.backend.generate_structured(attempt_request, schema)
-                candidate = response if isinstance(response, schema) else schema.model_validate(response)
+                candidate = self._coerce_structured_response(response, schema)
                 if validator is not None:
-                    return validator(candidate)
+                    try:
+                        return validator(candidate)
+                    except Exception as exc:
+                        supplemental = self._attempt_structured_completion(
+                            schema=schema,
+                            request=attempt_request,
+                            candidate=candidate,
+                            validator=validator,
+                            error=exc,
+                        )
+                        if supplemental is not None:
+                            return supplemental
+                        raise
                 return candidate
             except AgentBackendUnavailableError:
                 raise
@@ -400,6 +431,24 @@ class NovelGeneratorService(
             f"请严格按 {schema.__name__} 对应结构返回，不要输出解释，不要输出 Markdown 代码块，"
             "不要遗漏字段。"
         )
+        if request.metadata.get("task") == "character-designer":
+            expected_count = request.metadata.get("expected_character_count")
+            expected_slot_ids = request.metadata.get("expected_cast_slot_ids") or []
+            slot_contract = str(request.metadata.get("character_slot_contract") or "").strip()
+            retry_note += (
+                "\n\n角色表修复合同：本次必须重新输出完整 characters 数组，"
+                "不要沿用上一次的角色数量。"
+            )
+            if expected_count:
+                retry_note += f" characters 数组长度必须恰好等于 {expected_count}。"
+            if expected_slot_ids:
+                retry_note += (
+                    " cast_slot_id 必须按这个顺序逐项输出："
+                    + "、".join(str(item) for item in expected_slot_ids)
+                    + "。"
+                )
+            if slot_contract:
+                retry_note += "\n固定索引合同如下，必须逐行满足：\n" + slot_contract
         metadata = dict(request.metadata)
         metadata["structured_retry_attempt"] = attempt
         return PromptRequest(
@@ -407,6 +456,132 @@ class NovelGeneratorService(
             user_prompt=request.user_prompt + retry_note,
             metadata=metadata,
         )
+
+    def _attempt_structured_completion(
+        self,
+        schema: type[StructuredModelT],
+        request: PromptRequest,
+        candidate: StructuredModelT,
+        validator: Callable[[StructuredModelT], StructuredModelT],
+        error: Exception,
+    ) -> StructuredModelT | None:
+        if schema is not CharacterRosterSchema:
+            return None
+        if request.metadata.get("task") != "character-designer":
+            return None
+        error_text = str(error)
+        if "角色数量必须与目标 slots 数一致" not in error_text and "角色 cast_slot_id 必须与上游 slots 完全一致且顺序一致" not in error_text:
+            return None
+        return self._complete_character_roster_from_partial(
+            request=request,
+            candidate=candidate,
+            validator=validator,
+        )
+
+    def _complete_character_roster_from_partial(
+        self,
+        request: PromptRequest,
+        candidate: StructuredModelT,
+        validator: Callable[[StructuredModelT], StructuredModelT],
+    ) -> StructuredModelT | None:
+        if not isinstance(candidate, CharacterRosterSchema):
+            return None
+
+        expected_slot_ids = [
+            str(item).strip()
+            for item in request.metadata.get("expected_cast_slot_ids", [])
+            if str(item).strip()
+        ]
+        if not expected_slot_ids:
+            return None
+
+        existing_by_slot = {
+            item.cast_slot_id.strip(): item
+            for item in candidate.characters
+            if item.cast_slot_id.strip() in expected_slot_ids
+        }
+        if all(slot_id in existing_by_slot for slot_id in expected_slot_ids):
+            reordered = CharacterRosterSchema(
+                characters=[existing_by_slot[slot_id] for slot_id in expected_slot_ids]
+            )
+            return validator(reordered)  # type: ignore[return-value]
+
+        missing_slot_ids = [
+            slot_id for slot_id in expected_slot_ids
+            if slot_id not in existing_by_slot
+        ]
+        if not missing_slot_ids:
+            return None
+
+        slot_contract = str(request.metadata.get("character_slot_contract", "")).strip()
+        missing_contract_lines = [
+            line
+            for line in slot_contract.splitlines()
+            if any(f"\"{slot_id}\"" in line for slot_id in missing_slot_ids)
+        ]
+        existing_summary = "\n".join(
+            f"- {item.cast_slot_id} -> {item.name} | {item.role} | {item.gender}"
+            for item in candidate.characters
+        ) or "- 无"
+        missing_contract = "\n".join(missing_contract_lines) or (
+            "- 缺失 slots：" + "、".join(missing_slot_ids)
+        )
+        follow_up_request = PromptRequest(
+            system_prompt=request.system_prompt,
+            user_prompt=(
+                f"{request.user_prompt}\n\n"
+                "上一次你只成功输出了部分角色。以下角色已经成功输出，请不要重写它们，也不要改它们的名字和 cast_slot_id：\n"
+                f"{existing_summary}\n\n"
+                "现在只补全缺失角色。"
+                f"\n缺失 slots：{'、'.join(missing_slot_ids)}。"
+                f"\n这次返回的 characters 数组长度必须恰好等于 {len(missing_slot_ids)}，"
+                "并且 characters 数组里只能包含缺失角色，不要包含已经完成的 slots。"
+                "\n缺失 slot 固定索引合同如下：\n"
+                f"{missing_contract}"
+            ),
+            metadata={
+                **request.metadata,
+                "task": "character-designer-backfill",
+            },
+        )
+        supplemental = self.backend.generate_structured(follow_up_request, CharacterRosterSchema)
+        supplemental_roster = self._coerce_structured_response(supplemental, CharacterRosterSchema)
+
+        combined_by_slot = dict(existing_by_slot)
+        for item in supplemental_roster.characters:
+            slot_id = item.cast_slot_id.strip()
+            if slot_id not in missing_slot_ids:
+                continue
+            combined_by_slot[slot_id] = item
+
+        if not all(slot_id in combined_by_slot for slot_id in expected_slot_ids):
+            unresolved = [
+                slot_id for slot_id in expected_slot_ids
+                if slot_id not in combined_by_slot
+            ]
+            raise ValueError(
+                "角色补全后仍然缺少目标 slots："
+                + "、".join(unresolved)
+            )
+
+        completed = CharacterRosterSchema(
+            characters=[combined_by_slot[slot_id] for slot_id in expected_slot_ids]
+        )
+        return validator(completed)  # type: ignore[return-value]
+
+    def _coerce_structured_response(
+        self,
+        response: object,
+        schema: type[StructuredModelT],
+    ) -> StructuredModelT:
+        if isinstance(response, schema):
+            return response
+        if response is None:
+            raise RuntimeError(
+                f"模型没有返回 {schema.__name__} 结构化对象；"
+                "可能是本轮没有触发 tool call，也没有返回可解析 JSON。"
+            )
+        return schema.model_validate(response)
 
     def _validate_cast_analysis_output(
         self,

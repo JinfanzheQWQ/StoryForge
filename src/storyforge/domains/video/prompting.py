@@ -7,6 +7,20 @@ from storyforge.domains.video.contracts import CharacterVisualProfile, VideoSegm
 
 
 class VideoPromptingMixin:
+    CHARACTER_SHEET_LAYOUT_PROMPT = (
+        "统一三视图模板 SF-TURN-01：所有角色定妆图必须使用完全相同的横版 16:9 白底三视图版式，"
+        "同一项目内所有角色必须保持同一种美术风格、同一种线条粗细、同一种上色方式和同一种柔和光照，"
+        "不得因角色身份、性别或剧情气质改变构图、画风、镜头焦段或渲染质感。"
+        "背景必须是纯白色，不要场景、不要道具陈列、不要灰底网格、不要信息格、不要色卡、不要材质块。"
+        "画面顶部只允许出现角色中文姓名；不得写性别、身份、职业、角色定位、英文标签、编号、水印或说明文字。"
+        "画面主体固定为三栏等宽全身站姿：左栏正面，中栏左侧面，右栏背面。"
+        "三视图都必须平视，双脚完整入画，脚底对齐同一基准线，人物高度和缩放比例完全一致，"
+        "双臂自然下垂或轻微离开身体，避免夸张动作。"
+        "统一采用干净高级的动画电影概念设定稿风格，柔和赛璐璐上色，低饱和自然色彩，清晰轮廓线，"
+        "避免有的角色偏写实、有的角色偏二次元、有的角色偏照片或海报。"
+        "同一张图里只能是同一个角色的正面、左侧面和背面参考，不得出现第二个独立角色或剧情场景。"
+    )
+
     def _build_visual_bible_user_prompt(self, novel_package: NovelPackage) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
         character_blocks = "\n".join(
@@ -39,6 +53,7 @@ class VideoPromptingMixin:
 5. 不要把角色写成“主角 / 男主 / 女主 / 神秘人”等泛称
 6. 每个角色必须继承小说角色卡中的性别，`gender` 不得凭空改写
 7. `appearance` 和 `portrait_prompt` 必须明确写出性别、年龄段、身高体态和服装轮廓
+8. `portrait_prompt` 只描述人物特征，不要自行指定与统一角色定妆卡冲突的构图、场景或镜头
 """.strip()
 
     def _build_segment_planner_user_prompt(self, novel_package: NovelPackage) -> str:
@@ -177,8 +192,8 @@ class VideoPromptingMixin:
 
     def _stylize_character_prompt(self, prompt: str) -> str:
         return (
-            "原创虚构角色设定图，风格化概念插画，非真人摄影，动画电影质感，"
-            "角色一致性强，服装和配色清晰，"
+            "原创虚构角色白底三视图参考，风格化概念插画，非真人摄影，动画电影质感，"
+            "角色一致性强，正面、左侧面和背面设定清晰，"
             f"{prompt}"
         )
 
@@ -189,25 +204,27 @@ class VideoPromptingMixin:
         gender: str,
         appearance: str,
         outfit: str,
-        color_palette: list[str],
         source_prompt: str,
     ) -> str:
-        palette = "、".join(color_palette) if color_palette else "按人物设定控制"
         source_hint = source_prompt.strip()
-        extra_hint = f"补充参考：{source_hint}。" if source_hint else ""
+        extra_hint = (
+            f"补充人物描述：{source_hint}。"
+            if source_hint
+            else ""
+        )
         return (
-            "原创虚构角色定妆卡 / 三视图设定板，单角色，非真人摄影，非写实照片，"
-            "偏影视概念设定与动画电影角色设计。"
-            f"角色名：{name}。性别：{gender}。角色身份：{role}。"
-            f"外观特征：{appearance}。"
-            f"服装设定：{outfit}。"
-            f"主配色：{palette}。"
-            "同一张图内展示正面半身、侧面头像、全身站姿和一个表情小样，"
+            "原创虚构角色白底三视图，单角色，非真人摄影，非写实照片，"
+            "偏影视概念设定与动画电影角色设计，prompt 尽量简洁，只根据姓名和人物描述生成。"
+            f"{self.CHARACTER_SHEET_LAYOUT_PROMPT}"
+            f"画面唯一可见文字：{name}。"
+            f"人物描述：{appearance}；{outfit}。"
+            f"内部理解参考，不要写成画面文字：性别 {gender}；叙事身份 {role}。"
             "必须保持同一张脸、同一发型、同一服装、同一年龄感、同一身材比例，"
             "锁定肩宽、头身比、四肢比例和体脂观感，不要随机改设定。"
-            "背景使用简洁灰底或设计板，不要复杂场景。"
+            "不要改成电影剧照、动态打斗、半身大头照、单独肖像、海报、全景环境图、复杂场景或设计信息板。"
             "不要因为镜头或姿势变化把角色画得更老、更幼、更胖、更瘦、更壮或更矮。"
             "只保留设定中明确出现的道具，不要额外添加盔甲、外骨骼、枪械、刀剑、奇幻饰品或科幻装备。"
+            "禁止在画面中出现“男、女、主角、配角、身份、职业、年龄、性格、主色、材质”等文字标签。"
             f"{extra_hint}"
         )
 

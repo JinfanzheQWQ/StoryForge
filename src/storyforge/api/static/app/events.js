@@ -53,6 +53,38 @@ async function handleProjectListClick(event) {
   await selectProject(projectButton.dataset.selectProject);
 }
 
+async function submitStageFromButton(
+  button,
+  endpoint,
+  payload,
+  successMessage,
+  fallbackErrorMessage,
+) {
+  if (button.disabled) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    await submitStageJob(endpoint, payload, successMessage);
+  } catch (error) {
+    elements.pollIndicator.textContent = error.message || fallbackErrorMessage;
+    button.disabled = false;
+  }
+}
+
+async function submitStoryAnalysisFromButton(button) {
+  await submitStageFromButton(
+    button,
+    "/v1/projects/story-analysis",
+    {
+      project_id: button.dataset.storySourceProject,
+      source_task_id: button.dataset.generateStoryAnalysis,
+    },
+    "结构化任务已创建",
+    "结构化任务提交失败。",
+  );
+}
+
 async function handleProjectDetailClick(event) {
   const rerunButton = event.target.closest("[data-rerun-project]");
   if (rerunButton) {
@@ -92,69 +124,52 @@ async function handleProjectDetailClick(event) {
 
   const analysisButton = event.target.closest("[data-generate-story-analysis]");
   if (analysisButton) {
-    try {
-      await submitStageJob(
-        "/v1/projects/story-analysis",
-        {
-          project_id: analysisButton.dataset.storySourceProject,
-          source_task_id: analysisButton.dataset.generateStoryAnalysis,
-        },
-        "结构化任务已创建",
-      );
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "结构化任务提交失败。";
-    }
+    await submitStoryAnalysisFromButton(analysisButton);
     return;
   }
 
   const characterButton = event.target.closest("[data-generate-characters]");
   if (characterButton) {
-    try {
-      await submitStageJob(
-        "/v1/projects/characters",
-        {
-          project_id: state.selectedProjectId,
-          source_task_id: characterButton.dataset.generateCharacters,
-        },
-        "角色图任务已创建",
-      );
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "角色图任务提交失败。";
-    }
+    await submitStageFromButton(
+      characterButton,
+      "/v1/projects/characters",
+      {
+        project_id: state.selectedProjectId,
+        source_task_id: characterButton.dataset.generateCharacters,
+      },
+      "角色图任务已创建",
+      "角色图任务提交失败。",
+    );
     return;
   }
 
   const sceneButton = event.target.closest("[data-generate-scenes]");
   if (sceneButton) {
-    try {
-      await submitStageJob(
-        "/v1/projects/scenes",
-        {
-          project_id: state.selectedProjectId,
-          source_task_id: sceneButton.dataset.generateScenes,
-        },
-        "场景图任务已创建",
-      );
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "场景图任务提交失败。";
-    }
+    await submitStageFromButton(
+      sceneButton,
+      "/v1/projects/scenes",
+      {
+        project_id: state.selectedProjectId,
+        source_task_id: sceneButton.dataset.generateScenes,
+      },
+      "场景图任务已创建",
+      "场景图任务提交失败。",
+    );
     return;
   }
 
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
-    try {
-      await submitStageJob(
-        "/v1/projects/videos",
-        {
-          project_id: state.selectedProjectId,
-          source_task_id: videoButton.dataset.generateVideos,
-        },
-        "视频任务已创建",
-      );
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "视频任务提交失败。";
-    }
+    await submitStageFromButton(
+      videoButton,
+      "/v1/projects/videos",
+      {
+        project_id: state.selectedProjectId,
+        source_task_id: videoButton.dataset.generateVideos,
+      },
+      "视频任务已创建",
+      "视频任务提交失败。",
+    );
     return;
   }
 
@@ -197,18 +212,7 @@ async function handleQueueDetailClick(event) {
 
   const analysisButton = event.target.closest("[data-generate-story-analysis]");
   if (analysisButton) {
-    try {
-      await submitStageJob(
-        "/v1/projects/story-analysis",
-        {
-          project_id: analysisButton.dataset.storySourceProject,
-          source_task_id: analysisButton.dataset.generateStoryAnalysis,
-        },
-        "结构化任务已创建",
-      );
-    } catch (error) {
-      elements.pollIndicator.textContent = error.message || "结构化任务提交失败。";
-    }
+    await submitStoryAnalysisFromButton(analysisButton);
     return;
   }
 

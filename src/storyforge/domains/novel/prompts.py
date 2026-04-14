@@ -196,6 +196,7 @@ def build_character_user_prompt(
         else "角色性别按故事需要设计，但必须明确、稳定、可用于后续生图"
     )
     intended_slot_ids = [slot.slot_id for slot in intended_slots]
+    slot_contract = build_character_slot_contract(intended_slots)
     intended_slot_summary = (
         "；".join(
             f"{slot.slot_id}={slot.brief_label}（证据：{' / '.join(slot.source_evidence)}）"
@@ -244,29 +245,51 @@ def build_character_user_prompt(
 {_build_cast_analysis_context(cast_analysis)}
 - 本次必须严格覆盖的 slots：
 {intended_slot_summary}
+- 本次 characters 数组固定索引合同：
+{slot_contract}
 - 风格关键词：{", ".join(brief.style_keywords) if brief.style_keywords else "无"}
 
 要求：
 1. 必须以上游 Cast Analysis 结果为准，并以已生成小说草稿为事实基础，不要凭空发明与草稿不一致的新核心角色
 2. {exact_character_rule}
-3. {slot_mapping_rule}
-4. {slot_set_rule}
-5. {slot_evidence_rule}
-6. {slot_priority_rule}
-7. 角色之间形成互补和对冲
-8. 角色外观与气质可直接用于角色图 prompt
-9. {participation_rule}
-10. 每个角色都要输出一句 voice_style 总结
-11. 每个角色都要输出结构化 voice_profile，至少包含 timbre、speaking_rate、emotional_baseline、accent_or_texture、dialogue_delivery、forbidden_voice_changes
-12. forbidden_voice_changes 必须明确写出不能出现的变声、年龄感漂移、语速漂移或口音漂移
-13. 每个角色必须明确输出 gender 字段，角色图 prompt 中也必须写清性别、年龄段和体型，避免文生图随机偏差
-14. 所有核心角色名必须唯一，不得出现两个角色使用同一个正式名字，也不要只靠“她 / 他 / 对方”充当角色名
-15. 所有 cast_slot_id 必须唯一，严禁出现两个角色共用同一个 cast_slot_id
-16. 如果某个 slot 在小说草稿里找不到对应角色，就应该回到该 slot 的 source_evidence 去还原同一人，而不是凭空新造一个名字
-17. {dual_lead_rule}
-18. {counterpart_rule}
-19. {gender_pair_rule}
+3. 必须按“固定索引合同”逐项输出角色，不能跳过任意一行，也不能把两个 slot 合并成同一个角色对象
+4. {slot_mapping_rule}
+5. {slot_set_rule}
+6. {slot_evidence_rule}
+7. 如果 source_evidence 是“对方 / 他 / 她 / 喜欢的人 / 老师 / 学生”等独立人物指代，也必须为该 slot 创建独立角色对象，不得并入另一个角色
+8. {slot_priority_rule}
+9. 角色之间形成互补和对冲
+10. 角色外观与气质可直接用于角色图 prompt
+11. {participation_rule}
+12. 每个角色都要输出一句 voice_style 总结
+13. 每个角色都要输出结构化 voice_profile，至少包含 timbre、speaking_rate、emotional_baseline、accent_or_texture、dialogue_delivery、forbidden_voice_changes
+14. forbidden_voice_changes 必须明确写出不能出现的变声、年龄感漂移、语速漂移或口音漂移
+15. 每个角色必须明确输出 gender 字段，角色图 prompt 中也必须写清性别、年龄段和体型，避免文生图随机偏差
+16. 所有核心角色名必须唯一，不得出现两个角色使用同一个正式名字，也不要只靠“她 / 他 / 对方”充当角色名
+17. 所有 cast_slot_id 必须唯一，严禁出现两个角色共用同一个 cast_slot_id
+18. 如果某个 slot 在小说草稿里找不到对应角色，就应该回到该 slot 的 source_evidence 去还原同一人，而不是凭空新造一个名字
+19. {dual_lead_rule}
+20. {counterpart_rule}
+21. {gender_pair_rule}
 """.strip()
+
+
+def build_character_slot_contract(slots: list[CastSlotSchema]) -> str:
+    if not slots:
+        return "- 无"
+
+    lines: list[str] = []
+    for index, slot in enumerate(slots):
+        evidence = " / ".join(item for item in slot.source_evidence if item.strip()) or "无"
+        must_appear = " / ".join(item for item in slot.must_appear_in if item.strip()) or "按剧情需要"
+        notes = slot.notes.strip() or "无"
+        lines.append(
+            f"- characters[{index}].cast_slot_id 必须是 \"{slot.slot_id}\"；"
+            f"人物指代：{slot.brief_label}；剧情功能：{slot.story_function}；"
+            f"性别线索：{slot.gender_hint}；直接目标：{slot.objective}；"
+            f"正文证据：{evidence}；必须出场：{must_appear}；补充说明：{notes}"
+        )
+    return "\n".join(lines)
 
 
 def build_chapter_planner_system_prompt() -> str:

@@ -50,11 +50,13 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，旧的结构化结果和媒体资产会被标记为需要重做
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做 fallback / repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
-- LangChain 结构化输出当前使用 `ChatModel.with_structured_output(method="function_calling")`，避免 DeepSeek OpenAI-compatible 接口在 agent 工具消息链里报 `tool_calls` 错误
+- LangChain 结构化输出当前使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，避免 DeepSeek OpenAI-compatible 接口在 agent 工具消息链里报 `tool_calls` 错误；如果模型没触发 tool call 但返回了 JSON 文本，会自动回收解析
+- 结构化阶段具备后端幂等保护：同一故事正文修订已有 queued / running / completed 结构化任务时，不会重复创建任务
 - 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - Seedance manifest 标题继承真实小说标题，旧产物重载时会优先从 `novel_package.json` / `story_source.json` 恢复标题
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
+- 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
 - 项目级管理：支持同一项目下多次运行结果追踪
 - 元数据持久化：支持本地 JSON 或 MySQL
@@ -131,7 +133,10 @@ STORYFORGE_DB_PASSWORD=...
 ### 3. 检查配置文件
 
 默认配置文件是 [`configs/storyforge.example.toml`](configs/storyforge.example.toml)。
-该示例配置默认已启用 DeepSeek。
+`configs/` 目录现在只保留两份配置：
+
+- [`configs/storyforge.example.toml`](configs/storyforge.example.toml)：主配置，默认开发与日常运行使用
+- [`configs/storyforge.live.example.toml`](configs/storyforge.live.example.toml)：真实提交模板，适合需要默认自动提交 Seedream / Seedance 的场景
 
 关键配置项包括：
 
@@ -140,6 +145,7 @@ STORYFORGE_DB_PASSWORD=...
 - `seedance.base_url` / `seedance.model`
 - `database.enabled`
 - `queue.concurrency`
+- 内容合规由接入的 LLM / 媒体供应商负责，StoryForge 后端不再做本地规则拦截
 
 ### 4. 启动 Web 控制台与 API
 

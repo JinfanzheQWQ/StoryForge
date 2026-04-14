@@ -47,6 +47,12 @@ SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 默认配置文件：
 
 - [`configs/storyforge.example.toml`](../configs/storyforge.example.toml)
+- [`configs/storyforge.live.example.toml`](../configs/storyforge.live.example.toml)
+
+说明：
+
+- `storyforge.example.toml`：主配置，默认开发与日常运行使用
+- `storyforge.live.example.toml`：真实提交模板，默认打开真实媒体提交相关开关
 
 关键配置项：
 
@@ -205,8 +211,11 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 - `novel_package.json` 是运行态最小包，只保留图片与视频阶段真正要消费的字段
 - `novel_audit.json` 保存 `review`、`workflow_trace`，以及从运行包剥离出来的分析上下文
+- 同一故事正文修订已经存在 queued / running / completed 结构化任务时，后端会直接返回已有任务 ID，不会重复创建结构化任务
 - `Cast Analyzer` 现在要求每个角色槽位都提供可在小说正文中定位的 `source_evidence`
 - `Character Designer` 只允许覆盖本次目标 slots，不能重复 `cast_slot_id`，也不能凭空补出正文里没有证据的人
+- `Character Designer` 现在会给出固定索引合同，明确 `characters[0]`、`characters[1]` 等条目分别必须对应哪个 `cast_slot_id`；如果模型漏人，structured retry 会重复下发这份合同
+- 如果首轮角色表仍然缺失某些 slot，系统会额外发起一次“只补缺失角色”的结构化补生请求，再把结果合并回完整角色表
 - 视频规划在本阶段同步生成，后续角色图、场景图和视频阶段只读取这些规划文件，不再等到生成角色图时才拆分视频片段
 - `segment_plan.json` 会要求 LLM 按中文自然口播语速估算时长；对白、旁白或硬字幕超过当前时长可说完的字数时，必须拆成下一个片段
 
@@ -277,6 +286,7 @@ outputs/<story-slug>/
   视频角色视觉设定，用来约束角色外观、服装、色彩和角色定妆 prompt。
 - `character_image_manifest.json`
   角色定妆图任务清单，记录每个角色要怎么生成、输出到哪里、当前状态是什么。
+  角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只保留角色姓名和人物描述，要求正面、左侧面、背面三栏全身站姿一致。不再要求信息格、色卡、材质块或灰底设计板；性别、身份和职业只作为造型参考，不允许作为画面文字。
 - `segment_plan.json`
   视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首尾帧 prompt 和分段关系。
 - `scene_image_manifest.json`
@@ -326,6 +336,7 @@ outputs/<story-slug>/
 
 - 所有任务都会在接口和页面上返回 `error` 字段，前端会展示任务级和阶段级失败原因。
 - LLM 结构化输出失败会由 StoryForge 外层最多重试 3 次；仍失败会显式标记任务失败。
+- LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果返回空结构，会显示“模型没有返回结构化对象”这类明确原因。
 - 服务重启时，残留的 `running` 任务会重新回到 `queued`，启动后会重新执行。
 - 如果任务已经进入 `failed`，推荐在页面重新点击对应阶段按钮，而不是手动修改数据库。
 - 视频长任务执行期间不要用 `--reload`。热重载会中断当前进程，即使现在会重排队，也可能造成重复提交或等待时间变长。

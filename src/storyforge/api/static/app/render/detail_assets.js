@@ -445,10 +445,10 @@ function renderStoryTab(task, context, run = null) {
     !meta.loading
     && !meta.saving
     && !meta.dirty
-    && !["queued", "running"].includes(analysisStatus);
+    && !["queued", "running", "completed"].includes(analysisStatus);
   const analysisLabel =
     analysisStatus === "completed"
-      ? "重新生成结构化信息"
+      ? "结构化已完成"
       : analysisStatus === "stale"
         ? "重新生成结构化信息"
         : analysisStatus === "running"
@@ -456,9 +456,11 @@ function renderStoryTab(task, context, run = null) {
           : "生成结构化信息";
   const statusText =
     meta.message
-    || (analysisStatus === "stale"
-      ? "故事文本已变更，旧的结构化结果已失效。请保存后重新生成结构化信息。"
-      : "先检查并按需修改小说正文，保存后再进入结构化解析。");
+    || (analysisStatus === "completed"
+      ? "结构化信息已完成。继续生成角色图，或修改并保存正文后再重新生成结构化信息。"
+      : analysisStatus === "stale"
+        ? "故事文本已变更，旧的结构化结果已失效。请保存后重新生成结构化信息。"
+        : "先检查并按需修改小说正文，保存后再进入结构化解析。");
 
   return `
     <section class="story-editor-shell">
@@ -712,7 +714,7 @@ export function renderRunStageActions(run) {
     && !storyMeta.dirty
     && !storyMeta.loading
     && !storyMeta.saving
-    && !["queued", "running"].includes(analysisStatus);
+    && !["queued", "running", "completed"].includes(analysisStatus);
   const canGenerateCharacters =
     analysisReady && !["queued", "running", "completed"].includes(characterStatus);
   const canGenerateScenes =

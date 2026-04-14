@@ -19,6 +19,7 @@ from storyforge.api.schemas import (
     UpdateStorySourceRequest,
 )
 from storyforge.application.tasks import utc_now
+from storyforge.application.task_support import resolve_pipeline_root_task_id
 from storyforge.core.io import read_json
 from storyforge.domains.novel.contracts import DraftChapter, StorySourcePackage
 from storyforge.pipelines.story_files import (
@@ -129,6 +130,26 @@ async def create_story_analysis_job(
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
 
+    source_task = _resolve_story_source_task(
+        container,
+        payload.project_id,
+        payload.source_task_id,
+        require_completed=True,
+    )
+    existing_task = _find_existing_story_analysis_task(
+        container,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+        pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
+        story_source_revision=str(source_task.result.get("story_source_revision", "")),
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.story_analysis",
@@ -144,6 +165,32 @@ async def create_story_analysis_job(
         task_id=record.task_id,
         status=record.status,
     )
+
+
+def _find_existing_story_analysis_task(
+    container,
+    *,
+    project_id: str,
+    source_task_id: str,
+    pipeline_root_task_id: str,
+    story_source_revision: str,
+):
+    for task in container.task_queue.store.list(project_id=project_id):
+        if task.task_type != "project.story_analysis":
+            continue
+        if str(task.payload.get("source_task_id", "")) != source_task_id:
+            continue
+        if task.status in {"queued", "running"}:
+            return task
+        if task.status != "completed":
+            continue
+        result = task.result or {}
+        if str(result.get("pipeline_root_task_id", pipeline_root_task_id)) != pipeline_root_task_id:
+            continue
+        existing_revision = str(result.get("story_source_revision", ""))
+        if not story_source_revision or existing_revision == story_source_revision:
+            return task
+    return None
 
 
 @router.post("/characters", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -343,7 +390,13 @@ async def update_story_source(
     )
 
 
-def _resolve_story_source_task(container, project_id: str, source_task_id: str):
+def _resolve_story_source_task(
+    container,
+    project_id: str,
+    source_task_id: str,
+    *,
+    require_completed: bool = False,
+):
     project = container.project_store.get(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
@@ -351,6 +404,8 @@ def _resolve_story_source_task(container, project_id: str, source_task_id: str):
     source_task = container.task_queue.store.get(source_task_id)
     if source_task is None or source_task.project_id != project_id:
         raise HTTPException(status_code=404, detail=f"Source task {source_task_id} not found")
+    if require_completed and source_task.status != "completed":
+        raise HTTPException(status_code=400, detail=f"Source task {source_task_id} is not completed yet")
     if not source_task.result or not source_task.result.get("story_source_path"):
         raise HTTPException(
             status_code=400,

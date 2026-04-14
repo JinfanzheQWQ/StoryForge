@@ -120,8 +120,9 @@
 
 当前结构化 LLM 调用约定：
 
-- 小说结构化输出使用 LangChain chat model 的 `with_structured_output(method="function_calling")`
+- 小说结构化输出使用 LangChain chat model 的 `with_structured_output(method="function_calling", include_raw=True)`
 - StoryForge 外层负责 structured retry，默认最多 3 次
+- 如果模型没有返回 parsed tool 结果但 raw 文本里有 JSON，会自动提取 JSON 再做 Pydantic 校验
 - 不再使用 `create_agent + ToolStrategy` 跑小说结构化输出，避免 DeepSeek OpenAI-compatible 工具消息链兼容问题
 
 当前还没有：

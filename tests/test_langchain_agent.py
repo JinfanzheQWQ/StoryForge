@@ -52,8 +52,84 @@ class LangChainAgentBackendTestCase(unittest.TestCase):
         self.assertEqual(result.title, "站台告白")
         self.assertIs(captured["schema"], StoryArchitectureSchema)
         self.assertEqual(captured["kwargs"]["method"], "function_calling")
+        self.assertTrue(captured["kwargs"]["include_raw"])
         self.assertTrue(captured["kwargs"]["strict"])
         self.assertEqual(len(captured["messages"]), 2)
+
+    def test_structured_generation_parses_raw_json_when_tool_call_is_missing(self) -> None:
+        class FakeRawMessage:
+            content = """
+```json
+{
+  "title": "雨夜站台",
+  "premise": "雨夜站台上的一次坦白。",
+  "theme": "勇气",
+  "setting": "末班车站台",
+  "story_engine": "倒计时迫使两个人说出真心。",
+  "visual_motifs": ["雨", "灯牌"],
+  "tone_notes": ["克制"]
+}
+```
+"""
+            tool_calls: list[object] = []
+
+        class FakeStructuredModel:
+            def invoke(self, messages):
+                return {
+                    "raw": FakeRawMessage(),
+                    "parsed": None,
+                    "parsing_error": None,
+                }
+
+        class FakeModel:
+            def with_structured_output(self, schema, **kwargs):
+                return FakeStructuredModel()
+
+        backend = LangChainTextAgentBackend(model_name="deepseek-chat")
+        with patch.object(backend, "_build_model", return_value=FakeModel()):
+            result = backend.generate_structured(
+                PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "story-architect"},
+                ),
+                StoryArchitectureSchema,
+            )
+
+        self.assertEqual(result.title, "雨夜站台")
+        self.assertEqual(result.visual_motifs, ["雨", "灯牌"])
+
+    def test_structured_generation_raises_clear_error_when_parsed_output_is_empty(self) -> None:
+        class FakeRawMessage:
+            content = "我无法按要求输出。"
+            tool_calls: list[object] = []
+
+        class FakeStructuredModel:
+            def invoke(self, messages):
+                return {
+                    "raw": FakeRawMessage(),
+                    "parsed": None,
+                    "parsing_error": None,
+                }
+
+        class FakeModel:
+            def with_structured_output(self, schema, **kwargs):
+                return FakeStructuredModel()
+
+        backend = LangChainTextAgentBackend(model_name="deepseek-chat")
+        with patch.object(backend, "_build_model", return_value=FakeModel()):
+            with self.assertRaises(RuntimeError) as ctx:
+                backend.generate_structured(
+                    PromptRequest(
+                        system_prompt="system",
+                        user_prompt="user",
+                        metadata={"task": "story-architect"},
+                    ),
+                    StoryArchitectureSchema,
+                )
+
+        self.assertIn("structured output was empty", str(ctx.exception))
+        self.assertIn("tool_call_count=0", str(ctx.exception))
 
 
 if __name__ == "__main__":

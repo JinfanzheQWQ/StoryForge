@@ -19,9 +19,10 @@ import { getPipelineRootTaskId, getProjectRuns } from "./utils.js";
 export async function loadBootstrap() {
   const payload = await fetchBootstrap();
   state.bootstrap = payload;
+  window.storyforgeBootstrap = payload;
   applyBootstrapToForm(payload);
 
-  elements.llmModel.textContent = payload.llm_model;
+  elements.llmModel.textContent = `${payload.llm_provider} / ${payload.llm_model}`;
   elements.seedreamModel.textContent = payload.seedream_model;
   elements.seedanceModel.textContent = payload.seedance_model;
 }

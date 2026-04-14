@@ -16,7 +16,9 @@ from storyforge.core.config import AppConfig  # noqa: E402
 from storyforge.core.io import read_json  # noqa: E402
 from storyforge.agents.base import DryRunAgentBackend, PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
-from storyforge.domains.novel.errors import NovelStructuredGenerationError  # noqa: E402
+from storyforge.domains.novel.errors import (  # noqa: E402
+    NovelStructuredGenerationError,
+)
 from storyforge.domains.novel.heuristics import extract_role_labels_from_brief  # noqa: E402
 from storyforge.domains.novel.prompts import (  # noqa: E402
     build_character_user_prompt,
@@ -215,6 +217,43 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual(service.backend.calls, 3)
         self.assertIn("task=story-architect", str(ctx.exception))
+
+    def test_live_structured_generation_none_response_raises_clear_error(self) -> None:
+        class EmptyStructuredBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                return None
+
+        service = NovelGeneratorService(backend=EmptyStructuredBackend())
+        brief = StoryBrief(
+            title_hint="站台告白",
+            idea="一个女生在列车离站前向喜欢多年的男生告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+
+        with self.assertRaises(NovelStructuredGenerationError) as ctx:
+            service._run_structured_agent(
+                schema=StoryArchitectureSchema,
+                request=PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "story-architect"},
+                ),
+                fallback=service._fallback_architecture(brief),
+            )
+
+        self.assertEqual(service.backend.calls, 3)
+        self.assertIn("模型没有返回 StoryArchitectureSchema 结构化对象", str(ctx.exception))
+        self.assertNotIn("input_value=None", str(ctx.exception))
 
     def test_character_roster_duplicate_names_trigger_structured_retry(self) -> None:
         class DuplicateNameBackend:
@@ -516,6 +555,172 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("重复槽位", service.backend.requests[-1].user_prompt)
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
 
+    def test_character_roster_count_mismatch_triggers_missing_slot_backfill(self) -> None:
+        class CountMismatchBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "characters": [
+                            {
+                                "cast_slot_id": "lead_1",
+                                "name": "程野",
+                                "role": "主角",
+                                "gender": "男",
+                                "desire": "推进故事",
+                                "conflict": "面对阻力",
+                                "arc": "学会回应",
+                                "visual_signature": ["站台"],
+                                "voice_style": "克制",
+                                "voice_profile": {
+                                    "voice_style": "克制",
+                                    "timbre": "清亮",
+                                    "speaking_rate": "中速",
+                                    "emotional_baseline": "紧张",
+                                    "accent_or_texture": "",
+                                    "dialogue_delivery": "",
+                                    "forbidden_voice_changes": ["不要突然变老"],
+                                },
+                                "image_prompt": "程野，男，站台上的人。",
+                            }
+                        ]
+                    }
+                return {
+                    "characters": [
+                        {
+                            "cast_slot_id": "lead_1",
+                            "name": "程野",
+                            "role": "主角",
+                            "gender": "男",
+                            "desire": "推进故事",
+                            "conflict": "面对阻力",
+                            "arc": "学会回应",
+                            "visual_signature": ["站台"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "清亮",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "紧张",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "程野，男，站台上的人。",
+                        },
+                        {
+                            "cast_slot_id": "lead_2",
+                            "name": "苏晚",
+                            "role": "对位角色",
+                            "gender": "女",
+                            "desire": "作出回应",
+                            "conflict": "不敢坦白",
+                            "arc": "学会表达",
+                            "visual_signature": ["列车"],
+                            "voice_style": "克制",
+                            "voice_profile": {
+                                "voice_style": "克制",
+                                "timbre": "柔和",
+                                "speaking_rate": "中速",
+                                "emotional_baseline": "克制",
+                                "accent_or_texture": "",
+                                "dialogue_delivery": "",
+                                "forbidden_voice_changes": ["不要突然变老"],
+                            },
+                            "image_prompt": "苏晚，女，列车旁的人。",
+                        },
+                    ]
+                }
+
+        service = NovelGeneratorService(backend=CountMismatchBackend())
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一个女生终于在雨夜向喜欢的男生告白。",
+            genre="校园恋爱",
+            tone="青春、克制",
+            chapter_count=1,
+            total_word_target=1500,
+        )
+        architecture = StoryArchitectureSchema(
+            title="雨夜告白",
+            premise="雨夜里迟到的告白。",
+            theme="勇气与回应",
+            setting="高中校园",
+            story_engine="双人关系推进",
+            visual_motifs=["雨", "路灯"],
+            tone_notes=["青春"],
+        )
+        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        expected_slots = cast_analysis.primary_slots(
+            max(1, cast_analysis.recommended_core_cast_count)
+        )
+        fallback = CharacterRosterSchema.model_validate(
+            {
+                "characters": [
+                    {
+                        "cast_slot_id": "lead_1",
+                        "name": "林雾",
+                        "role": "主角",
+                        "gender": "男",
+                        "desire": "推进故事",
+                        "conflict": "面对阻力",
+                        "arc": "学会回应",
+                        "visual_signature": ["站台"],
+                        "voice_style": "克制",
+                        "voice_profile": {
+                            "voice_style": "克制",
+                            "timbre": "清亮",
+                            "speaking_rate": "中速",
+                            "emotional_baseline": "紧张",
+                            "accent_or_texture": "",
+                            "dialogue_delivery": "",
+                            "forbidden_voice_changes": ["不要突然变老"],
+                        },
+                        "image_prompt": "林雾，男，站台上的人。",
+                    }
+                ]
+            }
+        )
+
+        result = service._run_structured_agent(
+            schema=CharacterRosterSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={
+                    "task": "character-designer",
+                    "expected_character_count": len(expected_slots),
+                    "expected_cast_slot_ids": [item.slot_id for item in expected_slots],
+                    "character_slot_contract": "\n".join(
+                        [
+                            f"- characters[{index}].cast_slot_id 必须是 \"{item.slot_id}\""
+                            for index, item in enumerate(expected_slots)
+                        ]
+                    ),
+                },
+            ),
+            fallback=fallback,
+            validator=lambda value: service._validate_character_roster_output(
+                value,
+                cast_analysis=cast_analysis,
+            ),
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertEqual([item.cast_slot_id for item in result.characters], ["lead_1", "lead_2"])
+        self.assertEqual(service.backend.requests[-1].metadata["task"], "character-designer-backfill")
+        self.assertIn("现在只补全缺失角色", service.backend.requests[-1].user_prompt)
+        self.assertIn("缺失 slots：lead_2", service.backend.requests[-1].user_prompt)
+        self.assertIn("characters[1].cast_slot_id 必须是 \"lead_2\"", service.backend.requests[-1].user_prompt)
+
     def test_story_and_video_pipeline(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
@@ -616,6 +821,39 @@ class PipelineTestCase(unittest.TestCase):
         )
         self.assertTrue(
             all(item.image_kind == "turnaround_sheet" for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("统一三视图模板 SF-TURN-01" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("横版 16:9" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("纯白色" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("左栏正面，中栏左侧面，右栏背面" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("画面顶部只允许出现角色中文姓名" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("画面唯一可见文字：" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all(
+                "不得写性别、身份、职业、角色定位" in item.prompt
+                for item in video_result.project_package.character_images
+            )
+        )
+        self.assertTrue(
+            all("同一种美术风格" in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("主配色" not in item.prompt for item in video_result.project_package.character_images)
+        )
+        self.assertTrue(
+            all("2x2 信息格" not in item.prompt for item in video_result.project_package.character_images)
         )
         self.assertTrue(
             all(item.use_as_reference for item in video_result.project_package.character_images)
@@ -1228,6 +1466,9 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
         self.assertIn("source_evidence", prompt)
         self.assertIn("已生成小说草稿", prompt)
+        self.assertIn("固定索引合同", prompt)
+        self.assertIn("characters[0].cast_slot_id", prompt)
+        self.assertIn("characters[1].cast_slot_id", prompt)
 
     def test_dual_lead_repair_preserves_gender_order_from_brief(self) -> None:
         service = NovelGeneratorService()

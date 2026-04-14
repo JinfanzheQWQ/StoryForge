@@ -41,6 +41,7 @@ def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
         ),
         use_llm=True,
         submit_seedance=config.video.submit_seedance or config.seedance.auto_submit,
+        llm_provider=config.llm.provider,
         llm_model=config.llm.model,
         seedream_model=config.seedream.model,
         seedance_model=config.seedance.model,

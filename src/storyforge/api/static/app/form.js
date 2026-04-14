@@ -17,6 +17,9 @@ export function applyBootstrapToForm(payload) {
   fillInput("total_word_target", payload.default_brief.total_word_target);
   fillInput("must_include", payload.default_brief.must_include.join(", "));
   fillInput("style_keywords", payload.default_brief.style_keywords.join(", "));
+  setSubmitStatus(
+    `${payload.llm_provider} / ${payload.llm_model} 已就绪。`,
+  );
 }
 
 export function parseCommaSeparated(value) {

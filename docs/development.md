@@ -111,7 +111,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 9. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
 10. 当前 `story_source` 就是正文真源；结构化分析阶段不再额外重写章节正文
 11. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
-12. live LLM 模式下，结构化输出如果坏 JSON、缺失 `structured_response` 或 schema 校验失败，最多重试 3 次；仍失败就直接抛错，不再 silent fallback
+12. live LLM 模式下，结构化输出如果坏 JSON、缺失 structured parsed 结果、返回空结构或 schema 校验失败，最多重试 3 次；仍失败就直接抛错，不再 silent fallback
 13. 运行时不要再依赖 DryRun；如果缺少 DeepSeek 配置，应明确报错。测试如需 deterministic backend，必须在测试代码里显式 patch 注入
 
 如果未来再遇到“明明是多角色故事，却只被压成一个或两个人”的问题，优先检查：
@@ -251,7 +251,8 @@ scripts/clean-local-artifacts.sh --deep
 
 ## 已知实现约定
 
-- 结构化 LLM 输出仍然通过 LangChain 实现，但不要再回到 `create_agent + ToolStrategy` 做小说结构化输出；当前使用 `ChatModel.with_structured_output(method="function_calling")`，由 StoryForge 外层负责 3 次 structured retry。
+- 结构化 LLM 输出仍然通过 LangChain 实现，但不要再回到 `create_agent + ToolStrategy` 做小说结构化输出；当前使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，优先消费 parsed 结果，必要时回收 raw JSON 文本，由 StoryForge 外层负责 3 次 structured retry。
+- 阶段接口应尽量具备幂等保护；当前 `project.story_analysis` 会按 `source_task_id + story_source_revision` 复用已有 queued / running / completed 任务，避免重复结构化。
 - `SeedanceManifest.title` 只能表示故事标题，不能写成 `segment_video_manifest` 这类文件用途名；读取旧产物时应优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - 任务失败原因必须写入 `TaskRecord.error` / MySQL `error_text`，前端依赖该字段展示失败信息。
 - 服务启动时会把残留 `running` 任务重新排回 `queued`；这只是开发期恢复策略，不等价于生产级幂等队列。

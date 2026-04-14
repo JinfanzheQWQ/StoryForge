@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from pydantic import BaseModel
@@ -88,6 +90,7 @@ class LangChainTextAgentBackend(AgentBackend):
             # DeepSeek's OpenAI-compatible endpoint is happier with a direct
             # single-turn structured call.
             method="function_calling",
+            include_raw=True,
             strict=True,
         )
         structured = structured_model.invoke(
@@ -96,8 +99,36 @@ class LangChainTextAgentBackend(AgentBackend):
                 HumanMessage(content=request.user_prompt),
             ]
         )
+        if isinstance(structured, dict) and "parsed" in structured:
+            parsed = structured.get("parsed")
+            if parsed is not None:
+                return parsed if isinstance(parsed, schema) else schema.model_validate(parsed)
+
+            raw = structured.get("raw")
+            raw_text = _message_to_text(raw).strip()
+            raw_json = self._extract_json_object(raw_text)
+            if raw_json is not None:
+                return schema.model_validate(raw_json)
+
+            parsing_error = structured.get("parsing_error")
+            raw_summary = self._summarize_structured_raw(raw, raw_text)
+            if parsing_error is not None:
+                raise RuntimeError(
+                    f"LangChain structured parsing failed for schema={schema.__name__}: "
+                    f"{parsing_error}. {raw_summary}"
+                )
+            raise RuntimeError(
+                f"LangChain structured output was empty for schema={schema.__name__}: "
+                "the model did not return a tool call or valid JSON. "
+                f"{raw_summary}"
+            )
         if isinstance(structured, schema):
             return structured
+        if structured is None:
+            raise RuntimeError(
+                f"LangChain structured output was empty for schema={schema.__name__}: "
+                "the model returned None."
+            )
         return schema.model_validate(structured)
 
     def _extract_text(self, raw: Any) -> str:
@@ -137,3 +168,40 @@ class LangChainTextAgentBackend(AgentBackend):
             )
 
         return init_chat_model(**kwargs)
+
+    def _extract_json_object(self, text: str) -> dict[str, Any] | None:
+        if not text:
+            return None
+
+        normalized = text.strip()
+        fenced = re.search(r"```(?:json)?\s*(.*?)```", normalized, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            normalized = fenced.group(1).strip()
+
+        candidates = [normalized]
+        start = normalized.find("{")
+        end = normalized.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(normalized[start : end + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    def _summarize_structured_raw(self, raw: Any, raw_text: str) -> str:
+        content = " ".join(raw_text.split())
+        if len(content) > 500:
+            content = content[:500] + "..."
+
+        tool_calls = getattr(raw, "tool_calls", None)
+        if tool_calls is None:
+            additional_kwargs = getattr(raw, "additional_kwargs", {})
+            if isinstance(additional_kwargs, dict):
+                tool_calls = additional_kwargs.get("tool_calls")
+        tool_count = len(tool_calls) if isinstance(tool_calls, list) else 0
+        return f"raw_content={content!r}; tool_call_count={tool_count}"

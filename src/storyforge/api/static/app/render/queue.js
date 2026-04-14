@@ -7,6 +7,7 @@ import {
   escapeAttr,
   escapeHtml,
   formatShortTime,
+  getTaskRun,
   runModeLabel,
   statusLabel,
 } from "../utils.js";
@@ -56,8 +57,9 @@ export function renderQueueDetail() {
   }
 
   const artifacts = state.artifactsByTaskId.get(task.task_id);
+  const run = getTaskRun(task.task_id);
   renderInto(
     elements.queueDetailView,
-    `<section class="detail-view-shell">${renderRunDetail(task, artifacts, "queue")}</section>`,
+    `<section class="detail-view-shell">${renderRunDetail(task, artifacts, "queue", run)}</section>`,
   );
 }

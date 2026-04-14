@@ -162,6 +162,10 @@ NovelPackage
 - `seedance_execution.json`
 - `rendered/*.mp4`
 
+`character_visual_bible.json`、`character_image_manifest.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 在 `project.story_analysis` 阶段随结构化小说包一起生成。
+后续 `project.characters`、`project.scenes`、`project.videos` 只读取并更新这些规划文件，避免到角色图阶段才临时拆分视频。
+视频分段 prompt 和归一化层会按中文自然口播语速估算对白、旁白和硬字幕预算，单段说不完时拆成多个 Seedance 安全片段。
+
 ### 视频域内部拆分
 
 视频链路当前也已按职责拆分：

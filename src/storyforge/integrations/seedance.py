@@ -175,29 +175,27 @@ class SeedanceClient:
                     output_path=clip.output_path,
                 )
                 try:
-                    task_id = self._submit_clip(client, clip)
+                    if self._clip_is_completed_locally(clip):
+                        self._copy_clip_state_to_execution(clip, execution)
+                        completed_count += 1
+                        clip_results.append(execution)
+                        continue
+
+                    task_id = self._resolve_existing_task_id(clip)
+                    if not task_id:
+                        task_id = self._submit_clip(client, clip)
                     execution.remote_task_id = task_id
                     execution.submit_status = clip.submit_status
                     execution.remote_status = clip.remote_status
 
-                    status_payload = self.fetch_task_status_sync(client, task_id)
+                    status_payload = self._resolve_clip_status_payload(client, clip, task_id)
                     execution.status_payload = status_payload
                     remote_status = self._extract_status(status_payload)
                     execution.remote_status = remote_status
                     clip.remote_status = remote_status
 
                     if remote_status == "succeeded":
-                        video_url = self._extract_video_url(status_payload)
-                        cover_url = self._extract_cover_url(status_payload)
-                        execution.video_url = video_url
-                        execution.cover_url = cover_url
-                        clip.video_url = video_url
-                        clip.cover_url = cover_url
-                        clip.submit_status = "completed"
-                        execution.submit_status = "completed"
-                        if self.config.download_outputs and video_url:
-                            self._download_video(client, video_url, Path(clip.output_path))
-                            clip.downloaded_path = clip.output_path
+                        self._complete_succeeded_clip(client, clip, execution, status_payload)
                         completed_count += 1
                     elif remote_status == "timeout":
                         message = "Seedance polling timed out before the task reached a terminal status."
@@ -239,6 +237,69 @@ class SeedanceClient:
             note=note,
             clip_results=clip_results,
         )
+
+    def _clip_is_completed_locally(self, clip: SeedanceClipTask) -> bool:
+        if clip.submit_status != "completed" or clip.remote_status != "succeeded":
+            return False
+        return Path(clip.downloaded_path or clip.output_path).exists()
+
+    def _copy_clip_state_to_execution(
+        self,
+        clip: SeedanceClipTask,
+        execution: SeedanceClipExecution,
+    ) -> None:
+        execution.remote_task_id = clip.remote_task_id
+        execution.remote_status = "succeeded"
+        execution.submit_status = "completed"
+        execution.video_url = clip.video_url
+        execution.cover_url = clip.cover_url
+        execution.error = ""
+
+    def _resolve_existing_task_id(self, clip: SeedanceClipTask) -> str:
+        if not clip.remote_task_id:
+            return ""
+        if clip.remote_status in {"failed", "cancelled", "canceled", "rejected"}:
+            return ""
+        return clip.remote_task_id
+
+    def _resolve_clip_status_payload(
+        self,
+        client: httpx.Client,
+        clip: SeedanceClipTask,
+        task_id: str,
+    ) -> dict[str, Any]:
+        if clip.remote_status == "succeeded" and clip.video_url:
+            payload: dict[str, Any] = {
+                "status": "succeeded",
+                "content": {"video_url": clip.video_url},
+            }
+            if clip.cover_url:
+                payload["content"]["cover_url"] = clip.cover_url
+            return payload
+        return self.fetch_task_status_sync(client, task_id)
+
+    def _complete_succeeded_clip(
+        self,
+        client: httpx.Client,
+        clip: SeedanceClipTask,
+        execution: SeedanceClipExecution,
+        status_payload: dict[str, Any],
+    ) -> None:
+        video_url = self._extract_video_url(status_payload) or clip.video_url
+        cover_url = self._extract_cover_url(status_payload) or clip.cover_url
+        execution.video_url = video_url
+        execution.cover_url = cover_url
+        clip.video_url = video_url
+        clip.cover_url = cover_url
+        clip.submit_status = "completed"
+        clip.error = ""
+        execution.submit_status = "completed"
+        execution.error = ""
+        output_path = Path(clip.output_path)
+        if self.config.download_outputs and video_url and not output_path.exists():
+            self._download_video(client, video_url, output_path)
+        if output_path.exists():
+            clip.downloaded_path = clip.output_path
 
     def fetch_task_status_sync(
         self,

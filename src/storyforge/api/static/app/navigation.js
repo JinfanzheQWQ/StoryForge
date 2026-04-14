@@ -7,7 +7,7 @@ import { refreshSelectedProjectDetail, refreshSelectedStorySources } from "./ref
 
 export async function selectProject(projectId) {
   state.selectedProjectId = projectId;
-  state.projectDetailTab = "story";
+  state.projectDetailTab = "overview";
   await refreshSelectedProjectDetail();
   await refreshSelectedStorySources();
   renderProjectList();
@@ -16,7 +16,7 @@ export async function selectProject(projectId) {
 
 export async function selectProjectRun(taskId) {
   state.selectedProjectTaskId = taskId;
-  state.projectDetailTab = "story";
+  state.projectDetailTab = "overview";
   await refreshSelectedStorySources();
   renderProjectDetail();
 }

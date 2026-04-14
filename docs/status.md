@@ -44,11 +44,15 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 视频规划与媒体链路
 
 - 角色视觉档案生成
+- 视频规划文件已前移到 `project.story_analysis` 阶段生成，不再等到角色图阶段才拆分视频
 - 角色定妆卡任务生成与真实调用
 - 章节到视频段的拆分规划
+- 视频分段 prompt 已加入中文口播字数预算，要求对白、旁白、硬字幕和 `duration_seconds` 匹配
+- 视频分段归一化层会在 LLM 塞入过量对白时自动拉长到最多 12 秒或拆成多个子片段
 - 场景首尾帧任务生成与真实调用
 - Seedance manifest 生成
 - Seedance 任务创建、轮询、下载
+- Seedance pending / timeout 片段支持重跑恢复：复用 `remote_task_id` 查询远程状态，成功后补下载并继续合并总片
 - `ffmpeg` 自动合并总片
 - Seedance manifest 标题会继承真实小说标题，旧产物重载时会从 `novel_package.json` / `story_source.json` 恢复标题，避免显示成 `segment_video_manifest`
 
@@ -77,7 +81,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `uv run ruff check src/storyforge tests`
   - `All checks passed!`
 - `uv run pytest`
-  - `54 passed`
+  - `56 passed`
 
 最近一次真实故障定位：
 

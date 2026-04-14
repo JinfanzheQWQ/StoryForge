@@ -54,6 +54,19 @@
   .detail-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .project-hero-card {
+    position: static;
+    grid-template-columns: 1fr;
+  }
+
+  .project-hero-actions {
+    justify-content: flex-start;
+  }
+
+  .pipeline-rail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 960px) {
@@ -82,8 +95,21 @@
   .field-grid,
   .story-field-grid,
   .detail-metrics,
-  .compare-row {
+  .compare-row,
+  .stage-action-card {
     grid-template-columns: 1fr;
+  }
+
+  .project-hero-panel,
+  .project-hero-metrics,
+  .run-switch-grid,
+  .pipeline-rail,
+  .timeline-preview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-hero {
+    flex-direction: column;
   }
 
   .field-grid label.wide {

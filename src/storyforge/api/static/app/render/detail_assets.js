@@ -265,7 +265,148 @@ function renderFullStoryBlock(item, context, galleryId = null) {
   `;
 }
 
+function segmentIdFromAssetName(name) {
+  return String(name || "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/_(start|end)$/, "");
+}
+
+function segmentLabel(segmentId, index) {
+  const text = String(segmentId || "").trim();
+  if (!text) {
+    return `片段 ${index + 1}`;
+  }
+  return text
+    .replace(/^ch(\d+)_seg(\d+)$/i, "第 $1 章 / 片段 $2")
+    .replaceAll("_", " ");
+}
+
+function buildTimelineSegments(artifacts) {
+  const segmentMap = new Map();
+  const ensureSegment = (segmentId) => {
+    if (!segmentMap.has(segmentId)) {
+      segmentMap.set(segmentId, {
+        segmentId,
+        startFrame: null,
+        endFrame: null,
+        clip: null,
+      });
+    }
+    return segmentMap.get(segmentId);
+  };
+
+  for (const frame of artifacts?.scene_frames || []) {
+    const segmentId = segmentIdFromAssetName(frame.name);
+    const segment = ensureSegment(segmentId);
+    if (String(frame.name).includes("_end")) {
+      segment.endFrame = frame;
+    } else {
+      segment.startFrame = frame;
+    }
+  }
+
+  for (const clip of artifacts?.rendered_clips || []) {
+    const segment = ensureSegment(segmentIdFromAssetName(clip.name));
+    segment.clip = clip;
+  }
+
+  return Array.from(segmentMap.values()).sort((left, right) => left.segmentId.localeCompare(right.segmentId));
+}
+
+function renderTimelinePreview(item, label, galleryId) {
+  if (!item) {
+    return `
+      <div class="timeline-empty-preview">
+        <span>${escapeHtml(label)}</span>
+        <strong>未生成</strong>
+      </div>
+    `;
+  }
+  const index = findGalleryIndex(galleryId, item);
+  const preview = item.kind === "video"
+    ? `<video preload="metadata" src="${item.url}"></video>`
+    : `<img src="${item.url}" alt="${escapeAttr(item.name)}" loading="lazy" />`;
+  return `
+    <button
+      type="button"
+      class="timeline-preview"
+      data-preview-group="${escapeAttr(galleryId)}"
+      data-preview-index="${index}"
+    >
+      <span>${escapeHtml(label)}</span>
+      ${preview}
+    </button>
+  `;
+}
+
+function renderTimelineTab(task, artifacts, context, run = null) {
+  if (!artifacts?.available) {
+    return singleAssetMessage("片段时间线暂不可用", buildArtifactPendingMessage(task, "images", run));
+  }
+
+  const timelineItems = [
+    ...artifacts.scene_frames.map((item) => ({ ...item, kind: "image" })),
+    ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
+    ...artifacts.rendered_clips.map((item) => ({ ...item, kind: "video" })),
+  ];
+  const galleryId = `${context}:timeline:${task.task_id}`;
+  registerGallery(galleryId, timelineItems);
+  const segments = buildTimelineSegments(artifacts);
+
+  return `
+    <section class="timeline-shell">
+      <article class="asset-block timeline-hero">
+        <div>
+          <p class="section-kicker">Timeline</p>
+          <h4>按视频片段审片</h4>
+          <p class="asset-note">把同一片段的首帧、尾帧和视频放在一起看，更容易发现角色漂移、场景断裂和字幕问题。</p>
+        </div>
+        <div class="detail-chip-row">
+          ${chip(`片段 ${segments.length}`)}
+          ${chip(`场景帧 ${artifacts.scene_frames.length}`)}
+          ${chip(`视频 ${artifacts.rendered_clips.length}`)}
+          ${chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`)}
+        </div>
+      </article>
+
+      ${artifacts.full_story ? renderFullStoryBlock(artifacts.full_story, context, galleryId) : ""}
+
+      ${
+        segments.length
+          ? `
+            <div class="timeline-list">
+              ${segments
+                .map(
+                  (segment, index) => `
+                    <article class="timeline-card">
+                      <div class="timeline-card-head">
+                        <span class="timeline-index">${String(index + 1).padStart(2, "0")}</span>
+                        <div>
+                          <h4>${escapeHtml(segmentLabel(segment.segmentId, index))}</h4>
+                          <p class="asset-note">${escapeHtml(segment.segmentId)}</p>
+                        </div>
+                      </div>
+                      <div class="timeline-preview-grid">
+                        ${renderTimelinePreview(segment.startFrame ? { ...segment.startFrame, kind: "image" } : null, "首帧", galleryId)}
+                        ${renderTimelinePreview(segment.endFrame ? { ...segment.endFrame, kind: "image" } : null, "尾帧", galleryId)}
+                        ${renderTimelinePreview(segment.clip ? { ...segment.clip, kind: "video" } : null, "视频", galleryId)}
+                      </div>
+                    </article>
+                  `,
+                )
+                .join("")}
+            </div>
+          `
+          : singleAssetMessage("暂无片段资产", buildArtifactPendingMessage(task, "images", run))
+      }
+    </section>
+  `;
+}
+
 function renderOverviewTab(task, artifacts, context, run = null) {
+  if (context === "project") {
+    return renderTimelineTab(task, artifacts, context, run);
+  }
   return `
     <section class="asset-grid">
       <article class="asset-block">
@@ -593,16 +734,35 @@ export function renderRunStageActions(run) {
     sceneStatus === "failed" || sceneStatus === "stale" ? "重新生成场景图" : sceneStatus === "completed" ? "场景图已完成" : sceneStatus === "running" ? "场景图生成中" : "生成场景图";
   const videoButtonLabel =
     videoStatus === "failed" || videoStatus === "stale" ? "重新生成视频" : videoStatus === "completed" ? "视频已完成" : videoStatus === "running" ? "视频生成中" : "生成视频";
+  const steps = [
+    ["01", "小说正文", rootTask.status, "先确认故事文本"],
+    ["02", "结构信息", analysisStatus, "解析角色和分段"],
+    ["03", "角色图", characterStatus, "生成角色定妆"],
+    ["04", "场景图", sceneStatus, "生成首尾帧"],
+    ["05", "视频", videoStatus, "生成片段和总片"],
+  ];
 
   return `
-    <div class="detail-chip-row">
-      ${chip(`故事 ${statusLabel(rootTask.status)}`)}
-      ${chip(`结构 ${stageStatusLabel(analysisStatus)}`)}
-      ${chip(`角色 ${stageStatusLabel(characterStatus)}`)}
-      ${chip(`场景 ${stageStatusLabel(sceneStatus)}`)}
-      ${chip(`视频 ${stageStatusLabel(videoStatus)}`)}
+    <div class="pipeline-rail">
+      ${steps
+        .map(
+          ([number, title, status, note]) => `
+            <article class="pipeline-step ${escapeAttr(status)}">
+              <span>${escapeHtml(number)}</span>
+              <strong>${escapeHtml(title)}</strong>
+              <small>${escapeHtml(stageStatusLabel(status))} · ${escapeHtml(note)}</small>
+            </article>
+          `,
+        )
+        .join("")}
     </div>
-    <div class="action-row">
+    <div class="stage-action-card">
+      <div>
+        <p class="section-kicker">Next Step</p>
+        <strong>当前版本制作入口</strong>
+        <p>只会放开下一步可执行按钮，避免误跳过必要阶段。</p>
+      </div>
+      <div class="action-row">
       <button
         type="button"
         class="secondary"
@@ -636,6 +796,7 @@ export function renderRunStageActions(run) {
       >
         ${escapeHtml(videoButtonLabel)}
       </button>
+      </div>
     </div>
     ${renderStageFailureList(run, storySourceRevision)}
   `;

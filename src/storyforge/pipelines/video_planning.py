@@ -81,7 +81,7 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
     missing_files = [name for name, path in required_paths.items() if not path.exists()]
     if missing_files:
         raise FileNotFoundError(
-            "Video planning artifacts are incomplete. Generate character images first. Missing: "
+            "Video planning artifacts are incomplete. Generate structured story information first. Missing: "
             + ", ".join(missing_files)
         )
 

@@ -512,6 +512,10 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(analysis_payload["result"]["task_stage"], "story_analysis")
             self.assertIn("novel_package_path", analysis_payload["result"])
             self.assertIn("novel_audit_path", analysis_payload["result"])
+            self.assertIn("character_bible_path", analysis_payload["result"])
+            self.assertIn("segment_plan_path", analysis_payload["result"])
+            self.assertIn("scene_images_path", analysis_payload["result"])
+            self.assertIn("seedance_manifest_path", analysis_payload["result"])
 
             character_response = client.post(
                 "/v1/projects/characters",

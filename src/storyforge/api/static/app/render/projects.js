@@ -12,8 +12,11 @@ import {
   formatShortTime,
   formatTime,
   getProjectRuns,
+  getRunStageStatus,
+  getStorySourceRevision,
   initialLabel,
   metricCard,
+  stageStatusLabel,
   statusLabel,
 } from "../utils.js";
 import { renderRunDetail } from "./detail.js";
@@ -81,6 +84,135 @@ function renderCompareRow(run) {
   `;
 }
 
+function renderRunSwitchCard(run) {
+  const task = run.rootTask;
+  const displayTask = run.latestTask;
+  const artifacts = run.latestArtifacts;
+  const storySourceRevision = getStorySourceRevision(task);
+  const stageStatuses = [
+    task.status,
+    getRunStageStatus(run.latestAnalysisTask, storySourceRevision),
+    getRunStageStatus(run.latestCharacterTask, storySourceRevision),
+    getRunStageStatus(run.latestSceneTask, storySourceRevision),
+    getRunStageStatus(run.latestVideoTask, storySourceRevision),
+  ];
+  const completedCount = stageStatuses.filter((status) => status === "completed").length;
+  const activeClass = task.task_id === state.selectedProjectTaskId ? "active" : "";
+  const mediaSummary = artifacts?.available
+    ? `${artifacts.character_images.length} 图 / ${artifacts.rendered_clips.length} 视频`
+    : "等待产物";
+
+  return `
+    <button
+      type="button"
+      class="run-switch-card ${activeClass}"
+      data-select-project-run="${escapeAttr(task.task_id)}"
+    >
+      <span class="run-switch-top">
+        <strong>版本 ${escapeHtml(compactId(task.task_id))}</strong>
+        <span class="badge ${displayTask.status}">${statusLabel(displayTask.status)}</span>
+      </span>
+      <span class="run-switch-progress">
+        <span style="width: ${(completedCount / stageStatuses.length) * 100}%"></span>
+      </span>
+      <span class="run-switch-meta">
+        <small>${escapeHtml(formatShortTime(task.created_at))}</small>
+        <small>${escapeHtml(buildPipelineStageLabel(displayTask, run) || stageStatusLabel(displayTask.status))}</small>
+        <small>${escapeHtml(mediaSummary)}</small>
+      </span>
+    </button>
+  `;
+}
+
+function findHeroPreviewAsset(artifacts) {
+  if (!artifacts?.available) {
+    return null;
+  }
+  if (artifacts.full_story) {
+    return { ...artifacts.full_story, kind: "video", label: "完整成片" };
+  }
+  if (artifacts.rendered_clips.length) {
+    return { ...artifacts.rendered_clips[0], kind: "video", label: "视频片段" };
+  }
+  if (artifacts.scene_frames.length) {
+    return { ...artifacts.scene_frames[0], kind: "image", label: "场景画面" };
+  }
+  if (artifacts.character_images.length) {
+    return { ...artifacts.character_images[0], kind: "image", label: "角色定妆" };
+  }
+  return null;
+}
+
+function renderProjectHeroPreview(artifacts) {
+  const asset = findHeroPreviewAsset(artifacts);
+  if (!asset) {
+    return `
+      <div class="project-hero-preview empty">
+        <span>Asset Preview</span>
+        <strong>等待素材生成</strong>
+      </div>
+    `;
+  }
+
+  const media = asset.kind === "video"
+    ? `<video preload="metadata" muted src="${escapeAttr(asset.url)}"></video>`
+    : `<img src="${escapeAttr(asset.url)}" alt="${escapeAttr(asset.name)}" loading="lazy" />`;
+
+  return `
+    <div class="project-hero-preview">
+      <span>${escapeHtml(asset.label)}</span>
+      ${media}
+    </div>
+  `;
+}
+
+function renderProjectHero(detail, runs, selectedRun, artifacts) {
+  const title = detail.story_title || detail.title_hint;
+  const latestStage = selectedRun ? buildPipelineStageLabel(selectedRun.latestTask, selectedRun) : "等待开始";
+  const fullStoryLabel = artifacts?.full_story ? "已有总片" : "暂无总片";
+
+  return `
+    <section class="project-hero-card">
+      <div class="project-hero-main">
+        <p class="section-kicker">Story Workspace</p>
+        <h2>${escapeHtml(title)}</h2>
+        <p class="project-hero-copy">${escapeHtml(detail.brief.idea)}</p>
+        <div class="detail-chip-row">
+          ${chip(`当前阶段 ${latestStage || statusLabel(detail.latest_status || "queued")}`)}
+          ${chip(`版本 ${detail.run_count}`)}
+          ${chip(fullStoryLabel)}
+          ${chip(`故事编号 ${compactId(detail.project_id)}`)}
+        </div>
+      </div>
+      <div class="project-hero-panel">
+        ${renderProjectHeroPreview(artifacts)}
+        <div class="project-hero-metrics">
+          ${metricCard("最近更新", formatShortTime(detail.updated_at))}
+          ${metricCard("角色图", String(artifacts?.character_images?.length || 0))}
+          ${metricCard("场景帧", String(artifacts?.scene_frames?.length || 0))}
+          ${metricCard("视频片段", String(artifacts?.rendered_clips?.length || 0))}
+        </div>
+      </div>
+      <div class="project-hero-actions">
+        <button type="button" class="secondary" data-rerun-project="${escapeAttr(detail.project_id)}">基于当前故事新建版本</button>
+      </div>
+    </section>
+
+    <section class="run-switcher-block">
+      <div class="compare-head">
+        <div>
+          <p class="section-kicker">Versions</p>
+          <h3>选择制作版本</h3>
+          <p>版本切换只影响下方资产工作台，不会改变原始产物。</p>
+        </div>
+      </div>
+      <div class="run-switch-grid">
+        ${runs.map((run) => renderRunSwitchCard(run)).join("")}
+      </div>
+    </section>
+  `;
+}
+
 export function renderProjectList() {
   if (state.projects.length === 0) {
     renderInto(elements.projectList, emptyStateCard(
@@ -109,51 +241,17 @@ export function renderProjectDetail() {
   const artifacts = selectedRun?.latestArtifacts || null;
 
   renderInto(elements.projectDetailView, `
-    <section class="detail-view-shell">
-      <div class="detail-header">
-        <div>
-          <p class="section-kicker">Story Profile</p>
-          <h2>${escapeHtml(detail.story_title || detail.title_hint)}</h2>
-          <p class="detail-subtitle">${escapeHtml(detail.brief.idea)}</p>
-        </div>
-        <span class="badge ${detail.latest_status || "queued"}">${statusLabel(detail.latest_status || "queued")}</span>
-      </div>
-
-      <section class="detail-summary-card">
-        <div class="detail-chip-row">
-          ${chip(`故事编号 ${compactId(detail.project_id)}`)}
-          ${chip(`版本 ${detail.run_count}`)}
-          ${chip(`已完成 ${detail.completed_run_count}`)}
-          ${chip(`异常 ${detail.failed_run_count}`)}
-          ${chip(`总片 ${detail.full_story_count}`)}
-        </div>
-        <div class="detail-metrics">
-          ${metricCard("最近更新", formatShortTime(detail.updated_at))}
-          ${metricCard("当前状态", statusLabel(detail.latest_status || "queued"))}
-          ${metricCard("章节目标", String(detail.brief.chapter_count))}
-          ${metricCard("目标字数", String(detail.brief.total_word_target))}
-        </div>
-        <div class="action-row">
-          <button type="button" class="secondary" data-rerun-project="${escapeAttr(detail.project_id)}">基于当前故事新建版本</button>
-        </div>
-      </section>
-
-      <section class="compare-block">
-        <div class="compare-head">
-          <div>
-            <p class="section-kicker">Version Compare</p>
-            <h3>同一故事的版本比较</h3>
-            <p>每次从故事文本开始的制作流程都会被视为一个版本，方便你比较文字、图片和成片结果。</p>
-          </div>
-        </div>
-        <div class="compare-grid">
-          ${runs.map((run) => renderCompareRow(run)).join("")}
-        </div>
-      </section>
-
+    <section class="detail-view-shell project-workspace-shell">
+      ${renderProjectHero(detail, runs, selectedRun, artifacts)}
       <section class="run-detail-block">
         ${selectedTask && selectedRun ? renderRunDetail(selectedTask, artifacts, "project", selectedRun) : emptyStateCard("还没有版本记录", "这个故事还没有可展示的制作记录。")}
       </section>
+      <details class="compare-block compact-version-compare">
+        <summary>展开完整版本表</summary>
+        <div class="compare-grid">
+          ${runs.map((run) => renderCompareRow(run)).join("")}
+        </div>
+      </details>
     </section>
   `);
 }

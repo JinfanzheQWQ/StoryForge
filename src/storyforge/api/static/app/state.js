@@ -15,7 +15,7 @@ export const state = {
   selectedProjectId: null,
   selectedProjectTaskId: null,
   queueDetailTab: "overview",
-  projectDetailTab: "story",
+  projectDetailTab: "overview",
   artifactsByTaskId: new Map(),
   artifactVersionByTaskId: new Map(),
   galleries: new Map(),
@@ -24,9 +24,9 @@ export const state = {
 };
 
 export const DETAIL_TABS = [
-  { id: "overview", label: "概览" },
+  { id: "overview", label: "时间线", queueLabel: "概览" },
   { id: "story", label: "小说" },
-  { id: "docs", label: "文档" },
-  { id: "images", label: "图片" },
-  { id: "videos", label: "视频" },
+  { id: "images", label: "素材库" },
+  { id: "videos", label: "成片" },
+  { id: "docs", label: "文件" },
 ];

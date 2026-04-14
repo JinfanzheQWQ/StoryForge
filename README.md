@@ -233,6 +233,8 @@ uv run storyforge video plan \
 
 CLI 直接运行时，默认输出到 `outputs/<story-slug>/`。  
 通过五步式项目任务运行时，后续阶段会复用同一个 `output_dir`。
+其中 `character_visual_bible.json`、`character_image_manifest.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 会在“生成结构化信息”阶段提前落盘；角色图、场景图和视频阶段只继续消费并更新这些规划文件。
+`segment_plan.json` 会按中文口播语速预算控制对白、旁白、字幕和视频时长，超出单段可说完的内容会拆成后续片段。
 
 ## 仓库结构
 

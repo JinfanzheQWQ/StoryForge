@@ -20,7 +20,6 @@ from storyforge.pipelines.video_models import (
     VideoRenderResult,
 )
 from storyforge.pipelines.video_planning import (
-    build_video_planning_artifacts,
     load_video_planning_artifacts,
 )
 from storyforge.pipelines.video_support import (
@@ -149,13 +148,8 @@ def run_character_image_pipeline(
     use_llm: bool = False,
     submit_characters: bool = True,
 ) -> CharacterImagePipelineResult:
-    planning = build_video_planning_artifacts(
-        novel_package=novel_package,
-        config=config,
-        project_root=project_root,
-        output_root=output_root,
-        use_llm=use_llm,
-    )
+    output_dir = output_root or (project_root / config.paths.output_dir)
+    planning = load_video_planning_artifacts(output_dir)
     seedream_client = SeedreamClient(config.seedream)
     character_execution = seedream_client.generate_character_images(
         planning.project_package,

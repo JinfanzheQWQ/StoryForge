@@ -7,6 +7,7 @@ from storyforge.core.config import AppConfig
 from storyforge.domains.novel.contracts import NovelPackage, StoryBrief
 from storyforge.pipelines.story_pipeline import StoryPipelineResult, run_story_pipeline
 from storyforge.pipelines.video_pipeline import VideoPipelineResult, run_video_pipeline
+from storyforge.pipelines.video_planning import build_video_planning_artifacts
 
 
 @dataclass(slots=True)
@@ -51,11 +52,18 @@ class StoryForgeOrchestrator:
         use_llm: bool = False,
         submit_seedance: bool = False,
     ) -> VideoPipelineResult:
-        return run_video_pipeline(
+        planning = build_video_planning_artifacts(
             novel_package=novel_package,
             config=self.config,
             project_root=self.project_root,
             output_root=output_root,
+            use_llm=use_llm,
+        )
+        return run_video_pipeline(
+            novel_package=novel_package,
+            config=self.config,
+            project_root=self.project_root,
+            output_root=planning.output_dir,
             use_llm=use_llm,
             submit_seedance=submit_seedance,
         )

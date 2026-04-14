@@ -34,6 +34,7 @@ class NovelToVideoService(
     PLANNER_MIN_DURATION_SECONDS = 5
     SEEDANCE_MIN_DURATION_SECONDS = 2
     SEEDANCE_MAX_DURATION_SECONDS = 12
+    SPEECH_CHARS_PER_SECOND = 3
 
     def __init__(
         self,

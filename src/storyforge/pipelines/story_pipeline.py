@@ -13,6 +13,8 @@ from storyforge.pipelines.story_files import (
     write_story_analysis_files,
     write_story_source_files,
 )
+from storyforge.pipelines.video_models import VideoPlanningArtifacts
+from storyforge.pipelines.video_planning import build_video_planning_artifacts
 
 
 @dataclass(slots=True)
@@ -27,7 +29,13 @@ class StoryAnalysisResult:
     output_dir: Path
     novel_package_path: Path
     novel_audit_path: Path
+    character_bible_path: Path
+    character_images_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    seedance_manifest_path: Path
     novel_package: NovelPackage
+    video_planning: VideoPlanningArtifacts
 
 
 @dataclass(slots=True)
@@ -36,8 +44,14 @@ class StoryPipelineResult:
     story_source_path: Path
     novel_package_path: Path
     novel_audit_path: Path
+    character_bible_path: Path
+    character_images_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    seedance_manifest_path: Path
     story_source: StorySourcePackage
     novel_package: NovelPackage
+    video_planning: VideoPlanningArtifacts
 
 
 def run_story_generation_pipeline(
@@ -85,12 +99,25 @@ def run_story_analysis_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     analysis_files = write_story_analysis_files(output_dir, package)
+    video_planning = build_video_planning_artifacts(
+        novel_package=package,
+        config=config,
+        project_root=project_root,
+        output_root=output_dir,
+        use_llm=use_llm,
+    )
 
     return StoryAnalysisResult(
         output_dir=output_dir,
         novel_package_path=analysis_files.novel_package_path,
         novel_audit_path=analysis_files.novel_audit_path,
+        character_bible_path=video_planning.character_bible_path,
+        character_images_path=video_planning.character_images_path,
+        segment_plan_path=video_planning.segment_plan_path,
+        scene_images_path=video_planning.scene_images_path,
+        seedance_manifest_path=video_planning.manifest_path,
         novel_package=package,
+        video_planning=video_planning,
     )
 
 
@@ -121,8 +148,14 @@ def run_story_pipeline(
         story_source_path=generation.story_source_path,
         novel_package_path=analysis.novel_package_path,
         novel_audit_path=analysis.novel_audit_path,
+        character_bible_path=analysis.character_bible_path,
+        character_images_path=analysis.character_images_path,
+        segment_plan_path=analysis.segment_plan_path,
+        scene_images_path=analysis.scene_images_path,
+        seedance_manifest_path=analysis.seedance_manifest_path,
         story_source=generation.story_source,
         novel_package=analysis.novel_package,
+        video_planning=analysis.video_planning,
     )
 
 

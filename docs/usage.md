@@ -195,6 +195,11 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 - `novel_package.json`
 - `novel_audit.json`
+- `character_visual_bible.json`
+- `character_image_manifest.json`
+- `segment_plan.json`
+- `scene_image_manifest.json`
+- `seedance_manifest.json`
 
 说明：
 
@@ -202,13 +207,13 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `novel_audit.json` 保存 `review`、`workflow_trace`，以及从运行包剥离出来的分析上下文
 - `Cast Analyzer` 现在要求每个角色槽位都提供可在小说正文中定位的 `source_evidence`
 - `Character Designer` 只允许覆盖本次目标 slots，不能重复 `cast_slot_id`，也不能凭空补出正文里没有证据的人
+- 视频规划在本阶段同步生成，后续角色图、场景图和视频阶段只读取这些规划文件，不再等到生成角色图时才拆分视频片段
+- `segment_plan.json` 会要求 LLM 按中文自然口播语速估算时长；对白、旁白或硬字幕超过当前时长可说完的字数时，必须拆成下一个片段
 
 ### 第三步：生成角色图
 
 产出：
 
-- `character_visual_bible.json`
-- `character_image_manifest.json`
 - `assets/characters/*.png`
 - `seedream_character_execution.json`
 
@@ -216,8 +221,6 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 产出：
 
-- `segment_plan.json`
-- `scene_image_manifest.json`
 - `assets/frames/*_start.png`
 - `assets/frames/*_end.png`
 - `seedream_scene_execution.json`

@@ -529,6 +529,11 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(story_result.story_source_path.exists())
         self.assertTrue(story_result.novel_package_path.exists())
         self.assertTrue(story_result.novel_audit_path.exists())
+        self.assertTrue(story_result.character_bible_path.exists())
+        self.assertTrue(story_result.character_images_path.exists())
+        self.assertTrue(story_result.segment_plan_path.exists())
+        self.assertTrue(story_result.scene_images_path.exists())
+        self.assertTrue(story_result.seedance_manifest_path.exists())
         self.assertFalse((story_result.output_dir / "story.md").exists())
         self.assertFalse((story_result.output_dir / "outline.json").exists())
         self.assertFalse((story_result.output_dir / "workflow_trace.json").exists())
@@ -577,7 +582,7 @@ class PipelineTestCase(unittest.TestCase):
             {item.number for item in story_result.novel_package.outline.chapters},
         )
         self.assertTrue(
-            all(item.dialogue_lines for item in video_result.project_package.segments)
+            any(item.dialogue_lines for item in video_result.project_package.segments)
         )
         self.assertTrue(
             all(item.subtitle_lines for item in video_result.project_package.segments)
@@ -1570,6 +1575,9 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertIn("同一章节可以拆成 1 段、2 段、3 段或更多", prompt)
         self.assertIn("必须由你根据该章正文内容自行判断", prompt)
+        self.assertIn("按中文自然口播语速估算音频长度", prompt)
+        self.assertIn("如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段", prompt)
+        self.assertIn("硬字幕超过当前时长可说完", prompt)
         self.assertNotIn("推荐最少片段数", prompt)
 
     def test_repair_segment_plan_preserves_all_llm_segments_within_same_chapter(self) -> None:
@@ -1824,6 +1832,57 @@ class PipelineTestCase(unittest.TestCase):
                 "5-8秒：他在舞台前停下。",
             ],
         )
+
+    def test_short_segment_with_too_much_dialogue_is_split_by_speech_budget(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        raw_plan = VideoSegmentPlanSchema.model_validate(
+            {
+                "segments": [
+                    {
+                        "segment_id": "confession_01",
+                        "chapter_number": 1,
+                        "title": "告白测试",
+                        "summary": "雨棚下的告白。",
+                        "involved_characters": ["林雾", "沈砚"],
+                        "narration": "雨声压低了街口的喧哗，她终于停下脚步。",
+                        "dialogue_lines": [
+                            "林雾：我喜欢你很久了，不是今天才开始，也不是因为这场雨才突然想说。",
+                            "沈砚：我听见了，你别急，我也有话想慢慢告诉你。",
+                        ],
+                        "subtitle_lines": [
+                            "我喜欢你很久了，不是今天才开始。",
+                            "我听见了，你别急，我也有话想告诉你。",
+                        ],
+                        "sound_effects": ["雨声"],
+                        "music_direction": "克制温柔",
+                        "timed_beats": ["0-5秒：两人在雨棚下完成告白对白。"],
+                        "scene_prompt": "雨棚下双人对话。",
+                        "start_frame_prompt": "两人在雨棚下对视。",
+                        "end_frame_prompt": "沈砚抬眼回应。",
+                        "duration_seconds": 5,
+                    }
+                ]
+            }
+        )
+
+        normalized = service._normalize_segments_for_seedance(raw_plan)
+
+        self.assertGreater(len(normalized.segments), 1)
+        self.assertTrue(all(5 <= item.duration_seconds <= 12 for item in normalized.segments))
+        self.assertEqual(
+            [item.source_segment_id for item in normalized.segments],
+            ["confession_01"] * len(normalized.segments),
+        )
+        self.assertTrue(all(item.subtitle_lines for item in normalized.segments))
+        self.assertTrue(any(item.dialogue_lines for item in normalized.segments[1:]))
 
     def test_adjacent_segments_in_same_chapter_reuse_previous_end_frame_when_continuous(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

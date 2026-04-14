@@ -46,6 +46,17 @@ async function loadArtifactsIfNeeded(task) {
   state.artifactVersionByTaskId.set(task.task_id, versionKey);
 }
 
+function isMediaPreviewActive() {
+  const lightboxOpen = elements.lightbox && !elements.lightbox.classList.contains("hidden");
+  if (lightboxOpen) {
+    return true;
+  }
+
+  return Array.from(
+    document.querySelectorAll("#project-detail-view video, #queue-detail-view video"),
+  ).some((media) => !media.paused && !media.ended);
+}
+
 function ensureSelections() {
   const taskIds = new Set(state.tasks.map((task) => task.task_id));
   const projectIds = new Set(state.projects.map((project) => project.project_id));
@@ -135,6 +146,10 @@ export async function refreshTasks() {
     updateStats();
     if (isEditingStorySource && state.storySourceDirtyKeys.size > 0) {
       elements.pollIndicator.textContent = "编辑中，已暂停详情区重绘";
+      return;
+    }
+    if (isMediaPreviewActive()) {
+      elements.pollIndicator.textContent = "预览中，已暂停详情区重绘";
       return;
     }
     renderApplication();

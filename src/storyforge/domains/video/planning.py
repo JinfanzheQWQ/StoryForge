@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import ceil
+import re
 
 from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.contracts import (
@@ -277,24 +278,37 @@ class VideoPlanningMixin:
         self,
         segment: VideoSegmentSchema,
     ) -> list[VideoSegmentSchema]:
-        requested_duration = max(segment.duration_seconds, self.PLANNER_MIN_DURATION_SECONDS)
+        narration = segment.narration.strip() or segment.summary
+        requested_duration = max(
+            segment.duration_seconds,
+            self.PLANNER_MIN_DURATION_SECONDS,
+            self._estimate_required_speech_duration(
+                narration=narration,
+                dialogue_lines=segment.dialogue_lines,
+                subtitle_lines=segment.subtitle_lines,
+            ),
+        )
         normalized_duration = min(requested_duration, self.SEEDANCE_MAX_DURATION_SECONDS)
         timed_beats = segment.timed_beats or self._build_default_timed_beats(
             beat=segment.summary,
             chapter_summary=segment.summary,
-            narration=segment.narration,
+            narration=narration,
             dialogue_lines=segment.dialogue_lines,
             sound_effects=segment.sound_effects,
             duration_seconds=requested_duration,
         )
 
         if requested_duration <= self.SEEDANCE_MAX_DURATION_SECONDS:
-            narration = segment.narration.strip() or segment.summary
             subtitle_lines = segment.subtitle_lines or self._build_subtitle_lines(
                 narration=narration,
                 dialogue_lines=segment.dialogue_lines,
                 timed_beats=timed_beats,
             )
+            if normalized_duration != segment.duration_seconds:
+                timed_beats = self._retime_beat_descriptions(
+                    self._extract_beat_descriptions(timed_beats),
+                    normalized_duration,
+                )
             return [
                 segment.model_copy(
                     update={
@@ -315,11 +329,13 @@ class VideoPlanningMixin:
         source_segment_id = segment.source_segment_id or segment.segment_id
         split_durations = self._distribute_duration(requested_duration, split_count)
         beat_chunks = self._chunk_list(self._extract_beat_descriptions(timed_beats), split_count)
-        dialogue_chunks = self._chunk_list(segment.dialogue_lines, split_count)
-        subtitle_source = segment.subtitle_lines or self._split_text_units(segment.narration)
+        dialogue_chunks = self._chunk_dialogue_lines(segment.dialogue_lines, split_count)
+        subtitle_source = self._split_subtitle_source(
+            segment.subtitle_lines or [narration],
+        )
         subtitle_chunks = self._chunk_list(subtitle_source, split_count)
         sound_effect_chunks = self._chunk_list(segment.sound_effects, split_count)
-        narration_chunks = self._chunk_text(segment.narration, split_count)
+        narration_chunks = self._chunk_narration(narration, split_count)
 
         expanded_segments: list[VideoSegmentSchema] = []
         for index, clip_duration in enumerate(split_durations, start=1):
@@ -350,7 +366,7 @@ class VideoPlanningMixin:
                             {},
                             existing_notes=segment.character_voice_notes,
                         ),
-                        "sound_effects": sound_effect_chunks[index - 1],
+                        "sound_effects": sound_effect_chunks[index - 1] or segment.sound_effects[:1],
                         "timed_beats": timed_beats_chunk,
                         "scene_prompt": (
                             f"{segment.scene_prompt}，同一剧情片段的第{index}/{split_count}段，"
@@ -468,6 +484,88 @@ class VideoPlanningMixin:
             self.SEEDANCE_MAX_DURATION_SECONDS,
             max(duration_seconds, self.SEEDANCE_MIN_DURATION_SECONDS),
         )
+
+    def _estimate_required_speech_duration(
+        self,
+        narration: str,
+        dialogue_lines: list[str],
+        subtitle_lines: list[str],
+    ) -> int:
+        audible_chars = self._count_speech_chars(
+            "\n".join([narration, *dialogue_lines])
+        )
+        subtitle_chars = self._count_speech_chars("\n".join(subtitle_lines))
+        speech_chars = max(audible_chars, subtitle_chars)
+        if speech_chars <= 0:
+            return self.PLANNER_MIN_DURATION_SECONDS
+        return ceil(speech_chars / self.SPEECH_CHARS_PER_SECOND)
+
+    def _count_speech_chars(self, text: str) -> int:
+        cleaned_lines = []
+        for line in text.splitlines():
+            line = re.sub(r"^\s*[^：:\n]{1,16}[：:]\s*", "", line)
+            line = re.sub(r"[（(][^）)]{0,24}[）)]", "", line)
+            cleaned_lines.append(line)
+        compact = re.sub(r"[\s，。！？；：、“”‘’\"'.,!?;:()\[\]（）【】《》<>…—-]", "", "".join(cleaned_lines))
+        return len(compact)
+
+    def _split_long_text_unit(self, text: str) -> list[str]:
+        max_chars = self.SEEDANCE_MAX_DURATION_SECONDS * self.SPEECH_CHARS_PER_SECOND
+        if self._count_speech_chars(text) <= max_chars:
+            return [text.strip()] if text.strip() else []
+
+        chunks: list[str] = []
+        current = ""
+        current_count = 0
+        for char in text.strip():
+            char_count = self._count_speech_chars(char)
+            if current and current_count + char_count > max_chars:
+                chunks.append(current.strip())
+                current = char
+                current_count = char_count
+            else:
+                current += char
+                current_count += char_count
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
+
+    def _chunk_dialogue_lines(
+        self,
+        dialogue_lines: list[str],
+        chunk_count: int,
+    ) -> list[list[str]]:
+        units: list[str] = []
+        for line in dialogue_lines:
+            speaker, content = self._split_dialogue_speaker(line)
+            for unit in self._split_text_units(content):
+                for piece in self._split_long_text_unit(unit):
+                    units.append(f"{speaker}：{piece}" if speaker else piece)
+        return self._chunk_list(units, chunk_count)
+
+    def _split_dialogue_speaker(self, line: str) -> tuple[str, str]:
+        match = re.match(r"^\s*([^：:\n]{1,16})[：:]\s*(.+)$", line.strip())
+        if not match:
+            return "", line.strip()
+        return match.group(1).strip(), match.group(2).strip()
+
+    def _split_subtitle_source(self, subtitle_lines: list[str]) -> list[str]:
+        units: list[str] = []
+        for line in subtitle_lines:
+            for unit in self._split_text_units(line):
+                units.extend(self._split_long_text_unit(unit))
+        return units
+
+    def _chunk_narration(self, narration: str, chunk_count: int) -> list[str]:
+        units: list[str] = []
+        for unit in self._split_text_units(narration):
+            units.extend(self._split_long_text_unit(unit))
+        if not units:
+            return ["" for _ in range(chunk_count)]
+        return [
+            "".join(chunk).strip()
+            for chunk in self._chunk_list(units, chunk_count)
+        ]
 
     def _distribute_duration(self, total_duration: int, chunk_count: int) -> list[int]:
         base, remainder = divmod(total_duration, chunk_count)

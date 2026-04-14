@@ -15,6 +15,7 @@ import { renderRunStageActions, renderRunTabContent } from "./detail_assets.js";
 
 function renderDetailTab(tab, activeTab, context) {
   const activeClass = tab.id === activeTab ? "active" : "";
+  const label = context === "queue" ? tab.queueLabel || tab.label : tab.label;
   return `
     <button
       type="button"
@@ -22,7 +23,7 @@ function renderDetailTab(tab, activeTab, context) {
       data-detail-context="${escapeAttr(context)}"
       data-detail-tab="${escapeAttr(tab.id)}"
     >
-      ${escapeHtml(tab.label)}
+      ${escapeHtml(label)}
     </button>
   `;
 }

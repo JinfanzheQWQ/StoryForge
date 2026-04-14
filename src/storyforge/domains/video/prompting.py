@@ -61,6 +61,11 @@ class VideoPromptingMixin:
 - 每个片段的 `duration_seconds` 必须由你根据剧情密度自行判断，范围限定在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒
 - 不要把所有片段都机械写成同一个时长；对白密集、动作更复杂、信息量更大的片段可以更长
 - 如果你无法判断，就优先接近 {self.segment_duration_seconds} 秒
+- 你必须按中文自然口播语速估算音频长度，按每秒约 {self.SPEECH_CHARS_PER_SECOND} 个中文字计算可口播字数
+- 5 秒片段只能放极短句，总旁白 + 对白 + 硬字幕文案约 15 字以内；8 秒片段可放一句短对白加少量旁白，约 24 字以内；12 秒片段最多两句短对白，约 36 字以内
+- 如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段，不得硬塞进同一段
+- `subtitle_lines` 必须只写本片段实际能在音频里说完的文字，不能提前打印还没说完的句子
+- `timed_beats` 必须明确每一句旁白或对白在几秒到几秒说出，不能只写泛泛的镜头节奏
 - 每个片段必须输出 `transition_hint`，取值只能是 `continue` / `cut` / `auto`
 - 片段必须覆盖全部章节，`chapter_number` 必须与来源章节一致
 - 必须严格复刻章节正文已经发生的事件、情绪和对白关系，不得自行改写关键情节、改变角色关系或新增冲突
@@ -300,10 +305,12 @@ class VideoPromptingMixin:
         ]
 
     def _build_seedance_clip_prompt(self, segment: VideoSegment) -> str:
+        speech_budget = segment.duration_seconds * self.SPEECH_CHARS_PER_SECOND
         lines = [
             "请生成带原生音频的中文剧情短视频片段。",
             f"片段标题：{segment.title}",
             f"时长：{segment.duration_seconds} 秒。",
+            f"语速预算：中文口播总量控制在约 {speech_budget} 字以内，所有对白和旁白必须在片尾前自然说完。",
             f"角色：{'、'.join(segment.involved_characters) or '环境为主'}。",
             f"画面主提示：{segment.scene_prompt}",
             f"旁白：{segment.narration}",
@@ -311,6 +318,9 @@ class VideoPromptingMixin:
         if segment.dialogue_lines:
             lines.append("角色对白：")
             lines.extend(f"- {line}" for line in segment.dialogue_lines)
+        else:
+            lines.append("角色对白：")
+            lines.append("- 本段无角色对白，只保留旁白、环境音和镜头动作。")
         if segment.character_voice_notes:
             lines.append("角色音色锁定：")
             lines.extend(f"- {item}" for item in segment.character_voice_notes)
@@ -333,6 +343,8 @@ class VideoPromptingMixin:
                 lines.append("硬字幕文案：")
                 lines.extend(f"- {item}" for item in subtitle_lines)
             lines.append("请把上述字幕直接烧录到画面底部，不要输出外挂字幕文件。")
+            lines.append("硬字幕必须与实际口播同步出现，不要提前打印尚未说出口的文字。")
+            lines.append("如果时长不足，优先压缩停顿和删减非字幕口播，不要截断对白或字幕。")
             lines.append("要求口播、对白、环境音与镜头动作自然同步。")
         else:
             lines.append("要求口播、对白、环境音与镜头动作自然同步，不要额外添加字幕。")

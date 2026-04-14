@@ -58,6 +58,13 @@ class ProjectStore:
     def get(self, project_id: str) -> ProjectRecord | None:
         return self._projects.get(project_id)
 
+    def delete(self, project_id: str) -> bool:
+        if project_id not in self._projects:
+            return False
+        del self._projects[project_id]
+        self._save()
+        return True
+
     def list(self) -> list[ProjectRecord]:
         return sorted(
             self._projects.values(),

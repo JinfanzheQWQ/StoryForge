@@ -69,6 +69,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 前端已展示任务和阶段级失败原因，不再只显示“异常”
 - 资产页视频预览轮询稳定性修复
 - 故事正文保存后自动清理旧的结构化和媒体派生产物
+- 支持删除项目：删除项目元数据、任务记录和安全范围内的关联输出目录；项目有 queued / running 任务时返回 409
 - 服务启动时残留的 `running` 任务会重新排回 `queued`，不再因为一次重启直接标记为失败
 - `project.story_analysis` 已增加后端幂等保护：同一故事正文修订已经存在 queued / running / completed 结构化任务时，不再重复创建新任务
 - 任务详情页已按 `pipeline_root_task_id` 聚合同一版本阶段状态，结构化完成后按钮会禁用；提交按钮逻辑已抽成共用 helper，避免重复 try/catch 和双击重复提交
@@ -86,7 +87,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `uv run ruff check src/storyforge tests`
   - `All checks passed!`
 - `uv run pytest`
-  - `60 passed`
+  - `66 passed`
 
 最近一次真实故障定位：
 

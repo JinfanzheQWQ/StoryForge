@@ -13,12 +13,14 @@ from storyforge.api.schemas import (
     CreateStageTaskRequest,
     CreateStoryTaskRequest,
     JobAcceptedResponse,
+    ProjectDeletedResponse,
     ProjectDetailResponse,
     ProjectSummaryResponse,
     StorySourceResponse,
     UpdateStorySourceRequest,
 )
 from storyforge.application.tasks import utc_now
+from storyforge.application.project_deletion import delete_project_output_dirs
 from storyforge.application.task_support import resolve_pipeline_root_task_id
 from storyforge.core.io import read_json
 from storyforge.domains.novel.contracts import DraftChapter, StorySourcePackage
@@ -56,6 +58,51 @@ async def get_project(project_id: str, request: Request) -> ProjectDetailRespons
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     return build_project_detail_response(project, container.task_queue.store)
+
+
+@router.delete("/{project_id}", response_model=ProjectDeletedResponse)
+async def delete_project(project_id: str, request: Request) -> ProjectDeletedResponse:
+    container = request.app.state.container
+    project = container.project_store.get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+
+    project_tasks = container.task_queue.store.list(project_id=project_id)
+    active_tasks = [
+        item.task_id
+        for item in project_tasks
+        if item.status in {"queued", "running"}
+    ]
+    if active_tasks:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Project has queued or running tasks and cannot be deleted yet: "
+                + ", ".join(active_tasks)
+            ),
+        )
+
+    output_report = delete_project_output_dirs(
+        project_root=container.project_root,
+        output_dir=container.config.paths.output_dir,
+        tasks=project_tasks,
+    )
+    if output_report.errors:
+        raise HTTPException(
+            status_code=500,
+            detail="Project output cleanup failed: " + "; ".join(output_report.errors),
+        )
+
+    deleted_task_count = container.task_queue.store.delete_project_tasks(project_id)
+    deleted = container.project_store.delete(project_id)
+    return ProjectDeletedResponse(
+        project_id=project_id,
+        deleted=deleted,
+        deleted_task_count=deleted_task_count,
+        deleted_output_count=output_report.deleted_count,
+        deleted_output_paths=output_report.deleted_paths,
+        skipped_output_paths=output_report.skipped_paths,
+    )
 
 
 @router.post("/novel", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)

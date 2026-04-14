@@ -160,6 +160,18 @@ class MySQLTaskStore(TaskStore):
             connection.close()
         return [_task_from_row(row) for row in rows]
 
+    def delete_project_tasks(self, project_id: str) -> int:
+        connection = self._backend.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM tasks WHERE project_id = %s",
+                    (project_id,),
+                )
+                return int(cursor.rowcount)
+        finally:
+            connection.close()
+
     def list_grouped(self, project_ids: Iterable[str]) -> dict[str, list[TaskRecord]]:
         unique_ids = _unique_values(project_ids)
         if not unique_ids:

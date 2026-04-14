@@ -342,6 +342,113 @@ class ApiTestCase(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 202)
 
+    def test_delete_project_removes_project_and_task_records(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "待删除故事",
+                        "idea": "一个测试项目会被删除。",
+                        "genre": "测试",
+                        "tone": "清晰",
+                        "target_audience": "开发者",
+                        "chapter_count": 1,
+                        "total_word_target": 500,
+                        "must_include": ["删除"],
+                        "style_keywords": ["测试"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            project_id = response.json()["project_id"]
+            task_id = response.json()["task_id"]
+
+            payload = self._wait_for_completion(client, task_id)
+            self.assertEqual(payload["status"], "completed")
+            output_dir = Path(str(payload["result"]["output_dir"]))
+            self.assertTrue(output_dir.exists())
+
+            delete_response = client.delete(f"/v1/projects/{project_id}")
+            self.assertEqual(delete_response.status_code, 200)
+            delete_payload = delete_response.json()
+            self.assertEqual(delete_payload["project_id"], project_id)
+            self.assertTrue(delete_payload["deleted"])
+            self.assertEqual(delete_payload["deleted_task_count"], 1)
+            self.assertEqual(delete_payload["deleted_output_count"], 1)
+            self.assertIn(str(output_dir.resolve()), delete_payload["deleted_output_paths"])
+            self.assertFalse(output_dir.exists())
+
+            self.assertEqual(client.get(f"/v1/projects/{project_id}").status_code, 404)
+            self.assertEqual(client.get(f"/v1/tasks/{task_id}").status_code, 404)
+            projects_response = client.get("/v1/projects")
+            self.assertEqual(projects_response.status_code, 200)
+            self.assertEqual(projects_response.json(), [])
+
+    def test_delete_missing_project_returns_404(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.delete("/v1/projects/not-found")
+            self.assertEqual(response.status_code, 404)
+
+    @patch("storyforge.application.task_handlers.run_story_generation_pipeline")
+    def test_delete_running_project_returns_409(self, mock_run_story_generation_pipeline) -> None:
+        def fake_run_story_generation_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"] / "slow-story"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            story_source_path = output_dir / "story_source.json"
+            story_source_path.write_text("{}", encoding="utf-8")
+            time.sleep(0.3)
+            return SimpleNamespace(
+                output_dir=output_dir,
+                story_source_path=story_source_path,
+                story_source=SimpleNamespace(title="运行中故事"),
+            )
+
+        mock_run_story_generation_pipeline.side_effect = fake_run_story_generation_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "运行中故事",
+                        "idea": "一个正在生成的项目不允许删除。",
+                        "genre": "测试",
+                        "tone": "清晰",
+                        "target_audience": "开发者",
+                        "chapter_count": 1,
+                        "total_word_target": 500,
+                        "must_include": ["运行中"],
+                        "style_keywords": ["测试"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            project_id = response.json()["project_id"]
+            task_id = response.json()["task_id"]
+
+            for _ in range(40):
+                task_response = client.get(f"/v1/tasks/{task_id}")
+                self.assertEqual(task_response.status_code, 200)
+                if task_response.json()["status"] == "running":
+                    break
+                time.sleep(0.02)
+
+            delete_response = client.delete(f"/v1/projects/{project_id}")
+            self.assertEqual(delete_response.status_code, 409)
+            self.assertIn("queued or running tasks", delete_response.json()["detail"])
+
+            payload = self._wait_for_completion(client, task_id)
+            self.assertEqual(payload["status"], "completed")
+
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
     @patch("storyforge.application.task_handlers.run_character_image_pipeline")

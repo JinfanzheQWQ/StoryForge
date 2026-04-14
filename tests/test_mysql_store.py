@@ -10,6 +10,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from storyforge.application.persistence.mysql_projects import MySQLProjectStore  # noqa: E402
 from storyforge.application.persistence.mysql_tasks import MySQLTaskStore  # noqa: E402
 
 
@@ -96,6 +97,32 @@ class MySQLTaskStoreTestCase(unittest.TestCase):
         self.assertEqual([item.task_id for item in grouped["project-2"]], ["task-b"])
         self.assertEqual(cursor.executed[0][1], ("project-1", "project-2"))
 
+    def test_delete_project_tasks_returns_deleted_count(self) -> None:
+        cursor = _Cursor(rowcount=3)
+        connection = _Connection(cursor)
+        backend = Mock()
+        backend.connect.return_value = connection
+        store = MySQLTaskStore(backend)
+
+        deleted_count = store.delete_project_tasks("project-1")
+
+        self.assertEqual(deleted_count, 3)
+        self.assertIn("DELETE FROM tasks", cursor.executed[0][0])
+        self.assertEqual(cursor.executed[0][1], ("project-1",))
+
+    def test_delete_project_returns_true_when_row_deleted(self) -> None:
+        cursor = _Cursor(rowcount=1)
+        connection = _Connection(cursor)
+        backend = Mock()
+        backend.connect.return_value = connection
+        store = MySQLProjectStore(backend)
+
+        deleted = store.delete("project-1")
+
+        self.assertTrue(deleted)
+        self.assertIn("DELETE FROM projects", cursor.executed[0][0])
+        self.assertEqual(cursor.executed[0][1], ("project-1",))
+
 
 class _Connection:
     def __init__(self, cursor: "_Cursor") -> None:
@@ -125,10 +152,12 @@ class _Cursor:
         self,
         fetchone_results: list[dict[str, object] | None] | None = None,
         fetchall_results: list[list[dict[str, object]]] | None = None,
+        rowcount: int = 0,
     ) -> None:
         self._fetchone_results = list(fetchone_results or [])
         self._fetchall_results = list(fetchall_results or [])
         self.executed: list[tuple[str, tuple[object, ...] | None]] = []
+        self.rowcount = rowcount
 
     def __enter__(self) -> "_Cursor":
         return self

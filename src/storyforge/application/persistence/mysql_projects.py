@@ -78,6 +78,18 @@ class MySQLProjectStore(ProjectStore):
             connection.close()
         return _project_from_row(row) if row else None
 
+    def delete(self, project_id: str) -> bool:
+        connection = self._backend.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM projects WHERE project_id = %s",
+                    (project_id,),
+                )
+                return cursor.rowcount > 0
+        finally:
+            connection.close()
+
     def list(self) -> list[ProjectRecord]:
         connection = self._backend.connect()
         try:

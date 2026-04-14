@@ -60,6 +60,33 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 关联任务
 - 最近一次运行摘要
 
+#### `DELETE /v1/projects/{project_id}`
+
+删除项目元数据和该项目下的任务记录。
+
+行为约定：
+
+- 如果项目不存在，返回 `404`
+- 如果项目下仍有 `queued` 或 `running` 任务，返回 `409`
+- 删除成功后，`GET /v1/projects/{project_id}` 和相关 `GET /v1/tasks/{task_id}` 会返回 `404`
+- 会同步删除任务结果记录过的 `output_dir`
+- 文件删除有安全边界：只允许删除配置 `paths.output_dir` 下的项目产物目录，不会删除输出根目录本身或外部路径
+
+返回示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "deleted": true,
+  "deleted_task_count": 5,
+  "deleted_output_count": 1,
+  "deleted_output_paths": [
+    "/path/to/StoryForge/outputs/story-title"
+  ],
+  "skipped_output_paths": []
+}
+```
+
 #### `POST /v1/projects/novel`
 
 创建“生成小说正文”任务。

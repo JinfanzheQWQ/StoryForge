@@ -116,7 +116,21 @@
 
 .project-hero-actions {
   display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.danger-button {
+  color: var(--danger, #c95245);
+  border-color: rgba(201, 82, 69, 0.2);
+  background: rgba(255, 244, 242, 0.86);
+}
+
+.danger-button:hover {
+  color: #a43f34;
+  border-color: rgba(201, 82, 69, 0.36);
+  background: rgba(255, 238, 235, 0.96);
 }
 
 .run-switcher-block {

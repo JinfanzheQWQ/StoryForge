@@ -220,6 +220,7 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 - `project.story_analysis` 对同一 `source_task_id` + `story_source_revision` 做幂等保护，已存在 queued / running / completed 任务时直接返回已有任务
 - Web 详情页按 `pipeline_root_task_id` 聚合同一制作版本的阶段任务，避免队列详情页误判某个阶段还未执行
 - 服务启动时，残留的 `running` 任务会重新回到 `queued`，避免热重载或进程重启直接把长任务标记为失败
+- 删除项目会同时删除项目元数据、任务记录和任务结果记录过的输出目录；文件删除由 `application/project_deletion.py` 统一做安全边界校验，只允许删除 `paths.output_dir` 下的项目产物目录
 
 ## LangChain 结构化输出策略
 

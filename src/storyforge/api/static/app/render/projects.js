@@ -195,6 +195,7 @@ function renderProjectHero(detail, runs, selectedRun, artifacts) {
       </div>
       <div class="project-hero-actions">
         <button type="button" class="secondary" data-rerun-project="${escapeAttr(detail.project_id)}">基于当前故事新建版本</button>
+        <button type="button" class="secondary danger-button" data-delete-project="${escapeAttr(detail.project_id)}">删除项目</button>
       </div>
     </section>
 

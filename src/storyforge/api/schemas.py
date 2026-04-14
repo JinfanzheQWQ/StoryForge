@@ -62,6 +62,15 @@ class JobAcceptedResponse(BaseModel):
     status: str
 
 
+class ProjectDeletedResponse(BaseModel):
+    project_id: str
+    deleted: bool
+    deleted_task_count: int
+    deleted_output_count: int
+    deleted_output_paths: list[str] = Field(default_factory=list)
+    skipped_output_paths: list[str] = Field(default_factory=list)
+
+
 class UiBootstrapResponse(BaseModel):
     default_brief: StoryBriefInput
     use_llm: bool

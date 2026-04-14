@@ -31,4 +31,11 @@ export const elements = {
   lightboxPrevButton: document.querySelector("#lightbox-prev"),
   lightboxNextButton: document.querySelector("#lightbox-next"),
   lightboxCloseButton: document.querySelector("#lightbox-close"),
+  confirmDialog: document.querySelector("#confirm-dialog"),
+  confirmEyebrow: document.querySelector("#confirm-eyebrow"),
+  confirmTitle: document.querySelector("#confirm-title"),
+  confirmMessage: document.querySelector("#confirm-message"),
+  confirmDetails: document.querySelector("#confirm-details"),
+  confirmCancelButton: document.querySelector("#confirm-cancel"),
+  confirmSubmitButton: document.querySelector("#confirm-submit"),
 };

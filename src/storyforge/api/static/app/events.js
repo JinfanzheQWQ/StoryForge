@@ -1,4 +1,6 @@
 import { elements } from "./dom.js";
+import { deleteProject } from "./api.js";
+import { askProjectDeleteConfirmation } from "./confirm_modal.js";
 import {
   applyBootstrapToForm,
   clearForm,
@@ -85,12 +87,94 @@ async function submitStoryAnalysisFromButton(button) {
   );
 }
 
+function clearDeletedProjectState(projectId) {
+  const deletedTaskIds = new Set(
+    state.tasks
+      .filter((task) => task.project_id === projectId)
+      .map((task) => task.task_id),
+  );
+  state.projectDetails.delete(projectId);
+  state.storySources.forEach((_, key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySources.delete(key);
+    }
+  });
+  state.storySourceDrafts.forEach((_, key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySourceDrafts.delete(key);
+    }
+  });
+  state.storySourceMessages.forEach((_, key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySourceMessages.delete(key);
+    }
+  });
+  state.storySourceDirtyKeys.forEach((key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySourceDirtyKeys.delete(key);
+    }
+  });
+  state.storySourceLoadingKeys.forEach((key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySourceLoadingKeys.delete(key);
+    }
+  });
+  state.storySourceSavingKeys.forEach((key) => {
+    if (key.startsWith(`${projectId}:`)) {
+      state.storySourceSavingKeys.delete(key);
+    }
+  });
+  deletedTaskIds.forEach((taskId) => {
+    state.artifactsByTaskId.delete(taskId);
+    state.artifactVersionByTaskId.delete(taskId);
+  });
+  state.projects = state.projects.filter((project) => project.project_id !== projectId);
+  state.tasks = state.tasks.filter((task) => task.project_id !== projectId);
+  if (deletedTaskIds.has(state.selectedQueueTaskId)) {
+    state.selectedQueueTaskId = null;
+  }
+  if (state.selectedProjectId === projectId) {
+    state.selectedProjectId = null;
+    state.selectedProjectTaskId = null;
+  }
+}
+
 async function handleProjectDetailClick(event) {
   const rerunButton = event.target.closest("[data-rerun-project]");
   if (rerunButton) {
     prepareRerunProject(rerunButton.dataset.rerunProject, (detail) => {
       setSubmitStatus(`已载入故事 ${detail.story_title || detail.title_hint}，接下来会先新生成一版文本。`);
     });
+    return;
+  }
+
+  const deleteButton = event.target.closest("[data-delete-project]");
+  if (deleteButton) {
+    if (deleteButton.disabled) {
+      return;
+    }
+    const projectId = deleteButton.dataset.deleteProject;
+    const detail = state.projectDetails.get(projectId);
+    const confirmed = await askProjectDeleteConfirmation({
+      title: detail?.story_title || detail?.title_hint,
+      taskCount: state.tasks.filter((task) => task.project_id === projectId).length,
+    });
+    if (!confirmed) {
+      return;
+    }
+    deleteButton.disabled = true;
+    try {
+      const result = await deleteProject(projectId);
+      clearDeletedProjectState(projectId);
+      await refreshTasks();
+      elements.pollIndicator.textContent = (
+        `项目已删除，移除 ${result.deleted_task_count} 条任务记录，`
+        + `清理 ${result.deleted_output_count} 个输出目录。`
+      );
+    } catch (error) {
+      elements.pollIndicator.textContent = error.message || "项目删除失败。";
+      deleteButton.disabled = false;
+    }
     return;
   }
 

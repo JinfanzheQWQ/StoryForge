@@ -58,6 +58,16 @@ export async function fetchProjectDetail(projectId) {
   return response.json();
 }
 
+export async function deleteProject(projectId) {
+  const response = await fetch(`/v1/projects/${projectId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
 export async function fetchStorySource(projectId, sourceTaskId) {
   const response = await fetch(`/v1/projects/${projectId}/story-source/${sourceTaskId}`);
   if (!response.ok) {

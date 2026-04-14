@@ -100,6 +100,18 @@ class TaskStore:
             values = [item for item in values if item.project_id == project_id]
         return sorted(values, key=lambda item: item.created_at, reverse=True)
 
+    def delete_project_tasks(self, project_id: str) -> int:
+        task_ids = [
+            task_id
+            for task_id, task in self._tasks.items()
+            if task.project_id == project_id
+        ]
+        for task_id in task_ids:
+            del self._tasks[task_id]
+        if task_ids:
+            self._save()
+        return len(task_ids)
+
     def list_grouped(self, project_ids: Iterable[str]) -> dict[str, list[TaskRecord]]:
         project_id_set = {str(project_id) for project_id in project_ids if project_id}
         grouped = {project_id: [] for project_id in project_id_set}

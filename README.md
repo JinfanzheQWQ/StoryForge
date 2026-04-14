@@ -212,10 +212,13 @@ uv run storyforge video plan \
 - `POST /v1/projects/videos`
 - `GET /v1/projects`
 - `GET /v1/projects/{project_id}`
+- `DELETE /v1/projects/{project_id}`
 - `GET /v1/projects/{project_id}/story-source/{source_task_id}`
 - `PUT /v1/projects/{project_id}/story-source/{source_task_id}`
 - `GET /v1/tasks/{task_id}`
 - `GET /v1/tasks/{task_id}/artifacts`
+
+删除项目会同步移除项目元数据、任务记录和该项目任务结果记录过的输出目录；后端只允许删除 `paths.output_dir` 下的项目产物目录，不会删除输出根目录本身或外部路径。
 
 详细接口文档见：[docs/api.md](docs/api.md)
 

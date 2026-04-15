@@ -161,7 +161,6 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 说明：
 
-- 如果 `llm_provider = openai` 但你的 `OPENAI_BASE_URL` 背后平台没有 `gpt-5.4` 映射，任务会直接失败，并返回类似 `platform text model target not found`
 - `Cast Analyzer` 的 `source_evidence` 仍必须能在正文中定位；当前后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 - 这一步依赖已经完成且未过期的 `project.story_analysis`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上

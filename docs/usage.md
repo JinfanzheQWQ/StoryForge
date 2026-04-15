@@ -95,7 +95,6 @@ database = "storyforge"
 - 先确认 `.env` 里的密钥和 `base_url` 已正确配置
 - 页面默认走 `DeepSeek`；如果要换成 `ChatGPT 5.4`，需要先配置 `OPENAI_API_KEY`
 - 页面里的 `模型 ID` 现在是只读默认值，会随 provider 自动切换，不再支持手工输入
-- 如果 `OPENAI_BASE_URL` 指向第三方平台，而该平台没有 `gpt-5.4` 映射，会返回 `platform text model target not found`
 - 在看懂 manifest 和图片产物之前，不要一开始就跑真实视频生成
 
 ## Web 控制台
@@ -189,105 +188,45 @@ must_include = ["废弃气象站", "匿名电话", "封存档案"]
 style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 ```
 
-## 五阶段工作流说明
+## 工作流说明
 
-### 第一步：生成小说
+### 1. 生成小说
 
-产出：
+- 这一步只生成可编辑正文，对应核心文件是 `story_source.json`
+- 页面会先展示标题、摘要和正文，你可以先人工改稿，再继续后续阶段
 
-- `story_source.json`
+### 2. 生成结构化信息
 
-说明：
+- 这一步会生成 `novel_package.json`、`novel_audit.json`、角色视觉档案、视频规划文件和各类 manifest
+- 同一份 `story_source` 已经有 queued / running / completed 的结构化任务时，后端会直接复用已有任务
+- `Cast Analyzer` 要求每个角色槽位都带可在正文中定位的 `source_evidence`
+- `source_evidence` 仍然必须来自正文，但对带修饰语的人名或稳定称呼会做容错匹配
+- `Character Designer` 必须严格覆盖目标 slots，不能重复 `cast_slot_id`，也不能凭空补正文里没有证据的人
+- 视频规划也在这一步完成，后续角色图、场景图和视频阶段都只消费这些规划结果
 
-- 这一步只生成可编辑正文
-- 页面会先展示这份正文，让你决定是否修改
+### 3. 生成角色图
 
-### 审阅窗口：审阅并编辑小说正文
+- 对应执行报告是 `seedream_character_execution.json`
+- 角色定妆图会统一使用白底三视图模板，只显示角色姓名，不再允许手工往模板里塞更多面板文字
 
-可做的事情：
+### 4. 生成场景图
 
-- 直接查看生成后的章节标题、摘要和正文
-- 手动修改标题、摘要、正文
-- 保存后让后续结构化 / 图片 / 视频阶段按新正文重跑
+- 对应执行报告是 `seedream_scene_execution.json`
+- 页面会先按 `segment_plan.json` 展示完整时间线，再允许你按 segment 单独生成
+- 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
+- 场景生图阶段只负责纯画面关键帧，不允许把对白、字幕、聊天气泡或任何可见文字直接画进图片
 
-### 第二步：生成结构化信息
+### 5. 生成视频
 
-产出：
+- 对应执行报告是 `seedance_execution.json`
+- 视频阶段也是按 segment 单独触发
+- 只有对应片段场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
 
-- `novel_package.json`
-- `novel_audit.json`
-- `character_visual_bible.json`
-- `character_image_manifest.json`
-- `segment_plan.json`
-- `scene_image_manifest.json`
-- `seedance_manifest.json`
-
-说明：
-
-- `novel_package.json` 是运行态最小包，只保留图片与视频阶段真正要消费的字段
-- `novel_audit.json` 保存 `review`、`workflow_trace`，以及从运行包剥离出来的分析上下文
-- 同一故事正文修订已经存在 queued / running / completed 结构化任务时，后端会直接返回已有任务 ID，不会重复创建结构化任务
-- `Cast Analyzer` 现在要求每个角色槽位都提供可在小说正文中定位的 `source_evidence`
-- `source_evidence` 的校验仍然是“必须来自正文”，但对“女学生林栀”“年轻监考老师周骁”这类带修饰语证据，后端会允许通过人名或稳定称呼做容错匹配，避免误杀
-- `Character Designer` 只允许覆盖本次目标 slots，不能重复 `cast_slot_id`，也不能凭空补出正文里没有证据的人
-- `Character Designer` 现在会给出固定索引合同，明确 `characters[0]`、`characters[1]` 等条目分别必须对应哪个 `cast_slot_id`；如果模型漏人，structured retry 会重复下发这份合同
-- 如果首轮角色表仍然缺失某些 slot，系统会额外发起一次“只补缺失角色”的结构化补生请求，再把结果合并回完整角色表
-- 视频规划在本阶段同步生成，后续角色图、场景图和视频阶段只读取这些规划文件，不再等到生成角色图时才拆分视频片段
-- `segment_plan.json` 会要求 LLM 按中文自然口播语速估算时长；对白、旁白或硬字幕超过当前时长可说完的字数时，必须拆成下一个片段
-- `segment_plan.json` 现在还会显式规划 `requires_mid_frame` 与 `mid_frame_prompt`；多人同框、长时长、动作推进明显的片段会在首尾帧之外额外生成中段锚点帧
-- `segment_plan.json` 现在还会显式规划 `start_frame_characters`、`mid_frame_characters`、`end_frame_characters`。`involved_characters` 只表示这个片段剧情涉及谁，不再等同于每一帧都必须同框
-- 帧级角色会按首帧 / 中段 / 尾帧对应的 `timed_beats` 与画面 prompt 二次归一化；“等待某人”“想起某人”这类未实际入镜的提及不会自动绑定该角色参考图
-- 场景生图阶段只负责纯画面关键帧，不允许把对白、硬字幕、聊天气泡、旁白框或任何可见文字直接画进图片；字幕只在视频阶段烧录
-
-### 第三步：生成角色图
-
-产出：
-
-- `assets/characters/*.png`
-- `seedream_character_execution.json`
-
-### 第四步：生成场景图
-
-产出：
-
-- `assets/frames/*_start.png`
-- `assets/frames/*_mid.png`
-- `assets/frames/*_end.png`
-- `seedream_scene_execution.json`
-
-说明：
-
-- Web 端会根据 `segment_plan.json` 先把所有片段列在时间线里
-- 场景图不再默认一口气生成全部片段
-- 你可以针对单个 segment 单独点击“生成场景图”或“重生成场景图”
-- 单段生成只会更新该 segment 对应的首帧 / 中段锚点帧 / 尾帧，不会把其它片段重跑
-
-### 第五步：生成视频
-
-产出：
-
-- `seedance_manifest.json`
-- `seedance_execution.json`
-- `rendered/*.mp4`
-
-说明：
-
-- 视频阶段也改成按 segment 单独触发
-- 只有某个 segment 的场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
-- 单段视频任务不会自动把全部 segment 再生成一遍
-
-### 第六步：手动合并总片
-
-产出：
-
-- `rendered/full_story.mp4`
-
-说明：
+### 6. 手动合并总片
 
 - 总片不再自动合并
 - 页面会提供单独的“合并已生成片段”按钮
-- 合并时会按 `seedance_manifest.json` 的片段顺序，把当前已经存在本地 mp4 的片段拼成 `full_story.mp4`
-- 至少需要 2 个已生成片段才能执行合并
+- 至少需要 2 个已生成片段，才能拼成 `rendered/full_story.mp4`
 
 ## 输出目录
 
@@ -393,14 +332,6 @@ outputs/<story-slug>/
 - 服务重启时，残留的 `running` 任务会重新回到 `queued`，启动后会重新执行。
 - 如果任务已经进入 `failed`，推荐在页面重新点击对应阶段按钮，而不是手动修改数据库。
 - 视频长任务执行期间不要用 `--reload`。热重载会中断当前进程，即使现在会重排队，也可能造成重复提交或等待时间变长。
-
-## 最佳实践
-
-- 先看中间产物，再扩大真实调用范围
-- 先把角色图和场景图调稳，再追求视频一致性
-- 不要一开始就依赖一键全链路
-- 让每个视频片段尽量短，便于失败重跑
-- 保持 `novel_audit.json` 里的 `workflow_trace` 与各阶段 manifest 可审计
 
 ## 相关文档
 

@@ -134,8 +134,6 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 注意：
 
-- 如果你的 `OPENAI_BASE_URL` 指向第三方网关或代理平台，那里未必真的支持 `gpt-5.4`
-- 这类情况下即使鉴权成功，也可能返回 `platform text model target not found`
 - 页面里的 `模型 ID` 现在是只读默认值；如果后端平台不支持该模型，应改后端配置 / 平台映射，而不是在页面手动乱填一个模型名
 
 还必须配置 MySQL 密码：
@@ -279,27 +277,6 @@ StoryForge/
 ├── pyproject.toml
 └── uv.lock
 ```
-
-## 当前状态
-
-当前已经打通：
-
-- 小说生成
-- 结构化解析
-- 角色图 / 场景图
-- Seedance 视频片段生成与下载
-- 手动总片合并
-- Web 控制台、CLI、HTTP API
-- MySQL 项目 / 任务持久化
-
-当前仍需继续补强：
-
-- 生产级持久化执行队列
-- 对象存储与公网素材管理
-- 更强的角色 / 音色一致性
-- 认证、权限和生产级治理
-
-详细状态、限制与路线图见：[docs/status.md](docs/status.md)
 
 ## 测试
 

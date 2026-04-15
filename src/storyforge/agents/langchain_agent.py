@@ -38,7 +38,9 @@ class LangChainTextAgentBackend(AgentBackend):
     """
     Minimal LangChain backend.
 
-    Designed around LangChain >= 1.2 create_agent API.
+    Uses LangChain >= 1.2 in two modes:
+    - plain text generation via create_agent()
+    - structured generation via ChatModel.with_structured_output()
     """
 
     def __init__(
@@ -83,13 +85,15 @@ class LangChainTextAgentBackend(AgentBackend):
         from langchain_core.messages import HumanMessage, SystemMessage
 
         model = self._build_model()
+        method = self._structured_output_method()
         structured_model = model.with_structured_output(
             schema,
-            # Keep structured generation inside LangChain, but avoid
-            # create_agent + ToolStrategy's multi-turn tool repair flow.
-            # DeepSeek's OpenAI-compatible endpoint is happier with a direct
-            # single-turn structured call.
-            method="function_calling",
+            # Provider-specific structured strategy:
+            # - DeepSeek OpenAI-compatible endpoints are more stable with
+            #   function_calling than full Structured Outputs.
+            # - OpenAI GPT structured calls should use json_schema to avoid
+            #   chat-completions tool_choice incompatibilities on GPT-5.x.
+            method=method,
             include_raw=True,
             strict=True,
         )
@@ -168,6 +172,11 @@ class LangChainTextAgentBackend(AgentBackend):
             )
 
         return init_chat_model(**kwargs)
+
+    def _structured_output_method(self) -> str:
+        if self.provider == "openai":
+            return "json_schema"
+        return "function_calling"
 
     def _extract_json_object(self, text: str) -> dict[str, Any] | None:
         if not text:

@@ -6,6 +6,7 @@ import {
   clearForm,
   clearProjectBinding,
   setSubmitStatus,
+  syncLlmModelPreset,
 } from "./form.js";
 import { submitProject, submitStageJob } from "./jobs.js";
 import { closeLightbox, openLightbox, stepLightbox } from "./lightbox.js";
@@ -454,6 +455,9 @@ export function bindEvents() {
   });
   elements.projectStatusFilters.addEventListener("click", handleLibraryFilterClick);
   elements.projectSearchInput.addEventListener("input", handleLibrarySearchInput);
+  if (elements.llmProviderSelect) {
+    elements.llmProviderSelect.addEventListener("change", syncLlmModelPreset);
+  }
   elements.projectDetailView.addEventListener("click", (event) => {
     void handleProjectDetailClick(event);
   });

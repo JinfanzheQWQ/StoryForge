@@ -76,6 +76,21 @@ def resolve_pipeline_root_task_id(source_task: TaskRecord) -> str:
     return source_task.task_id
 
 
+def resolve_llm_selection(task: QueuedTask | TaskRecord, source_task: TaskRecord | None = None) -> tuple[str | None, str | None]:
+    payload = task.payload or {}
+    if payload.get("llm_provider") or payload.get("llm_model"):
+        return (
+            str(payload.get("llm_provider") or "").strip() or None,
+            str(payload.get("llm_model") or "").strip() or None,
+        )
+    if source_task is not None and source_task.payload:
+        return (
+            str(source_task.payload.get("llm_provider") or "").strip() or None,
+            str(source_task.payload.get("llm_model") or "").strip() or None,
+        )
+    return (None, None)
+
+
 def propagate_shared_result(
     context: TaskExecutionContext,
     task_ids: set[str],

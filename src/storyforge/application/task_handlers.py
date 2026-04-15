@@ -12,6 +12,7 @@ from storyforge.application.task_support import (
     load_story_source,
     persist_task_progress,
     propagate_shared_result,
+    resolve_llm_selection,
     resolve_output_dir,
     resolve_pipeline_root_task_id,
     resolve_source_task,
@@ -39,12 +40,15 @@ if TYPE_CHECKING:
 def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
     brief = StoryBrief.from_dict(task.payload["brief"])
     use_llm = bool(task.payload.get("use_llm", True))
+    llm_provider, llm_model = resolve_llm_selection(task)
     output_root = _build_story_output_root(context, task)
     story_result = run_story_generation_pipeline(
         brief=brief,
         config=context.config,
         project_root=context.project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=output_root,
     )
     response = {
@@ -68,6 +72,7 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
     output_dir = resolve_output_dir(source_task)
     story_source = load_story_source(source_task)
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
+    llm_provider, llm_model = resolve_llm_selection(task, source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     partial_response = {
         "project_id": task.project_id,
@@ -88,6 +93,8 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
         config=context.config,
         project_root=context.project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=output_dir,
     )
     response = {
@@ -360,6 +367,7 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
 def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
     brief = StoryBrief.from_dict(task.payload["brief"])
     use_llm = bool(task.payload.get("use_llm", True))
+    llm_provider, llm_model = resolve_llm_selection(task)
     submit_seedance = bool(task.payload.get("submit_seedance", False))
     output_root = _build_story_output_root(context, task)
 
@@ -368,6 +376,8 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         config=context.config,
         project_root=context.project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=output_root,
     )
     partial_response: dict[str, object] = {
@@ -389,6 +399,8 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         config=context.config,
         project_root=context.project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=story_result.output_dir,
     )
     partial_response.update(

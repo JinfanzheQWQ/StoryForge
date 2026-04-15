@@ -25,7 +25,7 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 当前版本支持：
 
 - 基于 `LangChain >= 1.2` 的结构化多 Agent 小说生成
-- 基于 `DeepSeek` 的默认 LLM 接入
+- 基于 `DeepSeek` 与 `ChatGPT 5.4` 的双 LLM 接入，页面可切换
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
 - `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
@@ -48,9 +48,10 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Editorial Reviewer`
 - 小说链路改为 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
 - Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，旧的结构化结果和媒体资产会被标记为需要重做
+- Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，当前内置 `DeepSeek` 与 `ChatGPT 5.4`
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做 fallback / repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
-- LangChain 结构化输出当前使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，避免 DeepSeek OpenAI-compatible 接口在 agent 工具消息链里报 `tool_calls` 错误；如果模型没触发 tool call 但返回了 JSON 文本，会自动回收解析
+- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；不再用 `create_agent + ToolStrategy` 跑小说结构化输出
 - 结构化阶段具备后端幂等保护：同一故事正文修订已有 queued / running / completed 结构化任务时，不会重复创建任务
 - 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
@@ -76,7 +77,7 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 
 默认模型配置：
 
-- LLM：`deepseek-chat`
+- LLM：默认 `deepseek-chat`，可切换到 `gpt-5.4`
 - Image：`doubao-seedream-4-5-251128`
 - Video：`doubao-seedance-2-0-260128`
 
@@ -124,6 +125,19 @@ SEEDREAM_BASE_URL=...
 SEEDANCE_BASE_URL=...
 ```
 
+如果你要在页面里切到 `ChatGPT 5.4`，还需要：
+
+```bash
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+注意：
+
+- 如果你的 `OPENAI_BASE_URL` 指向第三方网关或代理平台，那里未必真的支持 `gpt-5.4`
+- 这类情况下即使鉴权成功，也可能返回 `platform text model target not found`
+- 页面里的 `模型 ID` 现在是只读默认值；如果后端平台不支持该模型，应改后端配置 / 平台映射，而不是在页面手动乱填一个模型名
+
 还必须配置 MySQL 密码：
 
 ```bash
@@ -141,6 +155,7 @@ STORYFORGE_DB_PASSWORD=...
 关键配置项包括：
 
 - `llm.provider` / `llm.model`
+- `llm.available_providers`
 - `seedream.base_url` / `seedream.model`
 - `seedance.base_url` / `seedance.model`
 - `queue.concurrency`
@@ -218,6 +233,11 @@ uv run storyforge video plan \
 - `GET /v1/tasks/{task_id}/artifacts`
 
 删除项目时，后端会同步清理项目元数据、任务记录和安全范围内的输出目录。
+
+创建故事或一键全链路任务时，可以在请求体中附带：
+
+- `llm_provider`: `deepseek` 或 `openai`
+- `llm_model`: 例如 `deepseek-chat` 或 `gpt-5.4`
 完整字段、请求示例和阶段接口说明见：[docs/api.md](docs/api.md)
 
 ## 输出产物

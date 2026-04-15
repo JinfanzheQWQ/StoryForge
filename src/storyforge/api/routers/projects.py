@@ -42,6 +42,13 @@ def _ensure_live_llm_requested(use_llm: bool | None) -> None:
         )
 
 
+def _apply_llm_selection(task_payload: dict[str, object], provider: str | None, model: str | None) -> None:
+    if provider:
+        task_payload["llm_provider"] = provider
+    if model:
+        task_payload["llm_model"] = model
+
+
 @router.get("", response_model=list[ProjectSummaryResponse])
 async def list_projects(request: Request) -> list[ProjectSummaryResponse]:
     container = request.app.state.container
@@ -122,14 +129,16 @@ async def create_story_job(
         project = project_store.create(payload.brief.model_dump())
         project_id = project.project_id
 
+    task_payload = {
+        "project_id": project_id,
+        "brief": payload.brief.model_dump(),
+        "use_llm": payload.use_llm,
+    }
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     record = await container.task_queue.submit(
         project_id=project_id,
         task_type="project.story",
-        payload={
-            "project_id": project_id,
-            "brief": payload.brief.model_dump(),
-            "use_llm": payload.use_llm,
-        },
+        payload=task_payload,
     )
     project_store.attach_task(project_id, record.task_id, payload.brief.model_dump())
     return JobAcceptedResponse(project_id=project_id, task_id=record.task_id, status=record.status)
@@ -152,6 +161,7 @@ async def create_image_job(
     }
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -197,14 +207,16 @@ async def create_story_analysis_job(
             status=existing_task.status,
         )
 
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "use_llm": True if payload.use_llm is None else payload.use_llm,
+    }
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.story_analysis",
-        payload={
-            "project_id": payload.project_id,
-            "source_task_id": payload.source_task_id,
-            "use_llm": True if payload.use_llm is None else payload.use_llm,
-        },
+        payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
     return JobAcceptedResponse(
@@ -281,6 +293,7 @@ async def create_character_job(
     }
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -326,6 +339,7 @@ async def create_scene_job(
     }
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -373,6 +387,7 @@ async def create_video_job(
         task_payload["merge_only"] = True
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.videos",
@@ -404,15 +419,18 @@ async def create_project_job(
         project = project_store.create(payload.brief.model_dump())
         project_id = project.project_id
 
+    task_payload = {
+        "project_id": project_id,
+        "brief": payload.brief.model_dump(),
+        "use_llm": payload.use_llm,
+        "submit_seedance": payload.submit_seedance,
+    }
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+
     record = await queue.submit(
         project_id=project_id,
         task_type="project.build",
-        payload={
-            "project_id": project_id,
-            "brief": payload.brief.model_dump(),
-            "use_llm": payload.use_llm,
-            "submit_seedance": payload.submit_seedance,
-        },
+        payload=task_payload,
     )
     project_store.attach_task(project_id, record.task_id, payload.brief.model_dump())
     return JobAcceptedResponse(project_id=project_id, task_id=record.task_id, status=record.status)

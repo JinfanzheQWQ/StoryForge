@@ -105,6 +105,29 @@
                 <input type="number" name="total_word_target" min="300" step="100" value="1500" required />
               </label>
 
+              <label>
+                <span>分析模型</span>
+                <select name="llm_provider" id="llm-provider-select">
+                  <option value="deepseek" data-default-model="deepseek-chat">DeepSeek</option>
+                  <option value="openai" data-default-model="gpt-5.4">ChatGPT 5.4</option>
+                </select>
+              </label>
+
+              <label>
+                <span>默认模型 ID</span>
+                <input
+                  type="text"
+                  name="llm_model"
+                  id="llm-model-input"
+                  value="deepseek-chat"
+                  readonly
+                  tabindex="-1"
+                  aria-readonly="true"
+                  required
+                />
+                <p class="field-help">跟随上方分析模型自动切换，不支持手动修改。</p>
+              </label>
+
               <label class="wide">
                 <span>必须包含</span>
                 <input type="text" name="must_include" placeholder="广播站, 旧列车, 暴雨站台" />

@@ -59,9 +59,16 @@ def run_story_generation_pipeline(
     config: AppConfig,
     project_root: Path,
     use_llm: bool = False,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
     output_root: Path | None = None,
 ) -> StoryGenerationResult:
-    backend = build_agent_backend(config, use_llm=use_llm)
+    backend = build_agent_backend(
+        config,
+        use_llm=use_llm,
+        provider=llm_provider,
+        model=llm_model,
+    )
     service = NovelGeneratorService(
         backend=backend,
         chapter_scene_count=config.novel.chapter_scene_count,
@@ -85,9 +92,16 @@ def run_story_analysis_pipeline(
     config: AppConfig,
     project_root: Path,
     use_llm: bool = False,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
     output_root: Path | None = None,
 ) -> StoryAnalysisResult:
-    backend = build_agent_backend(config, use_llm=use_llm)
+    backend = build_agent_backend(
+        config,
+        use_llm=use_llm,
+        provider=llm_provider,
+        model=llm_model,
+    )
     service = NovelGeneratorService(
         backend=backend,
         chapter_scene_count=config.novel.chapter_scene_count,
@@ -105,6 +119,8 @@ def run_story_analysis_pipeline(
         project_root=project_root,
         output_root=output_dir,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
 
     return StoryAnalysisResult(
@@ -126,6 +142,8 @@ def run_story_pipeline(
     config: AppConfig,
     project_root: Path,
     use_llm: bool = False,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
     output_root: Path | None = None,
 ) -> StoryPipelineResult:
     generation = run_story_generation_pipeline(
@@ -133,6 +151,8 @@ def run_story_pipeline(
         config=config,
         project_root=project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=output_root,
     )
     analysis = run_story_analysis_pipeline(
@@ -140,6 +160,8 @@ def run_story_pipeline(
         config=config,
         project_root=project_root,
         use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
         output_root=generation.output_dir,
     )
 

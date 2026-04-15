@@ -121,7 +121,7 @@ StoryBrief
 5. `Character Designer` 与 `Chapter Planner` 再消费这份草稿与 cast 结构
 6. 当前 `story_source` 就是正文真源；结构化分析阶段不再重写章节正文，而是直接分析这份正文
 7. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics / repair 补位
-8. `Cast Analyzer` 的每个 slot 都必须带正文证据；没有正文证据的角色不应进入核心 cast
+8. `Cast Analyzer` 的每个 slot 都必须带正文证据；没有正文证据的角色不应进入核心 cast。当前证据校验允许对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 9. `Character Designer` 必须严格覆盖上游目标 slots，不能新增正文里没有支撑的人物
 10. story 阶段的核心运行文件是 `story_source.json`、`novel_package.json` 和 `novel_audit.json`
 
@@ -237,14 +237,19 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 
 ## LangChain 结构化输出策略
 
-StoryForge 当前仍通过 LangChain 接入 DeepSeek，但不再使用 `create_agent + ToolStrategy` 执行结构化生成。
+StoryForge 当前仍通过 LangChain 接入 DeepSeek。需要区分两条调用路径：
+
+- 普通文本生成代码仍保留 `create_agent()` 实现
+- 结构化生产主链路不再使用 `create_agent + ToolStrategy`，而是直接走 `with_structured_output(...)`
 
 当前策略：
 
-- 结构化任务使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`
+- `DeepSeek` 结构化任务使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`
+- `OpenAI / ChatGPT 5.4` 结构化任务使用 `ChatModel.with_structured_output(method="json_schema", include_raw=True)`
 - 优先消费 LangChain 返回的 `parsed` Pydantic 对象
 - 如果模型没有返回 tool call，但 raw content 是 JSON 或 Markdown JSON 代码块，会提取 JSON 后再做 Pydantic 校验
 - 如果 parsed、tool call 和 raw JSON 都不存在，会抛出明确错误，让外层 structured retry 继续重试，最终将清晰失败原因写入任务记录
+- 当前小说主流程实际调用的是 `backend.generate_structured(...)`；代码中的 `backend.generate(...)` / `create_agent()` 不是这条主链路的一部分
 
 ## 持久化
 

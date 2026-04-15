@@ -12,6 +12,7 @@
 - `uv`
 - `ffmpeg`
 - 可访问的 DeepSeek / Seedream / Seedance 接口
+- 如果要切换到 ChatGPT 5.4，还需要可访问的 OpenAI 接口
 - MySQL 8+
 
 ## 安装
@@ -34,9 +35,11 @@ cp .env.example .env
 
 ```bash
 DEEPSEEK_API_KEY=your_deepseek_api_key
+OPENAI_API_KEY=your_openai_api_key
 SEEDREAM_API_KEY=your_seedream_api_key
 SEEDANCE_API_KEY=your_seedance_api_key
 STORYFORGE_DB_PASSWORD=your_mysql_password
+OPENAI_BASE_URL=https://api.openai.com/v1
 SEEDREAM_BASE_URL=https://your-seedream-endpoint.example.com
 SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 ```
@@ -63,6 +66,7 @@ SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 enabled = true
 provider = "deepseek"
 model = "deepseek-chat"
+available_providers = ["deepseek", "openai"]
 
 [seedream]
 enabled = true
@@ -89,6 +93,9 @@ database = "storyforge"
 - 先把 `seedream.auto_submit = false`
 - 先把 `seedance.auto_submit = false`
 - 先确认 `.env` 里的密钥和 `base_url` 已正确配置
+- 页面默认走 `DeepSeek`；如果要换成 `ChatGPT 5.4`，需要先配置 `OPENAI_API_KEY`
+- 页面里的 `模型 ID` 现在是只读默认值，会随 provider 自动切换，不再支持手工输入
+- 如果 `OPENAI_BASE_URL` 指向第三方平台，而该平台没有 `gpt-5.4` 映射，会返回 `platform text model target not found`
 - 在看懂 manifest 和图片产物之前，不要一开始就跑真实视频生成
 
 ## Web 控制台
@@ -108,7 +115,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 推荐使用方式：
 
-1. 创建项目并生成小说
+1. 创建项目并生成小说；在创建页可选 `DeepSeek` 或 `ChatGPT 5.4`
 2. 在项目详情页的“小说”标签页检查并按需修改正文
 3. 生成结构化信息
 4. 生成角色图
@@ -221,6 +228,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `novel_audit.json` 保存 `review`、`workflow_trace`，以及从运行包剥离出来的分析上下文
 - 同一故事正文修订已经存在 queued / running / completed 结构化任务时，后端会直接返回已有任务 ID，不会重复创建结构化任务
 - `Cast Analyzer` 现在要求每个角色槽位都提供可在小说正文中定位的 `source_evidence`
+- `source_evidence` 的校验仍然是“必须来自正文”，但对“女学生林栀”“年轻监考老师周骁”这类带修饰语证据，后端会允许通过人名或稳定称呼做容错匹配，避免误杀
 - `Character Designer` 只允许覆盖本次目标 slots，不能重复 `cast_slot_id`，也不能凭空补出正文里没有证据的人
 - `Character Designer` 现在会给出固定索引合同，明确 `characters[0]`、`characters[1]` 等条目分别必须对应哪个 `cast_slot_id`；如果模型漏人，structured retry 会重复下发这份合同
 - 如果首轮角色表仍然缺失某些 slot，系统会额外发起一次“只补缺失角色”的结构化补生请求，再把结果合并回完整角色表

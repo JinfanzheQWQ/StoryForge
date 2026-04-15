@@ -956,6 +956,76 @@ class PipelineTestCase(unittest.TestCase):
                 story_draft_set=story_draft_set,
             )
 
+    def test_cast_analysis_source_evidence_accepts_name_inside_decorated_phrase(self) -> None:
+        service = NovelGeneratorService()
+        story_draft_set = StoryDraftSetSchema(
+            chapters=[
+                ChapterDraftSchema(
+                    number=1,
+                    title="考场外",
+                    summary="林栀与监考老师周骁在考试结束后短暂对话。",
+                    markdown=(
+                        "林栀抱着试卷走出教学楼，周骁站在走廊尽头等她。"
+                        "这位监考老师没有多说，只提醒她别把准考证落下。"
+                    ),
+                    visual_hooks=["教学楼", "走廊"],
+                    continuity_refs=["考试结束"],
+                )
+            ]
+        )
+        analysis = CastAnalysisSchema(
+            story_shape="dual_relationship_with_supporting_cast",
+            recommended_core_cast_count=2,
+            requires_dual_leads=True,
+            explicit_counterpart=True,
+            prefers_male_female_pair=True,
+            cast_strategy="稳定关系双方。",
+            chapter_participation_rule="双方必须共同参与关键节点。",
+            ordering_rule="按 lead_1, lead_2 输出。",
+            slots=[
+                CastSlotSchema(
+                    slot_id="lead_1",
+                    tier="lead",
+                    story_function="protagonist",
+                    brief_label="女学生林栀",
+                    source_evidence=["女学生林栀"],
+                    gender_hint="女",
+                    objective="确认对方是否记得自己的约定。",
+                    must_appear_in=["opening", "climax"],
+                    order_priority=1,
+                    notes="主动方",
+                ),
+                CastSlotSchema(
+                    slot_id="lead_2",
+                    tier="lead",
+                    story_function="love_interest",
+                    brief_label="年轻监考老师周骁",
+                    source_evidence=["年轻监考老师周骁"],
+                    gender_hint="男",
+                    objective="给出回应。",
+                    must_appear_in=["opening", "climax"],
+                    order_priority=2,
+                    notes="回应方",
+                ),
+            ],
+            relationships=[
+                CastRelationshipSchema(
+                    source_slot_id="lead_1",
+                    target_slot_id="lead_2",
+                    relationship_type="core_relationship",
+                    priority=1,
+                    summary="毕业前夜的关键关系。",
+                )
+            ],
+        )
+
+        validated = service._validate_cast_analysis_output(
+            analysis,
+            story_draft_set=story_draft_set,
+        )
+
+        self.assertEqual(len(validated.slots), 2)
+
     def test_fallback_character_roster_only_covers_requested_slots(self) -> None:
         service = NovelGeneratorService()
         brief = StoryBrief(

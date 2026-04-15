@@ -22,7 +22,10 @@ export async function loadBootstrap() {
   window.storyforgeBootstrap = payload;
   applyBootstrapToForm(payload);
 
-  elements.llmModel.textContent = `${payload.llm_provider} / ${payload.llm_model}`;
+  const selectedOption = Array.isArray(payload.available_llm_options)
+    ? payload.available_llm_options.find((item) => item.provider === payload.llm_provider)
+    : null;
+  elements.llmModel.textContent = `${selectedOption?.label || payload.llm_provider} / ${payload.llm_model}`;
   elements.seedreamModel.textContent = payload.seedream_model;
   elements.seedanceModel.textContent = payload.seedance_model;
 }

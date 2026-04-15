@@ -9,6 +9,8 @@ export const elements = {
   bindingCard: document.querySelector("#project-binding-card"),
   bindingText: document.querySelector("#project-binding-text"),
   clearProjectBindingButton: document.querySelector("#clear-project-binding"),
+  llmProviderSelect: document.querySelector("#llm-provider-select"),
+  llmModelInput: document.querySelector("#llm-model-input"),
   llmModel: document.querySelector("#llm-model"),
   seedreamModel: document.querySelector("#seedream-model"),
   seedanceModel: document.querySelector("#seedance-model"),

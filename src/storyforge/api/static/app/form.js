@@ -1,5 +1,25 @@
 import { elements } from "./dom.js";
 
+function populateLlmOptions(options, selectedProvider) {
+  if (!elements.llmProviderSelect || !Array.isArray(options) || options.length === 0) {
+    return;
+  }
+
+  const provider = selectedProvider || elements.llmProviderSelect.value;
+  elements.llmProviderSelect.replaceChildren();
+
+  options.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.provider;
+    option.textContent = item.label;
+    option.dataset.defaultModel = item.model;
+    if (item.provider === provider) {
+      option.selected = true;
+    }
+    elements.llmProviderSelect.append(option);
+  });
+}
+
 export function fillInput(name, value) {
   const field = elements.form.elements.namedItem(name);
   if (field) {
@@ -8,6 +28,7 @@ export function fillInput(name, value) {
 }
 
 export function applyBootstrapToForm(payload) {
+  populateLlmOptions(payload.available_llm_options, payload.llm_provider);
   fillInput("title_hint", payload.default_brief.title_hint);
   fillInput("idea", payload.default_brief.idea);
   fillInput("genre", payload.default_brief.genre);
@@ -17,9 +38,22 @@ export function applyBootstrapToForm(payload) {
   fillInput("total_word_target", payload.default_brief.total_word_target);
   fillInput("must_include", payload.default_brief.must_include.join(", "));
   fillInput("style_keywords", payload.default_brief.style_keywords.join(", "));
+  fillInput("llm_provider", payload.llm_provider);
+  fillInput("llm_model", payload.llm_model);
   setSubmitStatus(
     `${payload.llm_provider} / ${payload.llm_model} 已就绪。`,
   );
+}
+
+export function syncLlmModelPreset() {
+  if (!elements.llmProviderSelect || !elements.llmModelInput) {
+    return;
+  }
+  const preset = elements.llmProviderSelect.selectedOptions[0]?.dataset.defaultModel;
+  if (!preset) {
+    return;
+  }
+  elements.llmModelInput.value = preset;
 }
 
 export function parseCommaSeparated(value) {
@@ -45,6 +79,12 @@ export function clearForm() {
   elements.form.reset();
   fillInput("chapter_count", 1);
   fillInput("total_word_target", 1500);
+  if (window.storyforgeBootstrap) {
+    fillInput("llm_provider", window.storyforgeBootstrap.llm_provider);
+    fillInput("llm_model", window.storyforgeBootstrap.llm_model);
+  } else {
+    syncLlmModelPreset();
+  }
   clearProjectBinding();
   setSubmitStatus("内容已清空，可以重新填写新的故事 brief。");
 }
@@ -68,6 +108,8 @@ export function readProjectSubmission() {
         style_keywords: parseCommaSeparated(elements.form.elements.style_keywords.value),
       },
       use_llm: true,
+      llm_provider: elements.form.elements.llm_provider.value.trim(),
+      llm_model: elements.form.elements.llm_model.value.trim(),
     },
   };
 }

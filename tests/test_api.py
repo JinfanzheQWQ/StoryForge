@@ -330,8 +330,15 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("default_brief", payload)
             self.assertIn("llm_provider", payload)
             self.assertIn("llm_model", payload)
+            self.assertIn("available_llm_options", payload)
             self.assertIn("seedream_model", payload)
             self.assertIn("seedance_model", payload)
+            self.assertTrue(
+                any(
+                    item["provider"] == "openai" and item["model"] == "gpt-5.4"
+                    for item in payload["available_llm_options"]
+                )
+            )
 
     def test_submit_complete_job_and_keep_project_history_within_process(self) -> None:
         config_path = self._create_test_config()
@@ -353,6 +360,8 @@ class ApiTestCase(unittest.TestCase):
                     },
                     "use_llm": True,
                     "submit_seedance": False,
+                    "llm_provider": "openai",
+                    "llm_model": "gpt-5.4",
                 },
             )
             self.assertEqual(response.status_code, 202)
@@ -362,6 +371,8 @@ class ApiTestCase(unittest.TestCase):
 
             self.assertEqual(payload["status"], "completed")
             self.assertEqual(payload["project_id"], project_id)
+            self.assertEqual(payload["payload"]["llm_provider"], "openai")
+            self.assertEqual(payload["payload"]["llm_model"], "gpt-5.4")
             self.assertIn("seedance_manifest_path", payload["result"])
             self.assertIn("seedance_execution_path", payload["result"])
             self.assertIn("rendered_clips", payload["result"])
@@ -399,6 +410,38 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(project_detail["project_id"], project_id)
             self.assertEqual(project_detail["tasks"][0]["task_id"], task_id)
             self.assertEqual(project_detail["tasks"][0]["project_id"], project_id)
+
+    def test_story_job_accepts_openai_selection(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "双模型测试",
+                        "idea": "毕业前夜，两个人在空教室里交换一封一直没有寄出的信。",
+                        "genre": "青春 / 情感",
+                        "tone": "克制、温柔、电影感",
+                        "target_audience": "青年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1200,
+                        "must_include": ["空教室", "信件"],
+                        "style_keywords": ["夕光", "安静", "毕业季"],
+                    },
+                    "use_llm": True,
+                    "llm_provider": "openai",
+                    "llm_model": "gpt-5.4",
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            task_id = response.json()["task_id"]
+            payload = self._wait_for_completion(client, task_id)
+
+            self.assertEqual(payload["status"], "completed")
+            self.assertEqual(payload["payload"]["llm_provider"], "openai")
+            self.assertEqual(payload["payload"]["llm_model"], "gpt-5.4")
+            self.assertEqual(payload["result"]["pipeline_stage"], "story_source_completed")
 
     @patch("storyforge.application.task_handlers.run_video_pipeline")
     def test_story_artifacts_are_available_while_task_is_still_running(self, mock_run_video_pipeline) -> None:

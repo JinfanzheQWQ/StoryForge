@@ -52,6 +52,11 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 返回前端启动所需的默认配置和模型名。
 
+说明：
+
+- 前端创建页只允许选择 `llm_provider`
+- `llm_model` 仍会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
+
 ### 项目
 
 #### `GET /v1/projects`
@@ -116,7 +121,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
     "must_include": ["失踪列车"],
     "style_keywords": ["暴雨", "车站", "霓虹"]
   },
-  "use_llm": true
+  "use_llm": true,
+  "llm_provider": "deepseek",
+  "llm_model": "deepseek-chat"
 }
 ```
 
@@ -124,6 +131,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - `project_id = null` 时会自动新建项目
 - 传入已有 `project_id` 时，会把本次运行挂到已有项目下
+- Web 页面的 `llm_model` 为只读默认值；如通过 API 直调，仍可显式传入
 
 返回示例：
 
@@ -145,12 +153,16 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 {
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_task_id": "story-task-id",
-  "use_llm": true
+  "use_llm": true,
+  "llm_provider": "openai",
+  "llm_model": "gpt-5.4"
 }
 ```
 
 说明：
 
+- 如果 `llm_provider = openai` 但你的 `OPENAI_BASE_URL` 背后平台没有 `gpt-5.4` 映射，任务会直接失败，并返回类似 `platform text model target not found`
+- `Cast Analyzer` 的 `source_evidence` 仍必须能在正文中定位；当前后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 - 这一步依赖已经完成且未过期的 `project.story_analysis`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上
 

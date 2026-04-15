@@ -270,6 +270,26 @@ textarea:focus {
   transform: translateY(-1px);
 }
 
+input[readonly] {
+  color: var(--muted-strong);
+  background:
+    linear-gradient(180deg, rgba(247, 250, 248, 0.98), rgba(241, 246, 243, 0.96));
+  cursor: default;
+}
+
+input[readonly]:focus {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  border-color: rgba(19, 35, 28, 0.1);
+  transform: none;
+}
+
+.field-help {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 .mode-grid {
   display: grid;
   gap: 10px;

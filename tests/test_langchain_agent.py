@@ -16,7 +16,7 @@ from storyforge.domains.novel.schemas import StoryArchitectureSchema  # noqa: E4
 
 
 class LangChainAgentBackendTestCase(unittest.TestCase):
-    def test_structured_generation_uses_langchain_structured_output_wrapper(self) -> None:
+    def test_structured_generation_uses_function_calling_for_deepseek(self) -> None:
         captured: dict[str, object] = {}
 
         class FakeStructuredModel:
@@ -38,7 +38,7 @@ class LangChainAgentBackendTestCase(unittest.TestCase):
                 captured["kwargs"] = kwargs
                 return FakeStructuredModel()
 
-        backend = LangChainTextAgentBackend(model_name="deepseek-chat")
+        backend = LangChainTextAgentBackend(model_name="deepseek-chat", provider="deepseek")
         with patch.object(backend, "_build_model", return_value=FakeModel()):
             result = backend.generate_structured(
                 PromptRequest(
@@ -52,6 +52,46 @@ class LangChainAgentBackendTestCase(unittest.TestCase):
         self.assertEqual(result.title, "站台告白")
         self.assertIs(captured["schema"], StoryArchitectureSchema)
         self.assertEqual(captured["kwargs"]["method"], "function_calling")
+        self.assertTrue(captured["kwargs"]["include_raw"])
+        self.assertTrue(captured["kwargs"]["strict"])
+        self.assertEqual(len(captured["messages"]), 2)
+
+    def test_structured_generation_uses_json_schema_for_openai(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeStructuredModel:
+            def invoke(self, messages):
+                captured["messages"] = messages
+                return StoryArchitectureSchema(
+                    title="风铃回廊",
+                    premise="毕业前最后一次相遇。",
+                    theme="告别与选择",
+                    setting="黄昏校园",
+                    story_engine="毕业倒计时逼迫两人说出真心。",
+                    visual_motifs=["风铃", "夕光", "教学楼"],
+                    tone_notes=["克制", "温柔"],
+                )
+
+        class FakeModel:
+            def with_structured_output(self, schema, **kwargs):
+                captured["schema"] = schema
+                captured["kwargs"] = kwargs
+                return FakeStructuredModel()
+
+        backend = LangChainTextAgentBackend(model_name="gpt-5.4", provider="openai")
+        with patch.object(backend, "_build_model", return_value=FakeModel()):
+            result = backend.generate_structured(
+                PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "story-architect"},
+                ),
+                StoryArchitectureSchema,
+            )
+
+        self.assertEqual(result.title, "风铃回廊")
+        self.assertIs(captured["schema"], StoryArchitectureSchema)
+        self.assertEqual(captured["kwargs"]["method"], "json_schema")
         self.assertTrue(captured["kwargs"]["include_raw"])
         self.assertTrue(captured["kwargs"]["strict"])
         self.assertEqual(len(captured["messages"]), 2)

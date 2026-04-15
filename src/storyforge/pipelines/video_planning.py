@@ -24,8 +24,15 @@ def build_video_planning_artifacts(
     project_root: Path,
     output_root: Path | None = None,
     use_llm: bool = False,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
 ) -> VideoPlanningArtifacts:
-    backend = build_agent_backend(config, use_llm=use_llm)
+    backend = build_agent_backend(
+        config,
+        use_llm=use_llm,
+        provider=llm_provider,
+        model=llm_model,
+    )
     service = NovelToVideoService(
         backend=backend,
         segment_duration_seconds=config.video.segment_duration_seconds,

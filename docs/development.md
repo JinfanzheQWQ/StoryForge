@@ -110,7 +110,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 2. `Story Drafter` 先生成完整小说草稿
 3. `Cast Analyzer` 再从小说草稿中抽取不可替代的角色指代，而不是直接靠 brief 主分析
 4. 每个 slot 都必须保留 `brief_label`
-5. 每个 slot 都应尽量保留 `source_evidence`
+5. 每个 slot 都应尽量保留 `source_evidence`，并优先写正文里可直接定位的裸名或稳定称呼
 6. `Character Designer` 必须一一消费这些 slot，并回填 `cast_slot_id`
 7. 角色正式名字必须全表唯一；该约束由 `CharacterRosterSchema` 强制校验
 8. 如果 LLM 输出同名角色，必须直接触发 structured retry；重试仍失败就显式报错，不再本地偷偷改名
@@ -248,7 +248,7 @@ scripts/clean-local-artifacts.sh --deep
 
 ## 已知实现约定
 
-- 结构化 LLM 输出仍然通过 LangChain 实现，但不要再回到 `create_agent + ToolStrategy` 做小说结构化输出；当前使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，优先消费 parsed 结果，必要时回收 raw JSON 文本，由 StoryForge 外层负责 3 次 structured retry。
+- 结构化 LLM 输出仍然通过 LangChain 实现，但这里说的是生产主链路，不是整个 backend 都不用 `create_agent`。当前小说结构化阶段按 provider 区分：`DeepSeek` 使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `ChatModel.with_structured_output(method="json_schema", include_raw=True)`；优先消费 parsed 结果，必要时回收 raw JSON 文本，由 StoryForge 外层负责 3 次 structured retry；`create_agent()` 只保留给普通文本生成实现。
 - 阶段接口应尽量具备幂等保护；当前 `project.story_analysis` 会按 `source_task_id + story_source_revision` 复用已有 queued / running / completed 任务，避免重复结构化。
 - `SeedanceManifest.title` 只能表示故事标题，不能写成 `segment_video_manifest` 这类文件用途名；读取旧产物时应优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - 任务失败原因必须写入 `TaskRecord.error` / MySQL `error_text`，前端依赖该字段展示失败信息。

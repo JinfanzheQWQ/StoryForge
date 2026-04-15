@@ -32,6 +32,10 @@ DOCUMENT_PRIORITY = {
     "seedance_manifest.json": 100,
     "seedance_execution.json": 110,
 }
+LLM_OPTION_LIBRARY = {
+    "deepseek": {"provider": "deepseek", "model": "deepseek-chat", "label": "DeepSeek"},
+    "openai": {"provider": "openai", "model": "gpt-5.4", "label": "ChatGPT 5.4"},
+}
 
 
 def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
@@ -51,9 +55,36 @@ def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
         submit_seedance=config.video.submit_seedance or config.seedance.auto_submit,
         llm_provider=config.llm.provider,
         llm_model=config.llm.model,
+        available_llm_options=_build_available_llm_options(config),
         seedream_model=config.seedream.model,
         seedance_model=config.seedance.model,
     )
+
+
+def _build_available_llm_options(config: AppConfig) -> list[dict[str, str]]:
+    configured = {
+        str(provider).strip().lower()
+        for provider in config.llm.available_providers
+        if str(provider).strip()
+    }
+    options: list[dict[str, str]] = []
+    for provider, option in LLM_OPTION_LIBRARY.items():
+        if configured and provider not in configured:
+            continue
+        payload = dict(option)
+        if provider == config.llm.provider:
+            payload["model"] = config.llm.model
+        options.append(payload)
+
+    if options:
+        return options
+    return [
+        {
+            "provider": config.llm.provider,
+            "model": config.llm.model,
+            "label": config.llm.provider.title(),
+        }
+    ]
 
 
 def build_task_artifacts(

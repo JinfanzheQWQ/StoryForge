@@ -22,18 +22,24 @@ class BuildProjectRequest(BaseModel):
     brief: StoryBriefInput
     use_llm: bool = True
     submit_seedance: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class CreateStoryTaskRequest(BaseModel):
     project_id: str | None = None
     brief: StoryBriefInput
     use_llm: bool = True
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class CreateStageTaskRequest(BaseModel):
     project_id: str
     source_task_id: str
     use_llm: bool | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
     segment_id: str | None = None
     merge_only: bool = False
 
@@ -79,6 +85,7 @@ class UiBootstrapResponse(BaseModel):
     submit_seedance: bool
     llm_provider: str
     llm_model: str
+    available_llm_options: list[dict[str, str]] = Field(default_factory=list)
     seedream_model: str
     seedance_model: str
 

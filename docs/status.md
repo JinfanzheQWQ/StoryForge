@@ -46,7 +46,8 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `Character Designer` prompt 已改成固定索引合同：会明确列出 `characters[0]`、`characters[1]` 分别必须对应哪个 `cast_slot_id`，数量不匹配时重试也会重复下发这份合同
 - 如果 `Character Designer` 首次只返回了部分角色，系统会对缺失 slot 再发一次结构化补生请求，再合并回完整角色表
 - LangChain structured output 已开启 raw 响应回收：如果 DeepSeek 没有触发 tool call 但返回了 JSON 文本，会提取 JSON 后再校验；如果返回空结构，会给出明确失败原因，不再暴露 Pydantic 的 `input_value=None`
-- `Cast Analyzer` 输出现在要求 `source_evidence` 必须能在小说正文中定位，减少“正文没出现的人却被补进角色表”的情况
+- `Cast Analyzer` 输出现在要求 `source_evidence` 必须能在小说正文中定位，减少“正文没出现的人却被补进角色表”的情况；同时对“女学生林栀 / 年轻监考老师周骁”这类带修饰语证据增加了姓名 / 稳定称呼容错匹配，避免误判
+- Web 创建页的 `模型 ID` 已改为只读默认值，不再允许手工输入，避免前端表单与后端支持矩阵脱节
 - fallback 角色卡已改为只覆盖目标 slots，不再按旧的补位策略自动多塞一个核心角色
 - 已删除旧配置残留 `major_character_count` 与 `review_passes`，角色数量改由小说正文、cast slots 和结构化校验共同约束
 

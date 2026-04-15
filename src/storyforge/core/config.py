@@ -11,6 +11,7 @@ class LLMConfig:
     enabled: bool = False
     provider: str = "deepseek"
     model: str = "deepseek-chat"
+    available_providers: tuple[str, ...] = ("deepseek", "openai")
     temperature: float = 0.7
     api_key_env: str = "DEEPSEEK_API_KEY"
     base_url: str = "https://api.deepseek.com/v1"
@@ -127,6 +128,7 @@ class AppConfig:
                 enabled=llm.get("enabled", False),
                 provider=llm.get("provider", "deepseek"),
                 model=llm.get("model", "deepseek-chat"),
+                available_providers=tuple(llm.get("available_providers", ["deepseek", "openai"])),
                 temperature=llm.get("temperature", 0.7),
                 api_key_env=llm.get("api_key_env", "DEEPSEEK_API_KEY"),
                 base_url=llm.get("base_url", "https://api.deepseek.com/v1"),

@@ -64,7 +64,6 @@ class SeedanceConfig:
 
 @dataclass(slots=True)
 class DatabaseConfig:
-    enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 3306
     user: str = "root"
@@ -92,7 +91,6 @@ class QueueConfig:
 @dataclass(slots=True)
 class PathConfig:
     output_dir: str = "outputs"
-    workspace_dir: str = "workspace"
     prompt_dir: str = "prompts"
 
 
@@ -175,7 +173,6 @@ class AppConfig:
                 max_wait_seconds=seedance.get("max_wait_seconds", 900),
             ),
             database=DatabaseConfig(
-                enabled=database.get("enabled", False),
                 host=database.get("host", "127.0.0.1"),
                 port=database.get("port", 3306),
                 user=database.get("user", "root"),
@@ -192,7 +189,6 @@ class AppConfig:
             ),
             paths=PathConfig(
                 output_dir=paths.get("output_dir", "outputs"),
-                workspace_dir=paths.get("workspace_dir", "workspace"),
                 prompt_dir=paths.get("prompt_dir", "prompts"),
             ),
         )
@@ -200,7 +196,6 @@ class AppConfig:
     def ensure_directories(self, project_root: Path) -> None:
         for folder in (
             self.paths.output_dir,
-            self.paths.workspace_dir,
             self.paths.prompt_dir,
         ):
             (project_root / folder).mkdir(parents=True, exist_ok=True)

@@ -283,6 +283,22 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const sceneSegmentButton = event.target.closest("[data-generate-scene-segment]");
+  if (sceneSegmentButton) {
+    await submitStageFromButton(
+      sceneSegmentButton,
+      "/v1/projects/scenes",
+      {
+        project_id: sceneSegmentButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: sceneSegmentButton.dataset.sourceTask,
+        segment_id: sceneSegmentButton.dataset.generateSceneSegment,
+      },
+      "片段场景图任务已创建",
+      "片段场景图任务提交失败。",
+    );
+    return;
+  }
+
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
     await submitStageFromButton(
@@ -294,6 +310,38 @@ async function handleProjectDetailClick(event) {
       },
       "视频任务已创建",
       "视频任务提交失败。",
+    );
+    return;
+  }
+
+  const videoSegmentButton = event.target.closest("[data-generate-video-segment]");
+  if (videoSegmentButton) {
+    await submitStageFromButton(
+      videoSegmentButton,
+      "/v1/projects/videos",
+      {
+        project_id: videoSegmentButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: videoSegmentButton.dataset.sourceTask,
+        segment_id: videoSegmentButton.dataset.generateVideoSegment,
+      },
+      "片段视频任务已创建",
+      "片段视频任务提交失败。",
+    );
+    return;
+  }
+
+  const mergeVideosButton = event.target.closest("[data-merge-videos]");
+  if (mergeVideosButton) {
+    await submitStageFromButton(
+      mergeVideosButton,
+      "/v1/projects/videos",
+      {
+        project_id: mergeVideosButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: mergeVideosButton.dataset.mergeVideos,
+        merge_only: true,
+      },
+      "视频合并任务已创建",
+      "视频合并任务提交失败。",
     );
     return;
   }

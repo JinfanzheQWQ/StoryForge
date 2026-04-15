@@ -51,12 +51,12 @@ const DOCUMENT_META = {
   "segment_plan.json": {
     title: "视频分段规划",
     category: "视频规划",
-    summary: "定义每个片段的参与角色、对白、字幕、时长和首尾帧提示词。",
+    summary: "定义每个片段的参与角色、对白、字幕、时长，以及首帧 / 中段锚点帧 / 尾帧提示词。",
   },
   "scene_image_manifest.json": {
     title: "场景帧任务清单",
     category: "视频规划",
-    summary: "记录每个片段的首帧、尾帧、参考图和输出位置。",
+    summary: "记录每个片段的首帧、中段锚点帧、尾帧、角色参考图和输出位置。",
   },
   "seedream_character_execution.json": {
     title: "角色图执行报告",
@@ -66,7 +66,7 @@ const DOCUMENT_META = {
   "seedream_scene_execution.json": {
     title: "场景图执行报告",
     category: "执行报告",
-    summary: "用来确认场景首尾帧阶段是否真正跑通，以及失败原因。",
+    summary: "用来确认场景关键帧阶段是否真正跑通，以及失败原因。",
   },
   "seedance_manifest.json": {
     title: "视频提交清单",
@@ -86,6 +86,7 @@ function renderStageFailureList(run, storySourceRevision) {
     ["角色图", run.latestCharacterTask],
     ["场景图", run.latestSceneTask],
     ["视频", run.latestVideoTask],
+    ["合并", run.latestMergeTask],
   ]
     .map(([label, task]) => {
       const status = getRunStageStatus(task, storySourceRevision);
@@ -268,7 +269,7 @@ function renderFullStoryBlock(item, context, galleryId = null) {
 function segmentIdFromAssetName(name) {
   return String(name || "")
     .replace(/\.[^.]+$/, "")
-    .replace(/_(start|end)$/, "");
+    .replace(/_(start|mid|end)$/, "");
 }
 
 function segmentLabel(segmentId, index) {
@@ -282,14 +283,39 @@ function segmentLabel(segmentId, index) {
 }
 
 function buildTimelineSegments(artifacts) {
+  if (artifacts?.planned_segments?.length) {
+    return artifacts.planned_segments.map((segment, index) => ({
+      segmentId: segment.segment_id,
+      title: segment.title || segmentLabel(segment.segment_id, index),
+      summary: segment.summary || "",
+      chapterNumber: segment.chapter_number,
+      durationSeconds: segment.duration_seconds || 0,
+      requiresMidFrame: Boolean(segment.requires_mid_frame),
+      startFrame: segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
+      midFrame: segment.mid_frame ? { ...segment.mid_frame, kind: "image" } : null,
+      endFrame: segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
+      clip: segment.rendered_clip ? { ...segment.rendered_clip, kind: "video" } : null,
+      sceneReady: Boolean(segment.scene_ready),
+      videoReady: Boolean(segment.video_ready),
+    }));
+  }
+
   const segmentMap = new Map();
   const ensureSegment = (segmentId) => {
     if (!segmentMap.has(segmentId)) {
       segmentMap.set(segmentId, {
         segmentId,
+        title: segmentId,
+        summary: "",
+        chapterNumber: 0,
+        durationSeconds: 0,
+        requiresMidFrame: false,
         startFrame: null,
+        midFrame: null,
         endFrame: null,
         clip: null,
+        sceneReady: false,
+        videoReady: false,
       });
     }
     return segmentMap.get(segmentId);
@@ -300,6 +326,8 @@ function buildTimelineSegments(artifacts) {
     const segment = ensureSegment(segmentId);
     if (String(frame.name).includes("_end")) {
       segment.endFrame = frame;
+    } else if (String(frame.name).includes("_mid")) {
+      segment.midFrame = frame;
     } else {
       segment.startFrame = frame;
     }
@@ -310,7 +338,92 @@ function buildTimelineSegments(artifacts) {
     segment.clip = clip;
   }
 
-  return Array.from(segmentMap.values()).sort((left, right) => left.segmentId.localeCompare(right.segmentId));
+  return Array.from(segmentMap.values())
+    .sort((left, right) => left.segmentId.localeCompare(right.segmentId))
+    .map((segment, index) => ({
+      ...segment,
+      title: segment.title || segmentLabel(segment.segmentId, index),
+      sceneReady: Boolean(
+        segment.startFrame
+        && segment.endFrame
+        && (!segment.requiresMidFrame || segment.midFrame),
+      ),
+      videoReady: Boolean(segment.clip),
+    }));
+}
+
+function getLatestSegmentStageTask(run, taskType, segmentId) {
+  return run?.tasks?.find((task) => (
+    task.task_type === taskType
+    && String(task.payload?.segment_id || task.result?.segment_id || "") === String(segmentId || "")
+  )) || null;
+}
+
+function buildSegmentSceneButtonLabel(segment, sceneTaskStatus) {
+  if (sceneTaskStatus === "queued" || sceneTaskStatus === "running") {
+    return "场景图生成中";
+  }
+  if (segment.sceneReady) {
+    return "重生成场景图";
+  }
+  if (sceneTaskStatus === "failed") {
+    return "重试场景图";
+  }
+  return "生成场景图";
+}
+
+function buildSegmentVideoButtonLabel(segment, videoTaskStatus) {
+  if (videoTaskStatus === "queued" || videoTaskStatus === "running") {
+    return "视频生成中";
+  }
+  if (segment.videoReady) {
+    return "重生成视频";
+  }
+  if (videoTaskStatus === "failed") {
+    return "重试视频";
+  }
+  return "生成视频";
+}
+
+function buildMergeButtonLabel(artifacts, mergeTaskStatus) {
+  if (mergeTaskStatus === "queued" || mergeTaskStatus === "running") {
+    return "合并中";
+  }
+  if (artifacts?.full_story) {
+    return "重新合并总片";
+  }
+  if (mergeTaskStatus === "failed") {
+    return "重试合并";
+  }
+  return "合并已生成片段";
+}
+
+function renderSegmentTaskError(task, label) {
+  const error = buildTaskErrorMessage(task);
+  if (!error) {
+    return "";
+  }
+  return `<p class="timeline-task-error">${escapeHtml(`${label}：${error}`)}</p>`;
+}
+
+function buildTimelineGalleryItems(artifacts) {
+  const plannedItems = (artifacts?.planned_segments || []).flatMap((segment) => ([
+    segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
+    segment.mid_frame ? { ...segment.mid_frame, kind: "image" } : null,
+    segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
+    segment.rendered_clip ? { ...segment.rendered_clip, kind: "video" } : null,
+  ])).filter(Boolean);
+  if (plannedItems.length) {
+    return [
+      ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
+      ...plannedItems,
+    ];
+  }
+  return [
+    ...artifacts.scene_frames.map((item) => ({ ...item, kind: "image" })),
+    ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
+    ...artifacts.rendered_clips.map((item) => ({ ...item, kind: "video" })),
+  ];
 }
 
 function renderTimelinePreview(item, label, galleryId) {
@@ -344,14 +457,17 @@ function renderTimelineTab(task, artifacts, context, run = null) {
     return singleAssetMessage("片段时间线暂不可用", buildArtifactPendingMessage(task, "images", run));
   }
 
-  const timelineItems = [
-    ...artifacts.scene_frames.map((item) => ({ ...item, kind: "image" })),
-    ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
-    ...artifacts.rendered_clips.map((item) => ({ ...item, kind: "video" })),
-  ];
+  const timelineItems = buildTimelineGalleryItems(artifacts);
   const galleryId = `${context}:timeline:${task.task_id}`;
   registerGallery(galleryId, timelineItems);
   const segments = buildTimelineSegments(artifacts);
+  const rootTask = run?.rootTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
+  const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
+  const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
+  const readySceneCount = segments.filter((segment) => segment.sceneReady).length;
+  const readyVideoCount = segments.filter((segment) => segment.videoReady).length;
+  const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeTaskStatus);
 
   return `
     <section class="timeline-shell">
@@ -359,13 +475,25 @@ function renderTimelineTab(task, artifacts, context, run = null) {
         <div>
           <p class="section-kicker">Timeline</p>
           <h4>按视频片段审片</h4>
-          <p class="asset-note">把同一片段的首帧、尾帧和视频放在一起看，更容易发现角色漂移、场景断裂和字幕问题。</p>
+          <p class="asset-note">结构化信息完成后，这里会按 LLM 生成的 segment_plan 逐段展示。每一段都可以单独生成场景图和视频，不再一次性把全部片段跑完。</p>
+          <p class="asset-note">首帧、中段锚点帧、尾帧和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
         </div>
         <div class="detail-chip-row">
           ${chip(`片段 ${segments.length}`)}
-          ${chip(`场景帧 ${artifacts.scene_frames.length}`)}
-          ${chip(`视频 ${artifacts.rendered_clips.length}`)}
+          ${chip(`场景就绪 ${readySceneCount}/${segments.length || 0}`)}
+          ${chip(`视频就绪 ${readyVideoCount}/${segments.length || 0}`)}
           ${chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`)}
+        </div>
+        <div class="timeline-hero-actions">
+          <button
+            type="button"
+            class="secondary"
+            data-merge-videos="${escapeAttr(rootTask.task_id)}"
+            data-project-id="${escapeAttr(rootTask.project_id)}"
+            ${canMergeVideos ? "" : "disabled"}
+          >
+            ${escapeHtml(buildMergeButtonLabel(artifacts, mergeTaskStatus))}
+          </button>
         </div>
       </article>
 
@@ -377,22 +505,69 @@ function renderTimelineTab(task, artifacts, context, run = null) {
             <div class="timeline-list">
               ${segments
                 .map(
-                  (segment, index) => `
+                  (segment, index) => {
+                    const sceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
+                    const videoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
+                    const sceneTaskStatus = run ? getRunStageStatus(sceneTask, storySourceRevision) : "idle";
+                    const videoTaskStatus = run ? getRunStageStatus(videoTask, storySourceRevision) : "idle";
+                    const canGenerateScene =
+                      characterStatus === "completed"
+                      && !["queued", "running"].includes(sceneTaskStatus);
+                    const canGenerateVideo =
+                      segment.sceneReady
+                      && !["queued", "running"].includes(videoTaskStatus);
+                    return `
                     <article class="timeline-card">
                       <div class="timeline-card-head">
                         <span class="timeline-index">${String(index + 1).padStart(2, "0")}</span>
                         <div>
-                          <h4>${escapeHtml(segmentLabel(segment.segmentId, index))}</h4>
-                          <p class="asset-note">${escapeHtml(segment.segmentId)}</p>
+                          <h4>${escapeHtml(segment.title || segmentLabel(segment.segmentId, index))}</h4>
+                          <p class="asset-note">
+                            ${escapeHtml(`${segment.chapterNumber ? `第 ${segment.chapterNumber} 章 · ` : ""}${segment.segmentId}${segment.durationSeconds ? ` · ${segment.durationSeconds}s` : ""}`)}
+                          </p>
                         </div>
                       </div>
+                      ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
                       <div class="timeline-preview-grid">
-                        ${renderTimelinePreview(segment.startFrame ? { ...segment.startFrame, kind: "image" } : null, "首帧", galleryId)}
-                        ${renderTimelinePreview(segment.endFrame ? { ...segment.endFrame, kind: "image" } : null, "尾帧", galleryId)}
-                        ${renderTimelinePreview(segment.clip ? { ...segment.clip, kind: "video" } : null, "视频", galleryId)}
+                        ${renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
+                        ${renderTimelinePreview(segment.midFrame, "中段", galleryId)}
+                        ${renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
+                        ${renderTimelinePreview(segment.clip, "视频", galleryId)}
+                      </div>
+                      <div class="timeline-card-footer">
+                        <div class="detail-chip-row">
+                          ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
+                          ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
+                          ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+                        </div>
+                        <div class="timeline-actions">
+                          <button
+                            type="button"
+                            class="secondary small"
+                            data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
+                            data-project-id="${escapeAttr(rootTask.project_id)}"
+                            data-source-task="${escapeAttr(rootTask.task_id)}"
+                            ${canGenerateScene ? "" : "disabled"}
+                          >
+                            ${escapeHtml(buildSegmentSceneButtonLabel(segment, sceneTaskStatus))}
+                          </button>
+                          <button
+                            type="button"
+                            class="secondary small"
+                            data-generate-video-segment="${escapeAttr(segment.segmentId)}"
+                            data-project-id="${escapeAttr(rootTask.project_id)}"
+                            data-source-task="${escapeAttr(rootTask.task_id)}"
+                            ${canGenerateVideo ? "" : "disabled"}
+                          >
+                            ${escapeHtml(buildSegmentVideoButtonLabel(segment, videoTaskStatus))}
+                          </button>
+                        </div>
+                        ${renderSegmentTaskError(sceneTask, "场景图失败")}
+                        ${renderSegmentTaskError(videoTask, "视频失败")}
                       </div>
                     </article>
-                  `,
+                  `;
+                  },
                 )
                 .join("")}
             </div>
@@ -620,7 +795,7 @@ function renderImagesTab(task, artifacts, context, run = null) {
     <section class="story-editor-shell">
       ${renderAssetSectionIntro(
         "图像资产",
-        "先看角色定妆，再看场景首尾帧。当前页面只展示真实参与后续链路的图像资产。",
+        "先看角色定妆，再看场景关键帧。当前页面只展示真实参与后续链路的图像资产。",
         [
           chip(`角色图 ${artifacts.character_images.length}`),
           chip(`场景帧 ${artifacts.scene_frames.length}`),
@@ -632,19 +807,19 @@ function renderImagesTab(task, artifacts, context, run = null) {
             "角色定妆图",
             artifacts.character_images,
             galleryId,
-            "角色基准参考图。后续场景首尾帧和视频片段都会围绕这组角色外观继续生成。",
+            "角色基准参考图。后续场景关键帧和视频片段都会围绕这组角色外观继续生成。",
           )
           : singleAssetMessage("角色定妆图", buildArtifactPendingMessage(task, "characters", run))
       }
       ${
         artifacts.scene_frames.length
           ? renderMediaBlock(
-            "场景首尾帧",
+            "场景关键帧",
             artifacts.scene_frames,
             galleryId,
-            "每个片段的开场和收束画面。它们决定镜头连续性、角色位置和空间氛围。",
+            "每个片段的首帧、必要时的中段锚点帧，以及尾帧。它们共同决定镜头连续性、角色位置和空间氛围。",
           )
-          : singleAssetMessage("场景首尾帧", buildArtifactPendingMessage(task, "scenes", run))
+          : singleAssetMessage("场景关键帧", buildArtifactPendingMessage(task, "scenes", run))
       }
     </section>
   `;
@@ -664,6 +839,10 @@ function renderVideosTab(task, artifacts, context, run = null) {
   }
 
   const galleryId = `${context}:videos:${task.task_id}`;
+  const rootTask = run?.rootTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
+  const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
+  const canMergeVideos = artifacts.rendered_clips.length >= 2 && !["queued", "running"].includes(mergeTaskStatus);
   registerGallery(
     galleryId,
     [
@@ -676,12 +855,31 @@ function renderVideosTab(task, artifacts, context, run = null) {
     <section class="story-editor-shell">
       ${renderAssetSectionIntro(
         "视频资产",
-        "先审总片，再检查每个分段视频。页面只展示真实生成出来的下载结果。",
+        "视频片段按 segment 单独生成。总片不再自动合并，需要你手动点击合并按钮决定是否输出完整成片。",
         [
           chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`),
           chip(`片段 ${artifacts.rendered_clips.length}`),
         ].join(""),
       )}
+      <article class="asset-block video-merge-card">
+        <div class="story-editor-head">
+          <div>
+            <h4>总片合并</h4>
+            <p class="asset-note">会按 seedance_manifest.json 顺序，把当前已经存在本地 mp4 的片段合并成 full_story.mp4。</p>
+          </div>
+          <div class="story-editor-actions">
+            <button
+              type="button"
+              class="secondary"
+              data-merge-videos="${escapeAttr(rootTask.task_id)}"
+              data-project-id="${escapeAttr(rootTask.project_id)}"
+              ${canMergeVideos ? "" : "disabled"}
+            >
+              ${escapeHtml(buildMergeButtonLabel(artifacts, mergeTaskStatus))}
+            </button>
+          </div>
+        </div>
+      </article>
       ${renderFullStoryBlock(artifacts.full_story, context, galleryId)}
       ${renderMediaBlock(
         "视频片段",
@@ -704,6 +902,7 @@ export function renderRunStageActions(run) {
   const characterStatus = getRunStageStatus(run.latestCharacterTask, storySourceRevision);
   const sceneStatus = getRunStageStatus(run.latestSceneTask, storySourceRevision);
   const videoStatus = getRunStageStatus(run.latestVideoTask, storySourceRevision);
+  const mergeStatus = getRunStageStatus(run.latestMergeTask, storySourceRevision);
   const storyLocator = resolveStorySourceLocator(rootTask, run);
   const storyMeta = storyLocator
     ? getStorySourceMeta(storyLocator.projectId, storyLocator.sourceTaskId)
@@ -717,10 +916,10 @@ export function renderRunStageActions(run) {
     && !["queued", "running", "completed"].includes(analysisStatus);
   const canGenerateCharacters =
     analysisReady && !["queued", "running", "completed"].includes(characterStatus);
-  const canGenerateScenes =
-    characterStatus === "completed" && !["queued", "running", "completed"].includes(sceneStatus);
-  const canGenerateVideos =
-    sceneStatus === "completed" && !["queued", "running", "completed"].includes(videoStatus);
+  const plannedSegments = run.latestArtifacts?.planned_segments || [];
+  const readySceneCount = plannedSegments.filter((segment) => segment.scene_ready).length;
+  const readyVideoCount = plannedSegments.filter((segment) => segment.video_ready).length;
+  const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeStatus);
 
   const analysisButtonLabel =
     analysisStatus === "failed" || analysisStatus === "stale"
@@ -732,16 +931,12 @@ export function renderRunStageActions(run) {
           : "生成结构化信息";
   const characterButtonLabel =
     characterStatus === "failed" || characterStatus === "stale" ? "重新生成角色图" : characterStatus === "completed" ? "角色图已完成" : characterStatus === "running" ? "角色图生成中" : "生成角色图";
-  const sceneButtonLabel =
-    sceneStatus === "failed" || sceneStatus === "stale" ? "重新生成场景图" : sceneStatus === "completed" ? "场景图已完成" : sceneStatus === "running" ? "场景图生成中" : "生成场景图";
-  const videoButtonLabel =
-    videoStatus === "failed" || videoStatus === "stale" ? "重新生成视频" : videoStatus === "completed" ? "视频已完成" : videoStatus === "running" ? "视频生成中" : "生成视频";
   const steps = [
     ["01", "小说正文", rootTask.status, "先确认故事文本"],
     ["02", "结构信息", analysisStatus, "解析角色和分段"],
     ["03", "角色图", characterStatus, "生成角色定妆"],
-    ["04", "场景图", sceneStatus, "生成首尾帧"],
-    ["05", "视频", videoStatus, "生成片段和总片"],
+    ["04", "场景图", sceneStatus, plannedSegments.length ? `${readySceneCount}/${plannedSegments.length} 段已就绪` : "在时间线中逐段生成"],
+    ["05", "视频", videoStatus, plannedSegments.length ? `${readyVideoCount}/${plannedSegments.length} 段已出片` : "在时间线中逐段生成"],
   ];
 
   return `
@@ -762,7 +957,7 @@ export function renderRunStageActions(run) {
       <div>
         <p class="section-kicker">Next Step</p>
         <strong>当前版本制作入口</strong>
-        <p>只会放开下一步可执行按钮，避免误跳过必要阶段。</p>
+        <p>这里只保留全局阶段入口。场景图和视频请在下方时间线里按片段逐段生成，总片合并也改成手动触发。</p>
       </div>
       <div class="action-row">
       <button
@@ -777,26 +972,19 @@ export function renderRunStageActions(run) {
       <button
         type="button"
         class="secondary"
+        data-merge-videos="${escapeAttr(rootTask.task_id)}"
+        data-project-id="${escapeAttr(rootTask.project_id)}"
+        ${canMergeVideos ? "" : "disabled"}
+      >
+        ${escapeHtml(buildMergeButtonLabel(run.latestArtifacts, mergeStatus))}
+      </button>
+      <button
+        type="button"
+        class="secondary"
         data-generate-characters="${escapeAttr(rootTask.task_id)}"
         ${canGenerateCharacters ? "" : "disabled"}
       >
         ${escapeHtml(characterButtonLabel)}
-      </button>
-      <button
-        type="button"
-        class="secondary"
-        data-generate-scenes="${escapeAttr(rootTask.task_id)}"
-        ${canGenerateScenes ? "" : "disabled"}
-      >
-        ${escapeHtml(sceneButtonLabel)}
-      </button>
-      <button
-        type="button"
-        class="secondary"
-        data-generate-videos="${escapeAttr(rootTask.task_id)}"
-        ${canGenerateVideos ? "" : "disabled"}
-      >
-        ${escapeHtml(videoButtonLabel)}
       </button>
       </div>
     </div>

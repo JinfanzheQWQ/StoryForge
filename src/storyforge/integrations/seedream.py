@@ -62,11 +62,13 @@ class SeedreamClient:
         self,
         project_package: VideoProjectPackage,
         force_submit: bool = False,
+        segment_ids: set[str] | None = None,
     ) -> SeedreamExecutionReport:
         preflight = self._build_preflight_report(force_submit=force_submit)
         if preflight is not None:
             return preflight
 
+        target_scene_tasks = self._select_scene_tasks(project_package, segment_ids)
         missing_references = [
             item.character_name
             for item in project_package.character_images
@@ -76,7 +78,7 @@ class SeedreamClient:
             return SeedreamExecutionReport(
                 submitted=False,
                 generated_count=0,
-                failed_count=len(project_package.scene_images),
+                failed_count=len(target_scene_tasks),
                 note=(
                     "Seedream scene generation requires completed character reference images first: "
                     + ", ".join(missing_references)
@@ -91,14 +93,14 @@ class SeedreamClient:
         }
 
         with httpx.Client(timeout=120) as client:
-            for task in project_package.scene_images:
+            for task in target_scene_tasks:
                 success = self._generate_scene_frames(
                     client,
                     task,
                     project_package.character_images,
                     scene_map,
                 )
-                generated_count += int(success) * 2
+                generated_count += self._planned_scene_frame_count(task) if success else 0
                 failed_count += int(not success)
 
         self._apply_scene_urls_to_seedance_manifest(project_package)
@@ -134,6 +136,26 @@ class SeedreamClient:
         )
         return self._merge_execution_reports(character_report, scene_report)
 
+    def _select_scene_tasks(
+        self,
+        project_package: VideoProjectPackage,
+        segment_ids: set[str] | None,
+    ) -> list[SceneImageTask]:
+        if not segment_ids:
+            return list(project_package.scene_images)
+        selected_tasks = [
+            task
+            for task in project_package.scene_images
+            if task.segment_id in segment_ids
+        ]
+        missing_segments = sorted(segment_ids - {task.segment_id for task in selected_tasks})
+        if missing_segments:
+            raise ValueError(
+                "Requested scene segments are not present in scene_image_manifest.json: "
+                + ", ".join(missing_segments)
+            )
+        return selected_tasks
+
     def _generate_character_image(self, client: httpx.Client, task: CharacterImageTask) -> bool:
         task.status = "running"
         try:
@@ -158,6 +180,21 @@ class SeedreamClient:
         task.status = "running"
         try:
             reference_urls = self._resolve_reference_urls(task.reference_images, character_images)
+            start_reference_urls = self._resolve_character_reference_urls(
+                task.start_frame_characters,
+                character_images,
+                fallback_urls=reference_urls,
+            )
+            mid_reference_urls = self._resolve_character_reference_urls(
+                task.mid_frame_characters,
+                character_images,
+                fallback_urls=reference_urls,
+            )
+            end_reference_urls = self._resolve_character_reference_urls(
+                task.end_frame_characters,
+                character_images,
+                fallback_urls=reference_urls,
+            )
             start_frame_url = self._resolve_continuity_start_frame(task, scene_map)
             if start_frame_url:
                 self._materialize_reused_start_frame(task, scene_map, client, start_frame_url)
@@ -165,12 +202,24 @@ class SeedreamClient:
                 start_frame_url = self._create_image(
                     client,
                     prompt=task.start_frame_prompt,
-                    reference_images=reference_urls,
+                    reference_images=start_reference_urls,
+                )
+
+            mid_frame_url = ""
+            if task.requires_mid_frame and task.mid_frame_prompt.strip():
+                mid_frame_references = self._merge_reference_urls(
+                    [start_frame_url] if start_frame_url else [],
+                    mid_reference_urls,
+                )
+                mid_frame_url = self._create_image(
+                    client,
+                    prompt=task.mid_frame_prompt,
+                    reference_images=mid_frame_references,
                 )
 
             end_frame_references = self._merge_reference_urls(
-                [start_frame_url] if start_frame_url else [],
-                reference_urls,
+                [mid_frame_url] if mid_frame_url else ([start_frame_url] if start_frame_url else []),
+                end_reference_urls,
             )
             end_frame_url = self._create_image(
                 client,
@@ -178,10 +227,13 @@ class SeedreamClient:
                 reference_images=end_frame_references,
             )
             task.start_frame_url = start_frame_url
+            task.mid_frame_url = mid_frame_url
             task.end_frame_url = end_frame_url
             task.status = "completed"
             if self.config.download_outputs and start_frame_url and not task.reuse_previous_end_frame:
                 self._download_image(client, start_frame_url, Path(task.start_frame_path))
+            if self.config.download_outputs and mid_frame_url and task.mid_frame_path:
+                self._download_image(client, mid_frame_url, Path(task.mid_frame_path))
             if self.config.download_outputs and end_frame_url:
                 self._download_image(client, end_frame_url, Path(task.end_frame_path))
             return True
@@ -291,14 +343,54 @@ class SeedreamClient:
         }
         return [path_to_url[path] for path in reference_paths if path in path_to_url]
 
+    def _resolve_character_reference_urls(
+        self,
+        character_names: list[str],
+        character_images: list[CharacterImageTask],
+        *,
+        fallback_urls: list[str],
+    ) -> list[str]:
+        if not character_names:
+            # A single available reference is safe as a legacy fallback; multiple
+            # references would reintroduce off-frame characters into single-person frames.
+            return list(fallback_urls) if len(fallback_urls) == 1 else []
+
+        urls: list[str] = []
+        for name in character_names:
+            for item in character_images:
+                if (
+                    item.character_name == name
+                    and item.generated_url
+                    and item.use_as_reference
+                    and item.generated_url not in urls
+                ):
+                    urls.append(item.generated_url)
+        if urls:
+            return urls
+        return list(fallback_urls)
+
     def _apply_scene_urls_to_seedance_manifest(self, project_package: VideoProjectPackage) -> None:
         scene_map = {item.segment_id: item for item in project_package.scene_images}
+        character_reference_map = {
+            item.output_path: item.generated_url
+            for item in project_package.character_images
+            if item.generated_url and item.use_as_reference
+        }
         for clip in project_package.seedance_manifest.clips:
             scene = scene_map.get(clip.segment_id)
             if scene is None:
                 continue
             clip.start_frame_url = scene.start_frame_url
+            clip.mid_frame_url = scene.mid_frame_url
             clip.end_frame_url = scene.end_frame_url
+            clip.reference_image_urls = self._merge_reference_urls(
+                [scene.mid_frame_url] if scene.mid_frame_url else [],
+                [
+                    character_reference_map[path]
+                    for path in clip.reference_image_paths
+                    if path in character_reference_map
+                ],
+            )
 
     def _resolve_continuity_start_frame(
         self,
@@ -344,6 +436,9 @@ class SeedreamClient:
             if url and url not in merged:
                 merged.append(url)
         return merged
+
+    def _planned_scene_frame_count(self, task: SceneImageTask) -> int:
+        return 3 if task.requires_mid_frame else 2
 
     def _build_preflight_report(
         self,

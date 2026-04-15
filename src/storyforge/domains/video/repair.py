@@ -205,6 +205,36 @@ class VideoRepairMixin:
                     update={
                         "title": self._replace_character_aliases(segment.title, alias_map),
                         "involved_characters": resolved_names,
+                        "start_frame_characters": self._normalize_frame_characters_for_segment(
+                            raw_names=segment.start_frame_characters,
+                            prompt_text=segment.start_frame_prompt,
+                            frame_context_text=self._frame_context_text(segment, "start"),
+                            resolved_names=resolved_names,
+                            chapter_number=segment.chapter_number,
+                            canonical_names=canonical_names,
+                            chapter_feature_map=chapter_feature_map,
+                            role_map=role_map,
+                        ),
+                        "mid_frame_characters": self._normalize_frame_characters_for_segment(
+                            raw_names=segment.mid_frame_characters,
+                            prompt_text=segment.mid_frame_prompt,
+                            frame_context_text=self._frame_context_text(segment, "mid"),
+                            resolved_names=resolved_names,
+                            chapter_number=segment.chapter_number,
+                            canonical_names=canonical_names,
+                            chapter_feature_map=chapter_feature_map,
+                            role_map=role_map,
+                        ),
+                        "end_frame_characters": self._normalize_frame_characters_for_segment(
+                            raw_names=segment.end_frame_characters,
+                            prompt_text=segment.end_frame_prompt,
+                            frame_context_text=self._frame_context_text(segment, "end"),
+                            resolved_names=resolved_names,
+                            chapter_number=segment.chapter_number,
+                            canonical_names=canonical_names,
+                            chapter_feature_map=chapter_feature_map,
+                            role_map=role_map,
+                        ),
                         "summary": self._replace_character_aliases(segment.summary, alias_map),
                         "narration": self._replace_character_aliases(segment.narration, alias_map),
                         "dialogue_lines": [
@@ -234,6 +264,10 @@ class VideoRepairMixin:
                         "scene_prompt": self._replace_character_aliases(segment.scene_prompt, alias_map),
                         "start_frame_prompt": self._replace_character_aliases(
                             segment.start_frame_prompt,
+                            alias_map,
+                        ),
+                        "mid_frame_prompt": self._replace_character_aliases(
+                            segment.mid_frame_prompt,
                             alias_map,
                         ),
                         "end_frame_prompt": self._replace_character_aliases(
@@ -391,6 +425,170 @@ class VideoRepairMixin:
                     break
 
         return augmented
+
+    def _normalize_frame_characters_for_segment(
+        self,
+        *,
+        raw_names: list[str],
+        prompt_text: str,
+        frame_context_text: str,
+        resolved_names: list[str],
+        chapter_number: int,
+        canonical_names: list[str],
+        chapter_feature_map: dict[int, list[str]],
+        role_map: dict[str, str],
+    ) -> list[str]:
+        frame_names: list[str] = []
+        for raw_name in raw_names:
+            resolved = self._resolve_character_alias(
+                raw_name=raw_name,
+                chapter_number=chapter_number,
+                canonical_names=canonical_names,
+                chapter_feature_map=chapter_feature_map,
+                role_map=role_map,
+            )
+            if resolved and resolved in resolved_names and resolved not in frame_names:
+                frame_names.append(resolved)
+
+        context_names = self._extract_visible_frame_names(frame_context_text, resolved_names)
+        if context_names:
+            return context_names
+
+        prompt_names = self._extract_visible_frame_names(prompt_text, resolved_names)
+        if prompt_names:
+            return prompt_names
+
+        if len(frame_names) == 1:
+            return frame_names
+        if len(frame_names) > 1 and self._frame_text_requires_group(
+            " ".join([prompt_text, frame_context_text])
+        ):
+            return frame_names
+        if len(resolved_names) == 1:
+            return list(resolved_names)
+        return []
+
+    def _frame_context_text(
+        self,
+        segment: VideoSegmentSchema,
+        frame_position: str,
+    ) -> str:
+        timed_context = self._select_timed_beat_for_frame(
+            segment.timed_beats,
+            segment.duration_seconds,
+            frame_position,
+        )
+        if timed_context:
+            return timed_context
+        if frame_position == "start":
+            return segment.start_frame_prompt
+        if frame_position == "mid":
+            return segment.mid_frame_prompt
+        return segment.end_frame_prompt
+
+    def _select_timed_beat_for_frame(
+        self,
+        timed_beats: list[str],
+        duration_seconds: int,
+        frame_position: str,
+    ) -> str:
+        if not timed_beats:
+            return ""
+
+        target_time = 0.0
+        if frame_position == "mid":
+            target_time = max(0.0, duration_seconds / 2)
+        elif frame_position == "end":
+            target_time = max(0.0, duration_seconds - 0.1)
+
+        parsed_ranges: list[tuple[float, float, str]] = []
+        for item in timed_beats:
+            match = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:s|秒)?\s*[-~—–]\s*(\d+(?:\.\d+)?)",
+                item,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            start = float(match.group(1))
+            end = float(match.group(2))
+            if end < start:
+                start, end = end, start
+            parsed_ranges.append((start, end, item))
+
+        for start, end, item in parsed_ranges:
+            if start <= target_time <= end:
+                return item
+
+        if frame_position == "start":
+            return timed_beats[0]
+        if frame_position == "end":
+            return timed_beats[-1]
+        return timed_beats[len(timed_beats) // 2]
+
+    def _extract_visible_frame_names(
+        self,
+        text: str,
+        candidate_names: list[str],
+    ) -> list[str]:
+        cleaned_text = self._remove_frame_character_roster_text(text)
+        visible_names: list[str] = []
+        for name in candidate_names:
+            if name not in cleaned_text:
+                continue
+            if self._name_has_visible_frame_evidence(cleaned_text, name):
+                visible_names.append(name)
+        return visible_names
+
+    def _remove_frame_character_roster_text(self, text: str) -> str:
+        return re.sub(
+            r"(?:当前帧出镜角色|角色)\s*[:：]\s*[^，。；;]*[，。；;]?",
+            "",
+            text,
+        )
+
+    def _name_has_visible_frame_evidence(self, text: str, name: str) -> bool:
+        escaped_name = re.escape(name)
+        visible_after = (
+            "独自|在|站|坐|走|跑|转身|抬头|低头|背对|面对|看着|望着|凝视|拿着|握着|"
+            "出现|走近|走来|靠近|停下|开口|说|回答|回应|微笑|哭|笑|伸手|牵|拥抱|亲吻|吻|进入|离开"
+        )
+        visible_before = (
+            "镜头聚焦|画面聚焦|画面出现|看见|看到|只见|出现|走来|走近|靠近|站在|坐在|"
+            "背对镜头|面对镜头|转向|拥抱|亲吻|牵着"
+        )
+        if re.search(rf"{escaped_name}.{{0,14}}(?:{visible_after})", text):
+            return True
+        if re.search(rf"(?:{visible_before}).{{0,14}}{escaped_name}", text):
+            return True
+
+        non_visible_object = (
+            "等待|等着|等|想起|回忆|怀念|想念|寻找|找|期待|盼着|盼望|望向|看向|听到|听见"
+        )
+        if re.search(rf"(?:{non_visible_object}).{{0,8}}{escaped_name}", text):
+            return False
+        return True
+
+    def _frame_text_requires_group(self, text: str) -> bool:
+        group_keywords = (
+            "两人",
+            "双方",
+            "彼此",
+            "一起",
+            "同时",
+            "同框",
+            "对视",
+            "对话",
+            "交谈",
+            "争吵",
+            "对峙",
+            "拥抱",
+            "牵手",
+            "亲吻",
+            "接吻",
+            "并肩",
+        )
+        return any(keyword in text for keyword in group_keywords)
 
     def _extract_dialogue_speakers(self, dialogue_lines: list[str]) -> list[str]:
         speakers: list[str] = []

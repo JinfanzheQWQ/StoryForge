@@ -3,6 +3,12 @@
 这份文档描述 StoryForge 当前可用的 HTTP 接口。  
 默认服务基于 `FastAPI`，接口文档也可在运行时通过 Swagger 查看。
 
+这里主要记录 HTTP contract，不重复安装、完整操作流程或系统分层：
+
+- 安装与使用步骤：看 [usage.md](usage.md)
+- 系统分层与模块边界：看 [architecture.md](architecture.md)
+- 当前完成度与路线图：看 [status.md](status.md)
+
 ## 启动服务
 
 ```bash
@@ -16,6 +22,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `http://127.0.0.1:8000/redoc`：ReDoc
 
 说明：`--reload` 适合调前端和接口，不适合跑 Seedream / Seedance 长任务。长任务联调建议使用无热重载启动方式。
+启动前必须保证 MySQL 已可连接，否则应用不会完成启动。
 
 ## 接口分组
 
@@ -180,9 +187,17 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 ```json
 {
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id"
+  "source_task_id": "story-task-id",
+  "segment_id": "ch01_seg01"
 }
 ```
+
+说明：
+
+- `segment_id` 可选
+- 不传时表示沿用旧的整批执行方式
+- 传入后表示只生成单个 segment 的首帧 / 中段锚点帧 / 尾帧
+- 对同一 `source_task_id + segment_id`，如果已经有 queued / running 任务，后端会直接返回已有任务
 
 #### `POST /v1/projects/videos`
 
@@ -193,7 +208,26 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 ```json
 {
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id"
+  "source_task_id": "story-task-id",
+  "segment_id": "ch01_seg01"
+}
+```
+
+说明：
+
+- `segment_id` 可选
+- `merge_only` 可选
+- 传入 `segment_id` 后只会提交该片段对应的 Seedance clip
+- 单段执行不会自动重新生成其它片段，也不会自动拼接总片
+- 如果传 `merge_only = true`，则不会再向 Seedance 提交任务，而是把当前已生成的本地 mp4 片段按 manifest 顺序合并成 `rendered/full_story.mp4`
+
+手动合并请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "merge_only": true
 }
 ```
 
@@ -264,6 +298,18 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 场景帧
 - 视频片段
 - 总片
+- `planned_segments`
+
+其中 `planned_segments` 会直接来自 `segment_plan.json`，并带上每个 segment 当前对应的：
+
+- `start_frame`
+- `mid_frame`
+- `end_frame`
+- `rendered_clip`
+- `scene_ready`
+- `video_ready`
+
+前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
 
 ## 任务状态
 
@@ -276,11 +322,13 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 ## 当前约束
 
-- 执行队列目前仍是内存态
+这里仅保留和 API 行为直接相关的运行约束：
+
+- 执行队列目前仍是进程内异步队列
+- 服务重启后，残留 `running` 任务会重新排回 `queued`
 - 重启后的重新排队不是生产级幂等队列；真实生产环境仍应替换成 Redis / Celery / Arq / TaskIQ 等持久化队列
-- 认证和权限尚未接入
-- 对象存储尚未接入
-- `Seedream` / `Seedance` 的 provider contract 仍可能因账户环境不同而需要微调
+
+更完整的系统限制与生产路线图见：[status.md](status.md)
 
 ## 相关文档
 

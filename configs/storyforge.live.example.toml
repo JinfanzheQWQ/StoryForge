@@ -45,7 +45,6 @@ poll_interval_seconds = 5.0
 max_wait_seconds = 900
 
 [database]
-enabled = true
 host = "127.0.0.1"
 port = 3306
 user = "root"
@@ -62,5 +61,4 @@ poll_interval_seconds = 0.2
 
 [paths]
 output_dir = "outputs"
-workspace_dir = "workspace"
 prompt_dir = "prompts"

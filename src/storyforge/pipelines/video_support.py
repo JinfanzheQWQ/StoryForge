@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from storyforge.domains.video.contracts import SeedanceManifest
+from storyforge.domains.video.contracts import SeedanceClipTask, SeedanceManifest
 from storyforge.integrations.seedance import SeedanceExecutionReport
 from storyforge.integrations.seedream import SeedreamExecutionReport
 
@@ -36,16 +36,28 @@ def merge_seedream_execution_reports(
 def should_concat_rendered_clips(
     manifest: SeedanceManifest,
     seedance_execution: SeedanceExecutionReport,
+    segment_ids: set[str] | None = None,
 ) -> bool:
+    if segment_ids:
+        return False
     if not seedance_execution.submitted:
         return False
     if seedance_execution.failed_count > 0 or seedance_execution.pending_count > 0:
         return False
-    if not manifest.clips:
+    clip_tasks = resolve_selected_manifest_clips(manifest, segment_ids)
+    if not clip_tasks:
         return False
 
-    clip_paths = [Path(clip.downloaded_path or clip.output_path) for clip in manifest.clips]
+    clip_paths = [Path(clip.downloaded_path or clip.output_path) for clip in clip_tasks]
     return all(path.exists() for path in clip_paths)
+
+
+def resolve_rendered_manifest_clips(manifest: SeedanceManifest) -> list[SeedanceClipTask]:
+    return [
+        clip
+        for clip in manifest.clips
+        if Path(clip.downloaded_path or clip.output_path).exists()
+    ]
 
 
 def should_skip_seedance_after_seedream(
@@ -61,10 +73,14 @@ def should_skip_seedance_after_seedream(
     return seedream_execution.failed_count > 0
 
 
-def validate_manifest_ready_for_video(manifest: SeedanceManifest) -> None:
+def validate_manifest_ready_for_video(
+    manifest: SeedanceManifest,
+    segment_ids: set[str] | None = None,
+) -> None:
+    clip_tasks = resolve_selected_manifest_clips(manifest, segment_ids)
     missing_segments = [
         clip.segment_id
-        for clip in manifest.clips
+        for clip in clip_tasks
         if not clip.start_frame_url or not clip.end_frame_url
     ]
     if missing_segments:
@@ -72,3 +88,19 @@ def validate_manifest_ready_for_video(manifest: SeedanceManifest) -> None:
             "Scene frames are not ready for video generation. Generate scene images first. "
             f"Missing segments: {', '.join(missing_segments)}"
         )
+
+
+def resolve_selected_manifest_clips(
+    manifest: SeedanceManifest,
+    segment_ids: set[str] | None = None,
+) -> list[SeedanceClipTask]:
+    if not segment_ids:
+        return list(manifest.clips)
+    selected_clips = [clip for clip in manifest.clips if clip.segment_id in segment_ids]
+    missing_segments = sorted(segment_ids - {clip.segment_id for clip in selected_clips})
+    if missing_segments:
+        raise ValueError(
+            "Requested video segments are not present in seedance_manifest.json: "
+            + ", ".join(missing_segments)
+        )
+    return selected_clips

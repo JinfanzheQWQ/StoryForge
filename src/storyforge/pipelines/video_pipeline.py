@@ -17,6 +17,7 @@ from storyforge.pipelines.video_models import (
     SceneImagePipelineResult,
     VideoPipelineResult,
     VideoPlanningArtifacts,
+    VideoMergeResult,
     VideoRenderResult,
 )
 from storyforge.pipelines.video_planning import (
@@ -25,7 +26,8 @@ from storyforge.pipelines.video_planning import (
 from storyforge.pipelines.video_support import (
     merge_seedream_execution_reports,
     read_seedream_execution_report,
-    should_concat_rendered_clips,
+    resolve_rendered_manifest_clips,
+    resolve_selected_manifest_clips,
     should_skip_seedance_after_seedream,
     validate_manifest_ready_for_video,
 )
@@ -182,6 +184,7 @@ def run_scene_image_pipeline(
     project_root: Path,
     output_root: Path | None = None,
     submit_scenes: bool = True,
+    segment_id: str | None = None,
 ) -> SceneImagePipelineResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     planning = load_video_planning_artifacts(output_dir)
@@ -189,6 +192,7 @@ def run_scene_image_pipeline(
     scene_execution = seedream_client.generate_scene_images(
         planning.project_package,
         force_submit=submit_scenes,
+        segment_ids={segment_id} if segment_id else None,
     )
 
     character_execution_path = output_dir / "seedream_character_execution.json"
@@ -222,6 +226,7 @@ def run_video_render_pipeline(
     project_root: Path,
     output_root: Path | None = None,
     submit_seedance: bool = True,
+    segment_id: str | None = None,
 ) -> VideoRenderResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     manifest_path = output_dir / "seedance_manifest.json"
@@ -231,32 +236,29 @@ def run_video_render_pipeline(
         )
 
     manifest = SeedanceManifest.from_dict(read_json(manifest_path))
+    selected_segment_ids = {segment_id} if segment_id else None
     if submit_seedance or config.seedance.auto_submit:
-        validate_manifest_ready_for_video(manifest)
+        validate_manifest_ready_for_video(manifest, selected_segment_ids)
     seedance_client = SeedanceClient(config.seedance)
     seedance_execution = seedance_client.execute_manifest(
         manifest,
         force_submit=submit_seedance,
+        segment_ids=selected_segment_ids,
     )
 
     seedance_execution_path = output_dir / "seedance_execution.json"
-    full_story_output_path = output_dir / "rendered" / "full_story.mp4"
 
     write_json(manifest_path, manifest)
     write_json(seedance_execution_path, seedance_execution)
 
+    selected_clips = resolve_selected_manifest_clips(manifest, selected_segment_ids)
     rendered_clip_paths = [
         Path(clip.downloaded_path)
-        for clip in manifest.clips
+        for clip in selected_clips
         if clip.downloaded_path
     ]
 
     full_story_path = None
-    if should_concat_rendered_clips(manifest, seedance_execution):
-        full_story_path = concat_manifest_clips(
-            manifest=manifest,
-            output_path=full_story_output_path,
-        )
 
     return VideoRenderResult(
         output_dir=output_dir,
@@ -269,15 +271,57 @@ def run_video_render_pipeline(
     )
 
 
+def run_video_merge_pipeline(
+    config: AppConfig,
+    project_root: Path,
+    output_root: Path | None = None,
+) -> VideoMergeResult:
+    output_dir = output_root or (project_root / config.paths.output_dir)
+    manifest_path = output_dir / "seedance_manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Seedance manifest not found at {manifest_path}. Generate videos first."
+        )
+
+    manifest = SeedanceManifest.from_dict(read_json(manifest_path))
+    rendered_clips = resolve_rendered_manifest_clips(manifest)
+    if len(rendered_clips) < 2:
+        raise ValueError("At least 2 rendered video clips are required before manual merge.")
+
+    full_story_output_path = output_dir / "rendered" / "full_story.mp4"
+    merge_manifest = SeedanceManifest(
+        title=manifest.title,
+        model=manifest.model,
+        base_url=manifest.base_url,
+        clips=rendered_clips,
+        notes=list(manifest.notes),
+    )
+    full_story_path = concat_manifest_clips(
+        manifest=merge_manifest,
+        output_path=full_story_output_path,
+    )
+    return VideoMergeResult(
+        output_dir=output_dir,
+        manifest_path=manifest_path,
+        rendered_clip_paths=[Path(clip.downloaded_path or clip.output_path) for clip in rendered_clips],
+        full_story_path=full_story_path,
+        manifest=manifest,
+        merged_clip_count=len(rendered_clips),
+        skipped_clip_count=max(0, len(manifest.clips) - len(rendered_clips)),
+    )
+
+
 __all__ = [
     "CharacterImagePipelineResult",
     "ImagePipelineResult",
     "SceneImagePipelineResult",
     "VideoPipelineResult",
     "VideoPlanningArtifacts",
+    "VideoMergeResult",
     "VideoRenderResult",
     "run_character_image_pipeline",
     "run_image_pipeline",
+    "run_video_merge_pipeline",
     "run_scene_image_pipeline",
     "run_video_pipeline",
     "run_video_render_pipeline",

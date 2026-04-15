@@ -23,6 +23,18 @@ class VideoSegmentSchema(BaseModel):
     title: str = Field(description="片段标题")
     summary: str = Field(description="片段摘要")
     involved_characters: list[str] = Field(description="涉及角色")
+    start_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="首帧实际出镜角色，只包含这一帧真正入镜的人物",
+    )
+    mid_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="中段锚点帧实际出镜角色；若无需中段帧可留空",
+    )
+    end_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="尾帧实际出镜角色，只包含这一帧真正入镜的人物",
+    )
     narration: str = Field(description="视频自带音频的旁白内容")
     dialogue_lines: list[str] = Field(
         default_factory=list,
@@ -47,8 +59,16 @@ class VideoSegmentSchema(BaseModel):
     )
     scene_prompt: str = Field(description="生图总 prompt")
     start_frame_prompt: str = Field(description="首帧 prompt")
+    mid_frame_prompt: str = Field(
+        default="",
+        description="中段锚点帧 prompt；当片段较长、多人同框或镜头运动明显时用于约束中段状态",
+    )
     end_frame_prompt: str = Field(description="尾帧 prompt")
     duration_seconds: int = Field(description="建议时长")
+    requires_mid_frame: bool = Field(
+        default=False,
+        description="是否需要额外生成中段锚点帧",
+    )
     transition_hint: str = Field(
         default="auto",
         description="与上一片段的转场关系，可取 continue / cut / auto",

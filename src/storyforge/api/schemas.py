@@ -34,6 +34,8 @@ class CreateStageTaskRequest(BaseModel):
     project_id: str
     source_task_id: str
     use_llm: bool | None = None
+    segment_id: str | None = None
+    merge_only: bool = False
 
 
 class StorySourceChapterInput(BaseModel):
@@ -88,6 +90,21 @@ class ArtifactItem(BaseModel):
     kind: str
 
 
+class PlannedSegmentArtifactResponse(BaseModel):
+    segment_id: str
+    title: str
+    summary: str = ""
+    chapter_number: int
+    duration_seconds: int | None = None
+    requires_mid_frame: bool = False
+    start_frame: ArtifactItem | None = None
+    mid_frame: ArtifactItem | None = None
+    end_frame: ArtifactItem | None = None
+    rendered_clip: ArtifactItem | None = None
+    scene_ready: bool = False
+    video_ready: bool = False
+
+
 class TaskArtifactsResponse(BaseModel):
     task_id: str
     available: bool
@@ -99,6 +116,7 @@ class TaskArtifactsResponse(BaseModel):
     scene_frames: list[ArtifactItem] = Field(default_factory=list)
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)
     full_story: ArtifactItem | None = None
+    planned_segments: list[PlannedSegmentArtifactResponse] = Field(default_factory=list)
 
 
 class TaskResponse(BaseModel):

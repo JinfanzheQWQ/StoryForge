@@ -68,7 +68,7 @@ def dispatch(args: Namespace) -> int:
     orchestrator = StoryForgeOrchestrator(project_root, config)
 
     if args.command == "init":
-        print(f"workspace initialized under: {project_root}")
+        print(f"project directories initialized under: {project_root}")
         return 0
 
     if args.command == "pipeline" and args.pipeline_command == "demo":

@@ -5,6 +5,12 @@
 1. StoryForge 现在用了哪些技术
 2. 这套系统到底算不算 Agent
 
+这里不重复模块分层、接口 contract 或操作步骤：
+
+- 系统分层：看 [architecture.md](architecture.md)
+- HTTP 接口：看 [api.md](api.md)
+- 使用方式：看 [usage.md](usage.md)
+
 ## 技术栈
 
 ### 运行时与工程管理
@@ -19,7 +25,9 @@
 - `FastAPI`
 - `Uvicorn`
 - `Pydantic`
-- 内存态异步任务队列
+- 进程内异步任务队列
+- `PyMySQL`
+- 生产元数据存储：MySQL-only
 
 ### Agent / LLM 层
 
@@ -33,7 +41,7 @@
 - `Doubao Seedream 4.5`
 - `Seedance 2.0`
 - `ffmpeg`
-- `PyMySQL`
+- MySQL 8+
 
 ### 测试
 

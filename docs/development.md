@@ -3,6 +3,12 @@
 这份文档面向维护 StoryForge 代码库的开发者。  
 它关注“代码应该怎么改、改到哪里、如何验证”，而不是业务使用方法。
 
+这里不重复系统分层图、接口示例或路线图：
+
+- 模块边界：看 [architecture.md](architecture.md)
+- HTTP 接口：看 [api.md](api.md)
+- 当前状态与下一步：看 [status.md](status.md)
+
 ## 开发原则
 
 ### 业务对象优先放 `domains/`
@@ -239,15 +245,6 @@ scripts/clean-local-artifacts.sh
 ```bash
 scripts/clean-local-artifacts.sh --deep
 ```
-
-## 当前优先开发方向
-
-建议优先级：
-
-1. 生产级持久化执行队列
-2. Seedance 下载器 / 对象存储适配
-3. 生产级任务治理、幂等与失败恢复
-4. 更强的角色一致性 / 声音一致性控制
 
 ## 已知实现约定
 

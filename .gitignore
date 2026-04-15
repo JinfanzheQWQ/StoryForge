@@ -19,7 +19,6 @@ htmlcov/
 dist/
 build/
 outputs/
-workspace/
 tests/.tmp*/
 *.log
 .idea/

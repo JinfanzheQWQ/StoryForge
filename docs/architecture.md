@@ -3,6 +3,13 @@
 这份文档描述 StoryForge 的系统分层、核心工作流和模块边界。  
 它关注“系统怎么组织”，不重复使用说明和 HTTP 接口细节。
 
+这里不展开具体接口示例、联调步骤或路线图：
+
+- 怎么使用：看 [usage.md](usage.md)
+- 接口 contract：看 [api.md](api.md)
+- 代码修改约定：看 [development.md](development.md)
+- 当前状态与下一步：看 [status.md](status.md)
+
 ## 设计目标
 
 StoryForge 当前的目标不是只生成一篇小说，而是提供一套可审计、可拆分、可扩展的内容生产链路：
@@ -24,7 +31,7 @@ Application Layer
   - AppContainer
   - AsyncTaskQueue
   - task_runtime / task_handlers / task_support
-  - ProjectStore / TaskStore
+  - MySQLProjectStore / MySQLTaskStore
           |
           v
 Pipelines
@@ -43,7 +50,7 @@ Integrations
   - Seedream
   - Seedance
   - ffmpeg
-  - MySQL / JSON persistence
+  - MySQL persistence
 ```
 
 ## 小说生成链路
@@ -105,7 +112,7 @@ StoryBrief
 - **运行时已移除 DryRun / 非 LLM 演示模式，真实任务必须带可用 DeepSeek 配置**
 - `heuristics` 只负责 fallback 和 repair，不再主导“到底有几个核心角色、谁和谁是关系双方”
 
-这意味着：
+对架构层来说，最重要的实现边界是：
 
 1. `Story Architect` 先给出项目底稿，但不允许提前钉死角色结构
 2. 再由 `Story Drafter` 根据 brief 与项目底稿写出一版完整小说草稿
@@ -113,10 +120,10 @@ StoryBrief
 4. cast slots 会尽量保留小说草稿中的角色指代和 `source_evidence`，避免把“记者 / 线人 / 前任 / 退休警察”压扁成泛化配角
 5. `Character Designer` 与 `Chapter Planner` 再消费这份草稿与 cast 结构
 6. 当前 `story_source` 就是正文真源；结构化分析阶段不再重写章节正文，而是直接分析这份正文
-7. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics 补位
-8. `Cast Analyzer` 的每个 slot 都必须带 `source_evidence`，且证据需要能在小说正文里定位；没有正文证据的角色不应进入核心 cast
-9. `Character Designer` 现在必须严格覆盖上游目标 slots：角色数量必须与目标 slots 数量一致，`cast_slot_id` 不能重复，不能额外新增正文里没有支撑的人物
-10. story 阶段会保留 2 个运行核心文件：`story_source.json`、`novel_package.json`；另有 1 个审计文件 `novel_audit.json`
+7. 只有当 LLM 缺字段、跑偏或不可用时，才由 heuristics / repair 补位
+8. `Cast Analyzer` 的每个 slot 都必须带正文证据；没有正文证据的角色不应进入核心 cast
+9. `Character Designer` 必须严格覆盖上游目标 slots，不能新增正文里没有支撑的人物
+10. story 阶段的核心运行文件是 `story_source.json`、`novel_package.json` 和 `novel_audit.json`
 
 ### 小说域内部拆分
 
@@ -149,7 +156,7 @@ NovelPackage
   -> Scene Image Tasks
   -> Seedance Manifest
   -> Rendered Clips
-  -> ffmpeg concat
+  -> Manual ffmpeg concat
 ```
 
 关键中间产物：
@@ -164,7 +171,11 @@ NovelPackage
 
 `character_visual_bible.json`、`character_image_manifest.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 在 `project.story_analysis` 阶段随结构化小说包一起生成。
 后续 `project.characters`、`project.scenes`、`project.videos` 只读取并更新这些规划文件，避免到角色图阶段才临时拆分视频。
+`project.scenes` 与 `project.videos` 现在都支持可选 `segment_id`，可以只执行单个片段；根任务只刷新 `artifact_revision`，这样前端会看到新产物，但不会把“单段完成”误写成整阶段全量重跑。
+`project.videos` 还支持 `merge_only = true` 的手动合并模式。这个模式不会再调用 Seedance，而是把当前已生成的本地 mp4 片段按 manifest 顺序交给 ffmpeg 合并成 `full_story.mp4`。
 视频分段 prompt 和归一化层会按中文自然口播语速估算对白、旁白和硬字幕预算，单段说不完时拆成多个 Seedance 安全片段。
+视频分段现在会额外规划 `requires_mid_frame`、`mid_frame_prompt`，以及 `start_frame_characters` / `mid_frame_characters` / `end_frame_characters`。其中 `involved_characters` 表示整段剧情相关角色，帧级角色字段表示对应关键帧里真正出镜的人物。
+场景图阶段会优先引用角色定妆图，再按 `首帧 -> 中段锚点帧（如有） -> 尾帧` 的顺序生成关键帧；每一帧只会引用该帧角色列表对应的角色图，不再按整段 `involved_characters` 全量喂图。帧级角色归一化会优先读取对应 `timed_beats`，例如中段节拍只有“男主等待”时，中段帧不会因为整段涉及女主就自动绑定女主参考图。视频阶段会先尝试把角色图、中段锚点图、首帧和尾帧一起组装进 Seedance 请求，若接口对图片组合返回 400，再自动回退到更保守的图片组合，优先保证真实任务可提交。
 角色定妆图 prompt 会统一追加 `SF-TURN-01` 横版 16:9 白底三视图模板，让所有角色使用相同的纯白背景、正面 / 左侧面 / 背面三栏站姿、人物比例和画风。图上唯一允许出现角色中文姓名，性别、身份和职业只作为内部造型参考，不允许写到图上。
 
 ### 视频域内部拆分
@@ -216,8 +227,10 @@ Web 和 API 都不是直接同步执行长任务，而是通过队列提交后�
 - 队列负责执行和状态切换
 - 阶段任务复用同一个 `output_dir`
 - 任务结果驱动前端实时预览
+- `/v1/tasks/{task_id}/artifacts` 会把 `segment_plan.json` 转成 `planned_segments`，前端时间线直接按这份规划渲染所有片段，而不是等图片 / 视频都生成出来后再倒推
 - 任务失败时 `error` 会进入任务记录，并在前端详情页和阶段卡片中展示
 - `project.story_analysis` 对同一 `source_task_id` + `story_source_revision` 做幂等保护，已存在 queued / running / completed 任务时直接返回已有任务
+- `project.scenes` / `project.videos` 对同一 `source_task_id` + `segment_id` 的 queued / running 任务做幂等保护，避免双击把同一片段重复排队
 - Web 详情页按 `pipeline_root_task_id` 聚合同一制作版本的阶段任务，避免队列详情页误判某个阶段还未执行
 - 服务启动时，残留的 `running` 任务会重新回到 `queued`，避免热重载或进程重启直接把长任务标记为失败
 - 删除项目会同时删除项目元数据、任务记录和任务结果记录过的输出目录；文件删除由 `application/project_deletion.py` 统一做安全边界校验，只允许删除 `paths.output_dir` 下的项目产物目录
@@ -235,10 +248,9 @@ StoryForge 当前仍通过 LangChain 接入 DeepSeek，但不再使用 `create_a
 
 ## 持久化
 
-当前项目与任务元数据支持两种后端：
-
-1. 本地 JSON
-2. MySQL
+当前项目与任务元数据强制使用 MySQL 持久化。
+没有可用 MySQL 时，StoryForge 不允许启动运行。
+生产代码里不再保留可切换的内存 store 实现；内存版 store 仅存在于测试桩中，用于 API 单测隔离。
 
 MySQL 实现位于：
 
@@ -247,11 +259,11 @@ MySQL 实现位于：
 - [`../src/storyforge/application/persistence/mysql_tasks.py`](../src/storyforge/application/persistence/mysql_tasks.py)
 - [`../src/storyforge/application/persistence/mysql_utils.py`](../src/storyforge/application/persistence/mysql_utils.py)
 
-当前执行队列本身仍然是内存态；元数据可持久化，但任务执行状态还不是生产级持久化队列。
+当前执行队列本身仍然是进程内异步队列；虽然元数据落在 MySQL，但真正的消费队列还不是生产级持久化消息队列。
 
 当前恢复策略：
 
-- 本地 JSON 与 MySQL 都会在服务启动时扫描 `running` 任务
+- 服务启动时会扫描 MySQL 中仍处于 `running` 的任务
 - 这些任务会被重排为 `queued`
 - 已经落盘的 `result` 会被保留，用于前端继续展示已生成产物
 - 这不是严格的幂等执行队列；如果外部模型已经接收过请求，重启后仍可能出现重复提交风险
@@ -269,11 +281,6 @@ MySQL 实现位于：
 - [`../src/storyforge/api/static/styles`](../src/storyforge/api/static/styles)
 
 静态资源响应使用 `no-store`，避免浏览器缓存导致新旧 ES Module 混用。
-
-## 已修复的关键兼容问题
-
-- DeepSeek OpenAI-compatible 接口不稳定接受 LangChain `create_agent + ToolStrategy` 的多轮工具消息链；结构化输出已改为 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，并会回收 raw JSON 文本作为 structured fallback。
-- `SeedanceManifest.title` 曾被硬编码为 `segment_video_manifest`，会污染项目标题；现在新 manifest 使用小说标题，旧产物重载时优先从 `novel_package.json` / `story_source.json` 恢复真实标题。
 
 ## 模块职责约定
 

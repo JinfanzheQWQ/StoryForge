@@ -1,12 +1,8 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-from uuid import uuid4
-
-from storyforge.application.tasks import utc_now
-from storyforge.core.io import read_json, write_json
 
 
 @dataclass(slots=True)
@@ -36,87 +32,37 @@ class ProjectRecord:
         )
 
 
-class ProjectStore:
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._projects: dict[str, ProjectRecord] = {}
-        self._load()
-
+class ProjectStore(ABC):
+    @abstractmethod
     def create(self, brief: dict[str, Any]) -> ProjectRecord:
-        now = utc_now()
-        record = ProjectRecord(
-            project_id=str(uuid4()),
-            title_hint=str(brief.get("title_hint", "未命名故事")),
-            brief=dict(brief),
-            created_at=now,
-            updated_at=now,
-        )
-        self._projects[record.project_id] = record
-        self._save()
-        return record
+        raise NotImplementedError
 
+    @abstractmethod
     def get(self, project_id: str) -> ProjectRecord | None:
-        return self._projects.get(project_id)
+        raise NotImplementedError
 
+    @abstractmethod
     def delete(self, project_id: str) -> bool:
-        if project_id not in self._projects:
-            return False
-        del self._projects[project_id]
-        self._save()
-        return True
+        raise NotImplementedError
 
+    @abstractmethod
     def list(self) -> list[ProjectRecord]:
-        return sorted(
-            self._projects.values(),
-            key=lambda item: item.updated_at,
-            reverse=True,
-        )
+        raise NotImplementedError
 
+    @abstractmethod
     def attach_task(
         self,
         project_id: str,
         task_id: str,
         brief: dict[str, Any],
     ) -> ProjectRecord:
-        record = self._projects[project_id]
-        if task_id not in record.task_ids:
-            record.task_ids.append(task_id)
-        record.latest_task_id = task_id
-        record.updated_at = utc_now()
-        if brief:
-            record.brief = dict(brief)
-            record.title_hint = str(brief.get("title_hint", record.title_hint))
-        self._save()
-        return record
+        raise NotImplementedError
 
+    @abstractmethod
     def mark_task_result(
         self,
         project_id: str,
         task_id: str,
         result: dict[str, Any],
     ) -> None:
-        record = self._projects[project_id]
-        record.latest_task_id = task_id
-        record.updated_at = utc_now()
-        if result.get("story_title"):
-            record.story_title = str(result["story_title"])
-        if result.get("output_dir"):
-            record.last_output_dir = str(result["output_dir"])
-        self._save()
-
-    def _load(self) -> None:
-        if not self._path.exists():
-            return
-
-        raw = read_json(self._path)
-        if not isinstance(raw, list):
-            return
-
-        self._projects = {
-            item["project_id"]: ProjectRecord.from_dict(item)
-            for item in raw
-            if isinstance(item, dict) and item.get("project_id")
-        }
-
-    def _save(self) -> None:
-        write_json(self._path, list(self._projects.values()))
+        raise NotImplementedError

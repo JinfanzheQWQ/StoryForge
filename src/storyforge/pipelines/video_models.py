@@ -85,6 +85,17 @@ class VideoRenderResult:
 
 
 @dataclass(slots=True)
+class VideoMergeResult:
+    output_dir: Path
+    manifest_path: Path
+    rendered_clip_paths: list[Path]
+    full_story_path: Path
+    manifest: SeedanceManifest
+    merged_clip_count: int
+    skipped_clip_count: int
+
+
+@dataclass(slots=True)
 class VideoPlanningArtifacts:
     output_dir: Path
     character_bible_path: Path

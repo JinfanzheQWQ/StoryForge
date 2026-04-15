@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -17,6 +18,7 @@ SEEDANCE_BASE_URL_ENV = "SEEDANCE_BASE_URL"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "canceled", "rejected"}
 SEEDANCE_MIN_DURATION_SECONDS = 2
 SEEDANCE_MAX_DURATION_SECONDS = 12
+SEEDANCE_MAX_IMAGE_INPUTS = 9
 
 
 @dataclass(slots=True)
@@ -52,6 +54,36 @@ class SeedanceExecutionReport:
     clip_results: list[SeedanceClipExecution] = field(default_factory=list)
 
 
+class SeedanceSubmitError(RuntimeError):
+    def __init__(self, endpoint: str, attempts: list[dict[str, Any]]) -> None:
+        self.endpoint = endpoint
+        self.attempts = attempts
+        self.status_payload = {
+            "status": "submit_failed",
+            "endpoint": endpoint,
+            "attempts": attempts,
+        }
+        super().__init__(self._build_message())
+
+    def _build_message(self) -> str:
+        summaries: list[str] = []
+        for attempt in self.attempts:
+            variant = str(attempt.get("variant", "default"))
+            status_code = attempt.get("status_code")
+            error_message = (
+                attempt.get("response_message")
+                or attempt.get("response_text")
+                or attempt.get("error")
+                or "Unknown error"
+            )
+            if status_code:
+                summaries.append(f"[{variant}] HTTP {status_code}: {error_message}")
+            else:
+                summaries.append(f"[{variant}] {error_message}")
+        detail = " | ".join(summaries) if summaries else "Unknown error"
+        return f"Seedance task submit failed at {self.endpoint}: {detail}"
+
+
 class SeedanceClient:
     def __init__(self, config: SeedanceConfig) -> None:
         self.config = config
@@ -61,7 +93,9 @@ class SeedanceClient:
         self,
         manifest: SeedanceManifest,
         force_submit: bool = False,
+        segment_ids: set[str] | None = None,
     ) -> SeedanceSubmission:
+        target_clips = self._resolve_target_clips(manifest, segment_ids)
         if not self.config.enabled:
             return SeedanceSubmission(
                 submitted=False,
@@ -86,7 +120,7 @@ class SeedanceClient:
 
         clip_results: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=120) as client:
-            for clip in manifest.clips:
+            for clip in target_clips:
                 payload = self.build_payload(clip)
                 response = await client.post(
                     self._task_creation_endpoint(),
@@ -129,18 +163,20 @@ class SeedanceClient:
         self,
         manifest: SeedanceManifest,
         force_submit: bool = False,
+        segment_ids: set[str] | None = None,
     ) -> SeedanceExecutionReport:
         """
         Submit each clip, poll it to a terminal status, and optionally download the
         generated mp4 back into the project output directory.
         """
+        target_clips = self._resolve_target_clips(manifest, segment_ids)
         if not self.config.enabled:
             return SeedanceExecutionReport(
                 submitted=False,
                 manifest_title=manifest.title,
                 completed_count=0,
                 failed_count=0,
-                pending_count=len(manifest.clips),
+                pending_count=len(target_clips),
                 note="Seedance is disabled; manifest generated only.",
             )
         if not (force_submit or self.config.auto_submit):
@@ -149,7 +185,7 @@ class SeedanceClient:
                 manifest_title=manifest.title,
                 completed_count=0,
                 failed_count=0,
-                pending_count=len(manifest.clips),
+                pending_count=len(target_clips),
                 note="Seedance execution skipped; manifest generated only.",
             )
         if not self.api_key:
@@ -158,7 +194,7 @@ class SeedanceClient:
                 manifest_title=manifest.title,
                 completed_count=0,
                 failed_count=0,
-                pending_count=len(manifest.clips),
+                pending_count=len(target_clips),
                 note="Seedance API key is missing; manifest generated only.",
             )
 
@@ -168,7 +204,7 @@ class SeedanceClient:
         pending_count = 0
 
         with httpx.Client(timeout=120) as client:
-            for clip in manifest.clips:
+            for clip in target_clips:
                 execution = SeedanceClipExecution(
                     segment_id=clip.segment_id,
                     title=clip.title,
@@ -219,6 +255,9 @@ class SeedanceClient:
                     execution.remote_status = clip.remote_status
                     execution.submit_status = "failed"
                     execution.error = str(exc)
+                    status_payload = getattr(exc, "status_payload", None)
+                    if isinstance(status_payload, dict):
+                        execution.status_payload = status_payload
                     failed_count += 1
                 clip_results.append(execution)
 
@@ -237,6 +276,22 @@ class SeedanceClient:
             note=note,
             clip_results=clip_results,
         )
+
+    def _resolve_target_clips(
+        self,
+        manifest: SeedanceManifest,
+        segment_ids: set[str] | None,
+    ) -> list[SeedanceClipTask]:
+        if not segment_ids:
+            return list(manifest.clips)
+        target_clips = [clip for clip in manifest.clips if clip.segment_id in segment_ids]
+        missing_segments = sorted(segment_ids - {clip.segment_id for clip in target_clips})
+        if missing_segments:
+            raise ValueError(
+                "Requested video segments are not present in seedance_manifest.json: "
+                + ", ".join(missing_segments)
+            )
+        return target_clips
 
     def _clip_is_completed_locally(self, clip: SeedanceClipTask) -> bool:
         if clip.submit_status != "completed" or clip.remote_status != "succeeded":
@@ -328,7 +383,13 @@ class SeedanceClient:
         last_payload["status"] = "timeout"
         return last_payload
 
-    def build_payload(self, clip: SeedanceClipTask) -> dict[str, Any]:
+    def build_payload(
+        self,
+        clip: SeedanceClipTask,
+        *,
+        include_character_reference_images: bool = True,
+        include_mid_frame_reference: bool = True,
+    ) -> dict[str, Any]:
         if not SEEDANCE_MIN_DURATION_SECONDS <= clip.duration_seconds <= SEEDANCE_MAX_DURATION_SECONDS:
             raise ValueError(
                 "Seedance duration must be between "
@@ -336,6 +397,18 @@ class SeedanceClient:
                 f"got {clip.duration_seconds} for segment {clip.segment_id}."
             )
         content: list[dict[str, Any]] = [{"type": "text", "text": clip.prompt}]
+        for url in self._ordered_reference_image_urls(
+            clip,
+            include_character_reference_images=include_character_reference_images,
+            include_mid_frame_reference=include_mid_frame_reference,
+        ):
+            content.append(
+                {
+                    "role": "reference_image",
+                    "type": "image_url",
+                    "image_url": {"url": url},
+                }
+            )
 
         # Live endpoint validation showed that image-conditioned requests must use
         # `first_frame` / `last_frame` for image roles, while text items carry no role.
@@ -364,26 +437,89 @@ class SeedanceClient:
             "watermark": self.config.watermark,
         }
 
+    def _ordered_reference_image_urls(
+        self,
+        clip: SeedanceClipTask,
+        *,
+        include_character_reference_images: bool = True,
+        include_mid_frame_reference: bool = True,
+    ) -> list[str]:
+        return self._resolve_reference_image_urls(
+            clip,
+            include_character_reference_images=include_character_reference_images,
+            include_mid_frame_reference=include_mid_frame_reference,
+        )
+
+    def _resolve_reference_image_urls(
+        self,
+        clip: SeedanceClipTask,
+        *,
+        include_character_reference_images: bool,
+        include_mid_frame_reference: bool,
+    ) -> list[str]:
+        ordered_sources: list[str] = []
+        if include_mid_frame_reference and clip.mid_frame_url:
+            ordered_sources.append(clip.mid_frame_url)
+        if include_character_reference_images:
+            ordered_sources.extend(clip.reference_image_urls)
+        ordered = self._dedupe_urls(ordered_sources)
+        occupied_slots = int(bool(clip.start_frame_url)) + int(bool(clip.end_frame_url))
+        available_slots = max(0, SEEDANCE_MAX_IMAGE_INPUTS - occupied_slots)
+        return ordered[:available_slots]
+
     def _submit_clip(self, client: httpx.Client, clip: SeedanceClipTask) -> str:
-        payload = self.build_payload(clip)
         endpoint = self._task_creation_endpoint()
-        try:
-            response = client.post(
-                endpoint,
-                json=payload,
-                headers=self._request_headers(),
-            )
-            response.raise_for_status()
-        except Exception as exc:
-            raise RuntimeError(f"Seedance task submit failed at {endpoint}: {exc}") from exc
-        body = response.json()
-        task_id = self._extract_task_id(body)
-        if not task_id:
-            raise RuntimeError(f"Seedance task id missing from response: {body}")
-        clip.remote_task_id = task_id
-        clip.submit_status = "submitted"
-        clip.remote_status = "submitted"
-        return task_id
+        attempts: list[dict[str, Any]] = []
+        for variant, payload in self._submit_payload_candidates(clip):
+            try:
+                response = client.post(
+                    endpoint,
+                    json=payload,
+                    headers=self._request_headers(),
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                attempts.append(
+                    self._build_submit_attempt_debug(
+                        variant=variant,
+                        payload=payload,
+                        response=exc.response,
+                    )
+                )
+                if (
+                    exc.response.status_code == 400
+                    and variant != "first_last_only"
+                ):
+                    continue
+                raise SeedanceSubmitError(endpoint, attempts) from exc
+            except httpx.HTTPError as exc:
+                attempts.append(
+                    {
+                        "variant": variant,
+                        "error": str(exc),
+                        "request_summary": self._summarize_payload(payload),
+                    }
+                )
+                raise SeedanceSubmitError(endpoint, attempts) from exc
+
+            body = response.json()
+            task_id = self._extract_task_id(body)
+            if not task_id:
+                attempts.append(
+                    {
+                        "variant": variant,
+                        "status_code": response.status_code,
+                        "response_json": body,
+                        "response_message": "Seedance task id missing from response.",
+                        "request_summary": self._summarize_payload(payload),
+                    }
+                )
+                raise SeedanceSubmitError(endpoint, attempts)
+            clip.remote_task_id = task_id
+            clip.submit_status = "submitted"
+            clip.remote_status = "submitted"
+            return task_id
+        raise SeedanceSubmitError(endpoint, attempts)
 
     def _download_video(self, client: httpx.Client, video_url: str, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -482,3 +618,119 @@ class SeedanceClient:
                 if isinstance(value, str) and value:
                     return value
         return f"Seedance task ended with status={self._extract_status(payload)}"
+
+    def _submit_payload_candidates(
+        self,
+        clip: SeedanceClipTask,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        candidates = [
+            (
+                "full_context",
+                self.build_payload(
+                    clip,
+                    include_character_reference_images=True,
+                    include_mid_frame_reference=True,
+                ),
+            ),
+            (
+                "scene_anchor_only",
+                self.build_payload(
+                    clip,
+                    include_character_reference_images=False,
+                    include_mid_frame_reference=True,
+                ),
+            ),
+            (
+                "first_last_only",
+                self.build_payload(
+                    clip,
+                    include_character_reference_images=False,
+                    include_mid_frame_reference=False,
+                ),
+            ),
+        ]
+        unique_candidates: list[tuple[str, dict[str, Any]]] = []
+        seen_signatures: set[str] = set()
+        for variant, payload in candidates:
+            signature = repr(payload)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            unique_candidates.append((variant, payload))
+        return unique_candidates
+
+    def _build_submit_attempt_debug(
+        self,
+        *,
+        variant: str,
+        payload: dict[str, Any],
+        response: httpx.Response,
+    ) -> dict[str, Any]:
+        response_json = self._safe_response_json(response)
+        response_message = ""
+        if isinstance(response_json, dict):
+            response_message = self._extract_error_message(response_json)
+        response_text = self._safe_response_text(response)
+        return {
+            "variant": variant,
+            "status_code": response.status_code,
+            "response_json": response_json,
+            "response_text": response_text,
+            "response_message": response_message,
+            "request_summary": self._summarize_payload(payload),
+        }
+
+    def _safe_response_json(self, response: httpx.Response) -> dict[str, Any] | None:
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else {"payload": payload}
+
+    def _safe_response_text(self, response: httpx.Response, limit: int = 1000) -> str:
+        try:
+            text = response.text.strip()
+        except Exception:
+            return ""
+        if len(text) > limit:
+            return text[: limit - 1] + "…"
+        return text
+
+    def _summarize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        content_summary: list[dict[str, Any]] = []
+        for item in payload.get("content", []):
+            summary: dict[str, Any] = {
+                "type": item.get("type", ""),
+                "role": item.get("role", "text"),
+            }
+            if item.get("type") == "text":
+                summary["text_length"] = len(str(item.get("text", "")))
+            elif item.get("type") == "image_url":
+                summary["image_url"] = self._sanitize_image_url(
+                    item.get("image_url", {}).get("url", "")
+                )
+            content_summary.append(summary)
+        return {
+            "model": payload.get("model"),
+            "ratio": payload.get("ratio"),
+            "duration": payload.get("duration"),
+            "watermark": payload.get("watermark"),
+            "content_count": len(content_summary),
+            "content": content_summary,
+        }
+
+    def _sanitize_image_url(self, raw_url: str) -> str:
+        if not raw_url:
+            return ""
+        parsed = urlparse(raw_url)
+        if not parsed.netloc:
+            return raw_url
+        tail = parsed.path.split("/")[-1]
+        return f"{parsed.scheme}://{parsed.netloc}/.../{tail}"
+
+    def _dedupe_urls(self, urls: list[str]) -> list[str]:
+        merged: list[str] = []
+        for url in urls:
+            if url and url not in merged:
+                merged.append(url)
+        return merged

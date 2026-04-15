@@ -1,12 +1,18 @@
 # 工程状态
 
-> 截至 `2026-04-14`
+> 截至 `2026-04-15`
 
 这份文档只回答三件事：
 
 1. 现在已经完成了什么
 2. 当前还缺什么
 3. 下一步最值得做什么
+
+这里不再重复接口示例、操作步骤或产物目录结构：
+
+- 怎么使用：看 [usage.md](usage.md)
+- 接口细节：看 [api.md](api.md)
+- 模块边界：看 [architecture.md](architecture.md)
 
 ## 当前定位
 
@@ -18,7 +24,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 角色图 / 场景图：Seedream 4.5
 - 视频片段：Seedance 2.0
 - 服务层：FastAPI + 异步任务队列
-- 元数据：本地 JSON 或 MySQL
+- 元数据：MySQL 必选；没有数据库不允许运行
 
 ## 已完成
 
@@ -52,11 +58,20 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 章节到视频段的拆分规划
 - 视频分段 prompt 已加入中文口播字数预算，要求对白、旁白、硬字幕和 `duration_seconds` 匹配
 - 视频分段归一化层会在 LLM 塞入过量对白时自动拉长到最多 12 秒或拆成多个子片段
-- 场景首尾帧任务生成与真实调用
+- 视频分段现在会显式输出 `requires_mid_frame` / `mid_frame_prompt`
+- 视频分段现在会显式输出 `start_frame_characters` / `mid_frame_characters` / `end_frame_characters`
+- 对多人同框、长时长、动作推进明显的片段，会额外生成中段锚点帧
+- 场景关键帧任务生成与真实调用
+- 场景图阶段改为按帧选择角色参考图，不再按整段 `involved_characters` 把所有角色图都塞进首帧、尾帧和中段
+- 帧级角色归一化会优先参考对应时间节拍：如果中段节拍只是“男主等待女主”，中段帧只绑定男主参考图，不会因为整段涉及两人就把女主塞进画面
+- 场景生图 prompt 现在显式禁止任何字幕、对白字卡、聊天气泡、旁白框和其它可见文字；对白与硬字幕只留到视频阶段烧录
+- 即使上游分镜 prompt 混入“林远说：……”或“字幕：……”这类文本，场景生图阶段也会先清洗成纯视觉动作描述，再发给 Seedream
+- 场景图与视频阶段现在支持 `segment_id` 单段执行，不再只能整批跑完
 - Seedance manifest 生成
+- Seedance 提交层现在会优先尝试“角色参考图 + 中段锚点图（如有）+ 首尾帧”的完整上下文；若接口返回 400，会自动降级重试为“中段锚点图 + 首尾帧”，最后再退到“仅首尾帧”
 - Seedance 任务创建、轮询、下载
-- Seedance pending / timeout 片段支持重跑恢复：复用 `remote_task_id` 查询远程状态，成功后补下载并继续合并总片
-- `ffmpeg` 自动合并总片
+- Seedance pending / timeout 片段支持重跑恢复：复用 `remote_task_id` 查询远程状态，成功后补下载
+- 总片合并已改成手动触发；用户可在页面点击“合并已生成片段”，由 ffmpeg 生成 `full_story.mp4`
 - Seedance manifest 标题会继承真实小说标题，旧产物重载时会从 `novel_package.json` / `story_source.json` 恢复标题，避免显示成 `segment_video_manifest`
 
 ### Web / API / 数据
@@ -65,8 +80,12 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - FastAPI HTTP 接口
 - 项目级 `project_id`
 - 项目 / 任务元数据持久化
+- 已删除运行时内存版项目 / 任务 store，生产路径只保留 MySQL 实现
 - 任务运行中增量展示已落盘产物
 - 前端已展示任务和阶段级失败原因，不再只显示“异常”
+- Seedance 提交失败时会把真实 HTTP 响应体、所用 payload 变体和 segment 级错误摘要写入 `seedance_execution.json`，任务页也会直接显示具体失败原因
+- 任务产物接口已输出 `planned_segments`，前端时间线会先展示完整片段列表，再允许逐段生成场景图和视频
+- 前端已提供手动合并总片入口，不再在视频任务完成后自动生成 `full_story.mp4`
 - 资产页视频预览轮询稳定性修复
 - 故事正文保存后自动清理旧的结构化和媒体派生产物
 - 支持删除项目：删除项目元数据、任务记录和安全范围内的关联输出目录；项目有 queued / running 任务时返回 409
@@ -87,39 +106,20 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `uv run ruff check src/storyforge tests`
   - `All checks passed!`
 - `uv run pytest`
-  - `66 passed`
+  - `74 passed`
+- `uv run pytest tests/test_config.py tests/test_mysql_store.py tests/test_api.py`
+  - `18 passed`
 
-最近一次真实故障定位：
+当前已知运行建议：
 
-- 时间：`2026-04-14`
-- 阶段：`project.story_analysis`
-- 任务：`character-designer`
-- 根因：DeepSeek OpenAI-compatible 接口在结构化链路中可能出现两类问题：`create_agent + ToolStrategy` 多轮工具消息不兼容，或 `with_structured_output` 没有返回 parsed tool 结果
-- 修复：结构化输出改为 LangChain `ChatModel.with_structured_output(method="function_calling", include_raw=True)` 的单轮结构化调用；raw 内容如果是 JSON 会被回收解析，空结构会显式报错并进入 StoryForge 外层 structured retry
-
-最近一次视频任务故障定位：
-
-- 时间：`2026-04-14`
-- 阶段：`project.videos`
-- 现象：任务显示 `Task was interrupted by a service restart.`
-- 根因：服务以 `--reload` 启动，代码改动触发热重载，中断 Seedance 长任务
-- 修复：启动恢复逻辑从“把 running 改 failed”调整为“把 running 重新排回 queued”
-- 使用建议：跑真实 Seedream / Seedance 长任务时不要用 `--reload`
-
-最近一次真实 LLM 自测：
-
-- 时间：`2026-04-13`
-- 模型：`DeepSeek`
-- 样例：`旧城回响`
-- 结果：`Cast Analyzer` 真实拆出 `记者 / 昔日恋人 / 地下线人 / 地方势力继承人 / 退休警察 / 失踪父亲`
-- 结果：故事形态被识别为 `single_lead_with_supporting_cast`
-- 结果：`Character Designer` 产出了与这些 slot 对齐的正式角色卡
+- 跑真实 Seedream / Seedance 长任务时不要使用 `--reload`
+- 生产路径现在是 MySQL-only；没有可连接数据库时不会降级为本地内存运行
 
 ## 当前主要限制
 
 ### 基础设施
 
-- 执行队列仍是内存态
+- 执行队列仍是进程内异步队列
 - 重启恢复只是重新排队，不是严格幂等执行队列
 - 还没有对象存储
 - 还没有认证与权限系统
@@ -131,6 +131,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 角色定妆图已简化为 `SF-TURN-01` 横版 16:9 白底三视图 prompt，只保留角色姓名和人物描述，输出正面、左侧面、背面；不再要求信息格、色卡、材质块或灰底设计板
 - 声音一致性仍是 prompt 级，不是声纹级
 - 硬字幕主要依赖模型生成，缺少稳定的后处理兜底
+- 虽然已经支持按 segment 逐段重跑，但暂时还没有“按 segment 自动生成后再异步串行下一段”的工作流编排
 
 ### 小说理解
 

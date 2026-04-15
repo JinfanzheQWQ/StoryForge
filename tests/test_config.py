@@ -31,7 +31,6 @@ class ConfigTestCase(unittest.TestCase):
         self.assertFalse(config.seedance.auto_submit)
         self.assertEqual(config.seedance.subtitle_mode, "burned_in")
         self.assertEqual(config.seedance.poll_interval_seconds, 5.0)
-        self.assertTrue(config.database.enabled)
         self.assertEqual(config.database.host, "127.0.0.1")
         self.assertEqual(config.database.port, 3306)
         self.assertEqual(config.database.user, "root")
@@ -43,7 +42,6 @@ class ConfigTestCase(unittest.TestCase):
         self.assertTrue(config.llm.enabled)
         self.assertTrue(config.seedream.auto_submit)
         self.assertTrue(config.seedance.auto_submit)
-        self.assertTrue(config.database.enabled)
         self.assertEqual(config.seedance.subtitle_mode, "burned_in")
         self.assertEqual(config.novel.chapter_scene_count, 1)
 

@@ -57,7 +57,7 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
         version="0.1.0",
         description=(
             "Async novel-to-video task API backed by FastAPI, persisted projects, "
-            "and JSON/MySQL-backed metadata storage."
+            "and mandatory MySQL-backed metadata storage."
         ),
         lifespan=lifespan,
     )

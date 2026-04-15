@@ -627,6 +627,13 @@
   justify-content: space-between;
   gap: 14px;
   align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.timeline-hero-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .timeline-list {
@@ -648,6 +655,13 @@
   display: flex;
   gap: 10px;
   align-items: center;
+}
+
+.timeline-summary {
+  margin: -2px 0 0;
+  font-size: 11px;
+  line-height: 1.68;
+  color: var(--muted-strong);
 }
 
 .timeline-index {
@@ -673,7 +687,7 @@
 
 .timeline-preview-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -726,6 +740,35 @@
 
 .timeline-empty-preview strong {
   font-size: 12px;
+}
+
+.timeline-card-footer {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-actions .small {
+  min-height: 36px;
+  padding: 0 14px;
+  font-size: 11px;
+}
+
+.video-merge-card {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-task-error {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.66;
+  color: var(--danger, #c95245);
 }
 
 .asset-block {

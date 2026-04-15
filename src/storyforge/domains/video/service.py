@@ -77,7 +77,7 @@ class NovelToVideoService(
             request=PromptRequest(
                 system_prompt=(
                     "你是短视频分段导演 Agent。"
-                    "请把小说章节拆成多个能独立成片的视频片段，每个片段都要有首尾帧和统一场景 prompt。"
+                    "请把小说章节拆成多个能独立成片的视频片段，每个片段都要有首尾帧；必要时补充中段锚点帧。"
                     "输出偏镜头分镜和环境调度，避免真人特写描述。"
                 ),
                 user_prompt=self._build_segment_planner_user_prompt(novel_package),
@@ -123,6 +123,9 @@ class NovelToVideoService(
                 title=item.title,
                 summary=item.summary,
                 involved_characters=item.involved_characters,
+                start_frame_characters=item.start_frame_characters,
+                mid_frame_characters=item.mid_frame_characters,
+                end_frame_characters=item.end_frame_characters,
                 narration=item.narration,
                 dialogue_lines=item.dialogue_lines,
                 subtitle_lines=item.subtitle_lines
@@ -140,8 +143,10 @@ class NovelToVideoService(
                 timed_beats=item.timed_beats,
                 scene_prompt=item.scene_prompt,
                 start_frame_prompt=item.start_frame_prompt,
+                mid_frame_prompt=item.mid_frame_prompt,
                 end_frame_prompt=item.end_frame_prompt,
                 duration_seconds=item.duration_seconds,
+                requires_mid_frame=item.requires_mid_frame,
                 transition_hint=item.transition_hint,
                 source_segment_id=item.source_segment_id or item.segment_id,
                 subsegment_index=item.subsegment_index,

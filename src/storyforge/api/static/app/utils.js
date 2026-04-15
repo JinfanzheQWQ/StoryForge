@@ -52,7 +52,12 @@ function buildRunGroup(rootTaskId, tasks) {
   const sceneTasks = sortedTasks.filter(
     (task) => task.task_type === "project.scenes" || task.task_type === "project.images",
   );
-  const videoTasks = sortedTasks.filter((task) => task.task_type === "project.videos");
+  const videoTasks = sortedTasks.filter(
+    (task) => task.task_type === "project.videos" && !task.payload?.merge_only,
+  );
+  const mergeTasks = sortedTasks.filter(
+    (task) => task.task_type === "project.videos" && task.payload?.merge_only,
+  );
 
   return {
     rootTaskId,
@@ -63,6 +68,7 @@ function buildRunGroup(rootTaskId, tasks) {
     latestCharacterTask: characterTasks[0] || null,
     latestSceneTask: sceneTasks[0] || null,
     latestVideoTask: videoTasks[0] || null,
+    latestMergeTask: mergeTasks[0] || null,
     latestArtifacts: state.artifactsByTaskId.get(rootTask.task_id) || null,
   };
 }
@@ -222,16 +228,21 @@ export function buildOverviewNote(task, artifacts, run = null) {
     return "角色图仍然对应旧文本版本。请先重新生成角色图，再继续场景图。";
   }
   if (run?.latestTask.task_type === "project.characters") {
-    return "角色设定已经完成。确认人物稳定后，再继续生成场景图。";
+    return "角色设定已经完成。确认人物稳定后，请在时间线里按片段逐段生成场景图。";
   }
   if (sceneStatus === "stale") {
     return "场景图仍然对应旧文本版本。请先重新生成场景图，再继续视频。";
   }
   if (run?.latestTask.task_type === "project.scenes") {
-    return "场景镜头已经完成。确认首尾帧满意后，再继续生成视频。";
+    return "最近一次片段场景图任务已完成。确认该片段满意后，再继续生成对应视频。";
   }
   if (run?.latestTask.task_type === "project.images") {
     return "图片阶段已经完成。确认角色和场景一致后，再继续生成视频。";
+  }
+  if (run?.latestTask.task_type === "project.videos" && run?.latestTask.payload?.merge_only) {
+    return artifacts.full_story
+      ? "已按当前已生成片段手动合并出总片，可以继续预览或对比其它版本。"
+      : "视频片段合并任务已执行，但页面还没拿到总片文件。";
   }
   if (videoStatus === "stale") {
     return "视频仍然对应旧文本版本。请按新的正文重新生成视频。";
@@ -328,6 +339,9 @@ export function buildPipelineStageLabel(task, run = null) {
   if (propagatedStage === "video_completed") {
     return "视频已完成";
   }
+  if (propagatedStage === "video_merge_completed") {
+    return "视频已合并";
+  }
   if (effectiveTask.task_type === "project.story") {
     if (effectiveTask.status === "queued") return "等待故事文本";
     if (effectiveTask.status === "running") return "故事文本生成中";
@@ -359,6 +373,12 @@ export function buildPipelineStageLabel(task, run = null) {
     if (effectiveTask.status === "failed") return "图片生成失败";
   }
   if (effectiveTask.task_type === "project.videos") {
+    if (effectiveTask.payload?.merge_only) {
+      if (effectiveTask.status === "queued") return "等待视频合并";
+      if (effectiveTask.status === "running") return "视频合并中";
+      if (effectiveTask.status === "completed") return "视频已合并";
+      if (effectiveTask.status === "failed") return "视频合并失败";
+    }
     if (effectiveTask.status === "queued") return "等待视频生成";
     if (effectiveTask.status === "running") return "视频生成中";
     if (effectiveTask.status === "completed") return "视频已完成";
@@ -406,6 +426,9 @@ export function runModeLabel(task) {
     return "Seedream / 图片阶段";
   }
   if (task.task_type === "project.videos") {
+    if (task.payload?.merge_only) {
+      return "ffmpeg / 视频合并";
+    }
     return "Seedance / 视频阶段";
   }
   if (task.task_type === "project.build") {
@@ -420,6 +443,7 @@ export function taskTypeLabel(task) {
   if (task.task_type === "project.characters") return "角色设定图";
   if (task.task_type === "project.scenes") return "场景镜头图";
   if (task.task_type === "project.images") return "图片";
+  if (task.task_type === "project.videos" && task.payload?.merge_only) return "视频合并";
   if (task.task_type === "project.videos") return "视频成片";
   if (task.task_type === "project.build") return "全流程";
   return "";

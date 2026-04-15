@@ -40,7 +40,12 @@ from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
 from storyforge.integrations.seedance import SeedanceExecutionReport  # noqa: E402
 from storyforge.integrations.seedream import SeedreamExecutionReport  # noqa: E402
 from storyforge.pipelines.story_pipeline import run_story_pipeline  # noqa: E402
-from storyforge.pipelines.video_pipeline import run_video_pipeline  # noqa: E402
+from storyforge.pipelines.video_pipeline import (  # noqa: E402
+    run_scene_image_pipeline,
+    run_video_merge_pipeline,
+    run_video_pipeline,
+    run_video_render_pipeline,
+)
 from storyforge.pipelines.video_planning import (  # noqa: E402
     build_video_planning_artifacts,
     load_video_planning_artifacts,
@@ -873,6 +878,15 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all("稳定肩宽" in item.start_frame_prompt for item in video_result.project_package.scene_images)
         )
+        self.assertTrue(
+            all("禁止出现任何可见文字" in item.scene_prompt for item in video_result.project_package.scene_images)
+        )
+        self.assertTrue(
+            all("所有对白和硬字幕都只在后续视频阶段添加" in item.start_frame_prompt for item in video_result.project_package.scene_images)
+        )
+        self.assertTrue(
+            all("不要提前画进图片里" in item.end_frame_prompt for item in video_result.project_package.scene_images)
+        )
         self.assertFalse(video_result.seedream_execution.submitted)
         self.assertFalse(video_result.seedance_execution.submitted)
 
@@ -1027,16 +1041,14 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual([item.cast_slot_id for item in roster.characters], ["lead_1", "lead_2"])
 
-    @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_images")
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_character_images")
-    def test_video_pipeline_auto_concats_full_story_after_successful_seedance(
+    def test_video_pipeline_does_not_auto_concat_full_story_after_successful_seedance(
         self,
         mock_generate_character_images,
         mock_generate_scene_images,
         mock_execute_manifest,
-        mock_concat_manifest_clips,
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
@@ -1060,8 +1072,9 @@ class PipelineTestCase(unittest.TestCase):
                 note="ok",
             )
 
-        def fake_generate_scene_images(project_package, force_submit=False):
+        def fake_generate_scene_images(project_package, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
+            self.assertIsNone(segment_ids)
             for item in project_package.scene_images:
                 item.start_frame_url = f"https://example.com/{Path(item.start_frame_path).name}"
                 item.end_frame_url = f"https://example.com/{Path(item.end_frame_path).name}"
@@ -1079,8 +1092,9 @@ class PipelineTestCase(unittest.TestCase):
         mock_generate_character_images.side_effect = fake_generate_character_images
         mock_generate_scene_images.side_effect = fake_generate_scene_images
 
-        def fake_execute_manifest(manifest, force_submit=False):
+        def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
+            self.assertIsNone(segment_ids)
             for clip in manifest.clips:
                 clip_path = Path(clip.output_path)
                 clip_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1099,16 +1113,6 @@ class PipelineTestCase(unittest.TestCase):
 
         mock_execute_manifest.side_effect = fake_execute_manifest
 
-        expected_full_story_path = story_result.output_dir / "rendered" / "full_story.mp4"
-
-        def fake_concat_manifest_clips(manifest, output_path):
-            self.assertEqual(output_path, expected_full_story_path)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(b"merged video bytes")
-            return output_path
-
-        mock_concat_manifest_clips.side_effect = fake_concat_manifest_clips
-
         video_result = run_video_pipeline(
             novel_package=story_result.novel_package,
             config=config,
@@ -1117,9 +1121,55 @@ class PipelineTestCase(unittest.TestCase):
             submit_seedance=True,
         )
 
-        self.assertEqual(video_result.full_story_path, expected_full_story_path)
-        self.assertTrue(expected_full_story_path.exists())
+        self.assertIsNone(video_result.full_story_path)
         self.assertEqual(len(video_result.rendered_clip_paths), len(video_result.manifest.clips))
+
+    @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
+    def test_run_video_merge_pipeline_concats_rendered_clips_on_demand(
+        self,
+        mock_concat_manifest_clips,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        manifest_payload = read_json(story_result.seedance_manifest_path)
+        rendered_dir = story_result.output_dir / "rendered"
+        rendered_dir.mkdir(parents=True, exist_ok=True)
+        for index, clip in enumerate(manifest_payload["clips"][:2], start=1):
+            clip_path = rendered_dir / f"clip-{index}.mp4"
+            clip_path.write_bytes(b"clip")
+            clip["downloaded_path"] = str(clip_path)
+            clip["submit_status"] = "completed"
+            clip["remote_status"] = "succeeded"
+        story_result.seedance_manifest_path.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        expected_full_story_path = story_result.output_dir / "rendered" / "full_story.mp4"
+
+        def fake_concat_manifest_clips(manifest, output_path):
+            self.assertEqual(len(manifest.clips), 2)
+            self.assertEqual(output_path, expected_full_story_path)
+            output_path.write_bytes(b"merged")
+            return output_path
+
+        mock_concat_manifest_clips.side_effect = fake_concat_manifest_clips
+
+        merge_result = run_video_merge_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+        )
+
+        self.assertEqual(merge_result.full_story_path, expected_full_story_path)
+        self.assertEqual(merge_result.merged_clip_count, 2)
+        self.assertTrue(expected_full_story_path.exists())
         mock_concat_manifest_clips.assert_called_once()
 
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
@@ -1163,6 +1213,116 @@ class PipelineTestCase(unittest.TestCase):
         self.assertFalse(video_result.seedance_execution.submitted)
         self.assertIn("Seedream", video_result.seedance_execution.note)
         mock_execute_manifest.assert_not_called()
+
+    @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_images")
+    def test_run_scene_image_pipeline_only_updates_selected_segment(
+        self,
+        mock_generate_scene_images,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        selected_segment_id = read_json(story_result.segment_plan_path)[0]["segment_id"]
+
+        def fake_generate_scene_images(project_package, force_submit=False, segment_ids=None):
+            self.assertTrue(force_submit)
+            self.assertEqual(segment_ids, {selected_segment_id})
+            for task in project_package.scene_images:
+                if task.segment_id != selected_segment_id:
+                    continue
+                task.start_frame_url = f"https://example.com/{Path(task.start_frame_path).name}"
+                task.end_frame_url = f"https://example.com/{Path(task.end_frame_path).name}"
+                task.status = "completed"
+            for clip in project_package.seedance_manifest.clips:
+                if clip.segment_id != selected_segment_id:
+                    continue
+                clip.start_frame_url = f"https://example.com/{Path(clip.start_frame_path).name}"
+                clip.end_frame_url = f"https://example.com/{Path(clip.end_frame_path).name}"
+            return SeedreamExecutionReport(
+                submitted=True,
+                generated_count=2,
+                failed_count=0,
+                note="ok",
+            )
+
+        mock_generate_scene_images.side_effect = fake_generate_scene_images
+
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_scenes=True,
+            segment_id=selected_segment_id,
+        )
+
+        scene_manifest = read_json(scene_result.scene_images_path)
+        selected_task = next(item for item in scene_manifest if item["segment_id"] == selected_segment_id)
+        untouched_tasks = [item for item in scene_manifest if item["segment_id"] != selected_segment_id]
+        self.assertTrue(selected_task["start_frame_url"])
+        self.assertTrue(selected_task["end_frame_url"])
+        self.assertTrue(all(not item.get("start_frame_url") for item in untouched_tasks))
+
+    @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
+    @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
+    def test_run_video_render_pipeline_only_selected_segment_skips_full_concat(
+        self,
+        mock_execute_manifest,
+        mock_concat_manifest_clips,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        manifest_payload = read_json(story_result.seedance_manifest_path)
+        selected_segment_id = manifest_payload["clips"][0]["segment_id"]
+        selected_output_path = Path(manifest_payload["clips"][0]["output_path"])
+        manifest_payload["clips"][0]["start_frame_url"] = "https://example.com/start.png"
+        manifest_payload["clips"][0]["end_frame_url"] = "https://example.com/end.png"
+        story_result.seedance_manifest_path.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
+            self.assertTrue(force_submit)
+            self.assertEqual(segment_ids, {selected_segment_id})
+            selected_output_path.parent.mkdir(parents=True, exist_ok=True)
+            selected_output_path.write_bytes(b"selected clip")
+            clip = next(item for item in manifest.clips if item.segment_id == selected_segment_id)
+            clip.downloaded_path = str(selected_output_path)
+            clip.submit_status = "completed"
+            clip.remote_status = "succeeded"
+            return SeedanceExecutionReport(
+                submitted=True,
+                manifest_title=manifest.title,
+                completed_count=1,
+                failed_count=0,
+                pending_count=0,
+                note="ok",
+            )
+
+        mock_execute_manifest.side_effect = fake_execute_manifest
+
+        video_result = run_video_render_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_seedance=True,
+            segment_id=selected_segment_id,
+        )
+
+        self.assertEqual(video_result.rendered_clip_paths, [selected_output_path])
+        self.assertIsNone(video_result.full_story_path)
+        mock_concat_manifest_clips.assert_not_called()
 
     def test_generic_character_aliases_are_normalized_to_real_names(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -1373,6 +1533,186 @@ class PipelineTestCase(unittest.TestCase):
         segment = normalized.segments[0]
         self.assertEqual(segment.involved_characters[:2], [first_character.name, second_character.name])
         self.assertEqual(len(segment.involved_characters), 2)
+
+    def test_frame_character_lists_are_inferred_and_preserved_separately(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        first_character = story_result.novel_package.outline.characters[0]
+        second_character = story_result.novel_package.outline.characters[1]
+        story_result.novel_package.outline.chapters[0].featured_characters = [
+            first_character.name,
+            second_character.name,
+        ]
+        visual_bible = CharacterVisualBibleSchema.model_validate(
+            {
+                "characters": [
+                    {
+                        "name": first_character.name,
+                        "role": first_character.role,
+                        "gender": first_character.gender,
+                        "appearance": "测试外观",
+                        "outfit": "测试服装",
+                        "color_palette": ["蓝色"],
+                        "portrait_prompt": "测试 prompt",
+                    },
+                    {
+                        "name": second_character.name,
+                        "role": second_character.role,
+                        "gender": second_character.gender,
+                        "appearance": "测试外观",
+                        "outfit": "测试服装",
+                        "color_palette": ["红色"],
+                        "portrait_prompt": "测试 prompt",
+                    },
+                ]
+            }
+        )
+        raw_plan = VideoSegmentPlanSchema.model_validate(
+            {
+                "segments": [
+                    {
+                        "segment_id": "confession-02",
+                        "chapter_number": 1,
+                        "title": "紫藤花廊的等待",
+                        "summary": "陈默独自等待，林晚稍后才出现。",
+                        "involved_characters": [first_character.name, second_character.name],
+                        "narration": "他站在花廊里等她，直到她终于走近。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["他站在花廊里等她，直到她终于走近。"],
+                        "sound_effects": ["风声"],
+                        "music_direction": "青春克制",
+                        "timed_beats": ["0-3秒：陈默独自等待。", "3-5秒：林晚走近。"],
+                        "scene_prompt": "花廊中的等待与相遇。",
+                        "start_frame_prompt": f"{first_character.name}独自站在花廊入口处等待。",
+                        "mid_frame_prompt": f"{first_character.name}看见{second_character.name}从花园小径走来。",
+                        "end_frame_prompt": f"{first_character.name}仍独自望向小径方向。",
+                        "duration_seconds": 5,
+                        "start_frame_characters": [first_character.name],
+                        "mid_frame_characters": [first_character.name, second_character.name],
+                        "end_frame_characters": [first_character.name],
+                    }
+                ]
+            }
+        )
+
+        normalized = service._normalize_segment_characters(
+            raw_plan,
+            story_result.novel_package,
+            visual_bible,
+        )
+
+        segment = normalized.segments[0]
+        self.assertEqual(segment.start_frame_characters, [first_character.name])
+        self.assertEqual(
+            segment.mid_frame_characters,
+            [first_character.name, second_character.name],
+        )
+        self.assertEqual(segment.end_frame_characters, [first_character.name])
+
+    def test_mid_frame_characters_follow_mid_timed_beat_not_full_segment_cast(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        first_character = story_result.novel_package.outline.characters[0]
+        second_character = story_result.novel_package.outline.characters[1]
+        story_result.novel_package.outline.chapters[0].featured_characters = [
+            first_character.name,
+            second_character.name,
+        ]
+        visual_bible = CharacterVisualBibleSchema.model_validate(
+            {
+                "characters": [
+                    {
+                        "name": first_character.name,
+                        "role": first_character.role,
+                        "gender": first_character.gender,
+                        "appearance": "测试外观",
+                        "outfit": "测试服装",
+                        "color_palette": ["蓝色"],
+                        "portrait_prompt": "测试 prompt",
+                    },
+                    {
+                        "name": second_character.name,
+                        "role": second_character.role,
+                        "gender": second_character.gender,
+                        "appearance": "测试外观",
+                        "outfit": "测试服装",
+                        "color_palette": ["红色"],
+                        "portrait_prompt": "测试 prompt",
+                    },
+                ]
+            }
+        )
+        raw_plan = VideoSegmentPlanSchema.model_validate(
+            {
+                "segments": [
+                    {
+                        "segment_id": "confession-waiting",
+                        "chapter_number": 1,
+                        "title": "花廊等待",
+                        "summary": f"{first_character.name}在花廊等待{second_character.name}。",
+                        "involved_characters": [first_character.name, second_character.name],
+                        "narration": "他站在花廊下等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["他站在花廊下等待。"],
+                        "sound_effects": ["风声"],
+                        "music_direction": "青春克制",
+                        "timed_beats": [
+                            "0-4秒：镜头从紫藤花架全景缓缓推进，旁白开始",
+                            f"4-9秒：镜头聚焦{first_character.name}背影，他站在花架下等待",
+                        ],
+                        "scene_prompt": "傍晚时分的大学中心花园。",
+                        "start_frame_prompt": f"{first_character.name}独自站在紫藤花架下等待。",
+                        "mid_frame_prompt": (
+                            f"中段锚点帧，角色：{first_character.name}、{second_character.name}，"
+                            f"镜头推进到片段中段，重点呈现 {first_character.name}等待{second_character.name}。"
+                        ),
+                        "end_frame_prompt": f"{first_character.name}听到声音后转身。",
+                        "duration_seconds": 9,
+                        "start_frame_characters": [first_character.name],
+                        "mid_frame_characters": [first_character.name, second_character.name],
+                        "end_frame_characters": [first_character.name],
+                        "requires_mid_frame": True,
+                    }
+                ]
+            }
+        )
+
+        normalized = service._normalize_segment_characters(
+            raw_plan,
+            story_result.novel_package,
+            visual_bible,
+        )
+
+        segment = normalized.segments[0]
+        self.assertEqual(segment.mid_frame_characters, [first_character.name])
 
     def test_romance_brief_repairs_primary_character_genders_to_male_female_pair(self) -> None:
         service = NovelGeneratorService()
@@ -1819,6 +2159,8 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("按中文自然口播语速估算音频长度", prompt)
         self.assertIn("如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段", prompt)
         self.assertIn("硬字幕超过当前时长可说完", prompt)
+        self.assertIn("requires_mid_frame", prompt)
+        self.assertIn("mid_frame_prompt", prompt)
         self.assertNotIn("推荐最少片段数", prompt)
 
     def test_repair_segment_plan_preserves_all_llm_segments_within_same_chapter(self) -> None:
@@ -1990,6 +2332,8 @@ class PipelineTestCase(unittest.TestCase):
             [item.reuse_previous_end_frame for item in normalized.segments],
             [False, True, True],
         )
+        self.assertTrue(all(item.requires_mid_frame for item in normalized.segments))
+        self.assertTrue(all(item.mid_frame_prompt for item in normalized.segments))
         self.assertTrue(all(item.timed_beats for item in normalized.segments))
         self.assertTrue(all(item.subtitle_lines for item in normalized.segments))
         self.assertTrue(all("当前子片段" in item.start_frame_prompt for item in normalized.segments))
@@ -2017,10 +2361,14 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertFalse(scene_tasks[0].reuse_previous_end_frame)
         self.assertEqual(scene_tasks[0].continuity_source_segment_id, "")
+        self.assertTrue(scene_tasks[0].requires_mid_frame)
+        self.assertTrue(scene_tasks[0].mid_frame_path.endswith("_mid.png"))
         self.assertTrue(scene_tasks[1].reuse_previous_end_frame)
         self.assertEqual(scene_tasks[1].continuity_source_segment_id, "snowport_01_01")
+        self.assertTrue(scene_tasks[1].requires_mid_frame)
         self.assertTrue(scene_tasks[2].reuse_previous_end_frame)
         self.assertEqual(scene_tasks[2].continuity_source_segment_id, "snowport_01_02")
+        self.assertTrue(scene_tasks[2].requires_mid_frame)
 
     def test_planned_segment_runtime_within_range_is_preserved(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -2118,12 +2466,59 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertGreater(len(normalized.segments), 1)
         self.assertTrue(all(5 <= item.duration_seconds <= 12 for item in normalized.segments))
+        self.assertTrue(all(item.requires_mid_frame for item in normalized.segments))
+        self.assertTrue(all(item.mid_frame_prompt for item in normalized.segments))
         self.assertEqual(
             [item.source_segment_id for item in normalized.segments],
             ["confession_01"] * len(normalized.segments),
         )
         self.assertTrue(all(item.subtitle_lines for item in normalized.segments))
         self.assertTrue(any(item.dialogue_lines for item in normalized.segments[1:]))
+
+    def test_scene_frame_prompts_strip_dialogue_and_subtitle_text(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+
+        scene_prompt = service._stylize_scene_prompt(
+            '雨棚下的告白场景，字幕：我喜欢你很久了，“毕业快乐”。',
+            VideoSegment(
+                segment_id="seg-1",
+                chapter_number=1,
+                title="测试片段",
+                summary="测试摘要",
+                involved_characters=["林远", "苏晴"],
+                narration="旁白",
+                dialogue_lines=["林远：我喜欢你很久了。"],
+                subtitle_lines=["我喜欢你很久了。"],
+                sound_effects=["风声"],
+                music_direction="青春克制",
+                timed_beats=["0-5秒：两人对视。"],
+                scene_prompt="原始场景",
+                start_frame_prompt="原始首帧",
+                end_frame_prompt="原始尾帧",
+                duration_seconds=5,
+            ),
+            "角色锁定要求",
+        )
+        frame_prompt = service._stylize_frame_prompt(
+            '林远说：我喜欢你很久了。屏幕显示：毕业倒计时。',
+            ["林远"],
+            "首帧",
+            "角色锁定要求",
+        )
+
+        self.assertIn("禁止出现任何可见文字", scene_prompt)
+        self.assertIn("所有对白和硬字幕都只在后续视频阶段添加", frame_prompt)
+        self.assertNotIn("我喜欢你很久了", frame_prompt)
+        self.assertNotIn("毕业倒计时", frame_prompt)
+        self.assertIn("林远正在说话", frame_prompt)
 
     def test_adjacent_segments_in_same_chapter_reuse_previous_end_frame_when_continuous(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

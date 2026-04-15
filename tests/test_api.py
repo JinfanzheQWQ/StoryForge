@@ -8,6 +8,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -18,10 +19,160 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from storyforge.api.main import create_app  # noqa: E402
 from storyforge.agents.base import DryRunAgentBackend  # noqa: E402
+from storyforge.application.container import AppContainer  # noqa: E402
+from storyforge.application.projects import ProjectRecord, ProjectStore  # noqa: E402
+from storyforge.application.task_runtime import TaskExecutionContext, build_task_handler  # noqa: E402
+from storyforge.application.tasks import AsyncTaskQueue, QueuedTask, TaskRecord, TaskStore, utc_now  # noqa: E402
+
+
+class InMemoryProjectStore(ProjectStore):
+    def __init__(self) -> None:
+        self._projects: dict[str, ProjectRecord] = {}
+
+    def create(self, brief: dict[str, object]) -> ProjectRecord:
+        now = utc_now()
+        record = ProjectRecord(
+            project_id=str(uuid4()),
+            title_hint=str(brief.get("title_hint", "未命名故事")),
+            brief=dict(brief),
+            created_at=now,
+            updated_at=now,
+        )
+        self._projects[record.project_id] = record
+        return record
+
+    def get(self, project_id: str) -> ProjectRecord | None:
+        return self._projects.get(project_id)
+
+    def delete(self, project_id: str) -> bool:
+        if project_id not in self._projects:
+            return False
+        del self._projects[project_id]
+        return True
+
+    def list(self) -> list[ProjectRecord]:
+        return sorted(self._projects.values(), key=lambda item: item.updated_at, reverse=True)
+
+    def attach_task(self, project_id: str, task_id: str, brief: dict[str, object]) -> ProjectRecord:
+        record = self._projects[project_id]
+        if task_id not in record.task_ids:
+            record.task_ids.append(task_id)
+        record.latest_task_id = task_id
+        record.updated_at = utc_now()
+        if brief:
+            record.brief = dict(brief)
+            record.title_hint = str(brief.get("title_hint", record.title_hint))
+        return record
+
+    def mark_task_result(self, project_id: str, task_id: str, result: dict[str, object]) -> None:
+        record = self._projects[project_id]
+        record.latest_task_id = task_id
+        record.updated_at = utc_now()
+        if result.get("story_title"):
+            record.story_title = str(result["story_title"])
+        if result.get("output_dir"):
+            record.last_output_dir = str(result["output_dir"])
+
+
+class InMemoryTaskStore(TaskStore):
+    def __init__(self) -> None:
+        self._tasks: dict[str, TaskRecord] = {}
+
+    def create(self, project_id: str, task_type: str, payload: dict[str, object]) -> TaskRecord:
+        record = TaskRecord(
+            task_id=str(uuid4()),
+            project_id=project_id,
+            task_type=task_type,
+            status="queued",
+            payload=payload,
+            created_at=utc_now(),
+        )
+        self._tasks[record.task_id] = record
+        return record
+
+    def get(self, task_id: str) -> TaskRecord | None:
+        return self._tasks.get(task_id)
+
+    def get_many(self, task_ids) -> dict[str, TaskRecord]:
+        unique_ids = {str(task_id) for task_id in task_ids if task_id}
+        return {task_id: self._tasks[task_id] for task_id in unique_ids if task_id in self._tasks}
+
+    def list(self, project_id: str | None = None) -> list[TaskRecord]:
+        values = self._tasks.values()
+        if project_id is not None:
+            values = [item for item in values if item.project_id == project_id]
+        return sorted(values, key=lambda item: item.created_at, reverse=True)
+
+    def delete_project_tasks(self, project_id: str) -> int:
+        task_ids = [task_id for task_id, task in self._tasks.items() if task.project_id == project_id]
+        for task_id in task_ids:
+            del self._tasks[task_id]
+        return len(task_ids)
+
+    def list_grouped(self, project_ids) -> dict[str, list[TaskRecord]]:
+        project_id_set = {str(project_id) for project_id in project_ids if project_id}
+        grouped = {project_id: [] for project_id in project_id_set}
+        for item in sorted(self._tasks.values(), key=lambda record: record.created_at, reverse=True):
+            if item.project_id not in project_id_set:
+                continue
+            grouped.setdefault(item.project_id, []).append(item)
+        return grouped
+
+    def queued_tasks(self) -> list[QueuedTask]:
+        return [
+            QueuedTask(
+                task_id=item.task_id,
+                project_id=item.project_id,
+                task_type=item.task_type,
+                payload=item.payload,
+            )
+            for item in sorted(self._tasks.values(), key=lambda record: record.created_at)
+            if item.status == "queued"
+        ]
+
+    def recover_running_tasks(self) -> None:
+        for record in self._tasks.values():
+            if record.status != "running":
+                continue
+            record.status = "queued"
+            record.started_at = None
+            record.finished_at = None
+            record.error = None
+
+    def mark_running(self, task_id: str) -> None:
+        record = self._tasks[task_id]
+        record.status = "running"
+        record.started_at = utc_now()
+        record.finished_at = None
+        record.error = None
+
+    def mark_completed(self, task_id: str, result: dict[str, object]) -> None:
+        record = self._tasks[task_id]
+        record.status = "completed"
+        record.result = result
+        record.finished_at = utc_now()
+
+    def update_result(self, task_id: str, result: dict[str, object]) -> None:
+        record = self._tasks[task_id]
+        merged = dict(record.result or {})
+        merged.update(result)
+        record.result = merged
+
+    def mark_failed(self, task_id: str, error: str, result: dict[str, object] | None = None) -> None:
+        record = self._tasks[task_id]
+        record.status = "failed"
+        record.error = error
+        if result is not None:
+            record.result = result
+        record.finished_at = utc_now()
 
 
 class ApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        self._container_patcher = patch(
+            "storyforge.api.main.build_container",
+            side_effect=self._build_test_container,
+        )
         self._story_backend_patcher = patch(
             "storyforge.pipelines.story_pipeline.build_agent_backend",
             return_value=DryRunAgentBackend(),
@@ -30,17 +181,39 @@ class ApiTestCase(unittest.TestCase):
             "storyforge.pipelines.video_planning.build_agent_backend",
             return_value=DryRunAgentBackend(),
         )
+        self._container_patcher.start()
         self._story_backend_patcher.start()
         self._video_backend_patcher.start()
+        self.addCleanup(self._container_patcher.stop)
         self.addCleanup(self._story_backend_patcher.stop)
         self.addCleanup(self._video_backend_patcher.stop)
+
+    def _build_test_container(self, project_root: Path, config) -> AppContainer:
+        project_store = InMemoryProjectStore()
+        task_store = InMemoryTaskStore()
+        context = TaskExecutionContext(
+            project_root=project_root,
+            config=config,
+            project_store=project_store,
+            task_store=task_store,
+        )
+        task_queue = AsyncTaskQueue(
+            concurrency=config.queue.concurrency,
+            handler=build_task_handler(context),
+            store=task_store,
+        )
+        return AppContainer(
+            project_root=project_root,
+            config=config,
+            project_store=project_store,
+            task_queue=task_queue,
+        )
 
     def _create_test_config(self) -> Path:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         root = Path(temp_dir.name)
         output_dir = root / "outputs"
-        workspace_dir = root / "workspace"
         prompt_dir = root / "prompts"
         config_path = root / "storyforge.test.toml"
         config_path.write_text(
@@ -93,7 +266,6 @@ class ApiTestCase(unittest.TestCase):
                 max_wait_seconds = 900
 
                 [database]
-                enabled = false
                 host = "127.0.0.1"
                 port = 3306
                 user = "root"
@@ -110,7 +282,6 @@ class ApiTestCase(unittest.TestCase):
 
                 [paths]
                 output_dir = "{output_dir}"
-                workspace_dir = "{workspace_dir}"
                 prompt_dir = "{prompt_dir}"
                 """
             ).strip(),
@@ -162,7 +333,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("seedream_model", payload)
             self.assertIn("seedance_model", payload)
 
-    def test_submit_complete_job_and_persist_project_history(self) -> None:
+    def test_submit_complete_job_and_keep_project_history_within_process(self) -> None:
         config_path = self._create_test_config()
         app = create_app(project_root=ROOT, config_path=config_path)
         with TestClient(app) as client:
@@ -201,6 +372,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertTrue(artifacts["available"])
             self.assertTrue(artifacts["documents"])
             self.assertNotIn("chapters", artifacts)
+            self.assertIn("planned_segments", artifacts)
+            self.assertTrue(artifacts["planned_segments"])
             document_names = {item["name"] for item in artifacts["documents"]}
             self.assertIn("story_source.json", document_names)
             self.assertIn("novel_package.json", document_names)
@@ -226,18 +399,6 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(project_detail["project_id"], project_id)
             self.assertEqual(project_detail["tasks"][0]["task_id"], task_id)
             self.assertEqual(project_detail["tasks"][0]["project_id"], project_id)
-
-        reopened_app = create_app(project_root=ROOT, config_path=config_path)
-        with TestClient(reopened_app) as reopened_client:
-            persisted_project = reopened_client.get(f"/v1/projects/{project_id}")
-            self.assertEqual(persisted_project.status_code, 200)
-            persisted_payload = persisted_project.json()
-            self.assertEqual(persisted_payload["project_id"], project_id)
-            self.assertEqual(persisted_payload["tasks"][0]["task_id"], task_id)
-
-            persisted_task = reopened_client.get(f"/v1/tasks/{task_id}")
-            self.assertEqual(persisted_task.status_code, 200)
-            self.assertEqual(persisted_task.json()["project_id"], project_id)
 
     @patch("storyforge.application.task_handlers.run_video_pipeline")
     def test_story_artifacts_are_available_while_task_is_still_running(self, mock_run_video_pipeline) -> None:
@@ -317,6 +478,126 @@ class ApiTestCase(unittest.TestCase):
 
             final_payload = self._wait_for_completion(client, task_id)
             self.assertEqual(final_payload["status"], "completed")
+
+    @patch("storyforge.application.task_handlers.run_video_render_pipeline")
+    @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
+    def test_stage_jobs_accept_segment_id_and_run_single_segment(
+        self,
+        mock_run_scene_image_pipeline,
+        mock_run_video_render_pipeline,
+    ) -> None:
+        def fake_scene_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            return SimpleNamespace(
+                project_package=SimpleNamespace(title="单片段测试"),
+                output_dir=output_dir,
+                character_bible_path=output_dir / "character_visual_bible.json",
+                character_images_path=output_dir / "character_image_manifest.json",
+                segment_plan_path=output_dir / "segment_plan.json",
+                scene_images_path=output_dir / "scene_image_manifest.json",
+                manifest_path=output_dir / "seedance_manifest.json",
+                seedream_execution_path=output_dir / "seedream_scene_execution.json",
+                character_seedream_execution_path=output_dir / "seedream_character_execution.json",
+                scene_seedream_execution_path=output_dir / "seedream_scene_execution.json",
+                seedream_execution=SimpleNamespace(
+                    submitted=True,
+                    generated_count=2,
+                    failed_count=0,
+                    note="ok",
+                ),
+            )
+
+        def fake_video_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            return SimpleNamespace(
+                output_dir=output_dir,
+                manifest_path=output_dir / "seedance_manifest.json",
+                seedance_execution_path=output_dir / "seedance_execution.json",
+                rendered_clip_paths=[],
+                full_story_path=None,
+                seedance_execution=SimpleNamespace(
+                    submitted=True,
+                    completed_count=1,
+                    failed_count=0,
+                    pending_count=0,
+                    note="ok",
+                ),
+            )
+
+        mock_run_scene_image_pipeline.side_effect = fake_scene_pipeline
+        mock_run_video_render_pipeline.side_effect = fake_video_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "片段任务测试",
+                        "idea": "一名调查员和搭档在夜雨站台追查失踪列车。",
+                        "genre": "悬疑",
+                        "tone": "电影感",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1200,
+                        "must_include": ["站台", "搭档"],
+                        "style_keywords": ["暴雨", "列车"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            segment_id = artifacts["planned_segments"][0]["segment_id"]
+
+            scene_response = client.post(
+                "/v1/projects/scenes",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "segment_id": segment_id,
+                },
+            )
+            self.assertEqual(scene_response.status_code, 202)
+            scene_task_id = scene_response.json()["task_id"]
+            scene_task = self._wait_for_completion(client, scene_task_id)
+            self.assertEqual(scene_task["status"], "completed")
+            self.assertEqual(scene_task["payload"]["segment_id"], segment_id)
+            self.assertEqual(scene_task["result"]["segment_id"], segment_id)
+            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
+
+            video_response = client.post(
+                "/v1/projects/videos",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "segment_id": segment_id,
+                },
+            )
+            self.assertEqual(video_response.status_code, 202)
+            video_task_id = video_response.json()["task_id"]
+            video_task = self._wait_for_completion(client, video_task_id)
+            self.assertEqual(video_task["status"], "completed")
+            self.assertEqual(video_task["payload"]["segment_id"], segment_id)
+            self.assertEqual(video_task["result"]["segment_id"], segment_id)
+            self.assertEqual(mock_run_video_render_pipeline.call_args.kwargs["segment_id"], segment_id)
 
     def test_submit_short_story_word_target_is_accepted(self) -> None:
         config_path = self._create_test_config()
@@ -449,6 +730,7 @@ class ApiTestCase(unittest.TestCase):
             payload = self._wait_for_completion(client, task_id)
             self.assertEqual(payload["status"], "completed")
 
+    @patch("storyforge.application.task_handlers.run_video_merge_pipeline")
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
     @patch("storyforge.application.task_handlers.run_character_image_pipeline")
@@ -457,6 +739,7 @@ class ApiTestCase(unittest.TestCase):
         mock_run_character_image_pipeline,
         mock_run_scene_image_pipeline,
         mock_run_video_render_pipeline,
+        mock_run_video_merge_pipeline,
     ) -> None:
         def fake_run_character_image_pipeline(*args, **kwargs):
             output_dir = kwargs["output_root"]
@@ -548,26 +831,46 @@ class ApiTestCase(unittest.TestCase):
             manifest_path = output_dir / "seedance_manifest.json"
             seedance_execution_path = output_dir / "seedance_execution.json"
             clip_path = rendered_dir / "segment-01.mp4"
-            full_story_path = rendered_dir / "full_story.mp4"
 
             manifest_path.write_text("{}", encoding="utf-8")
             seedance_execution_path.write_text("{}", encoding="utf-8")
             clip_path.write_bytes(b"fake mp4 bytes")
-            full_story_path.write_bytes(b"merged mp4 bytes")
 
             return SimpleNamespace(
                 output_dir=output_dir,
                 manifest_path=manifest_path,
                 seedance_execution_path=seedance_execution_path,
                 rendered_clip_paths=[clip_path],
-                full_story_path=full_story_path,
+                full_story_path=None,
                 manifest=SimpleNamespace(title="阶段化测试故事"),
                 seedance_execution=SimpleNamespace(submitted=True, failed_count=0, pending_count=0),
+            )
+
+        def fake_run_video_merge_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            rendered_dir = output_dir / "rendered"
+            rendered_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = output_dir / "seedance_manifest.json"
+            full_story_path = rendered_dir / "full_story.mp4"
+
+            manifest_path.write_text("{}", encoding="utf-8")
+            full_story_path.write_bytes(b"merged mp4 bytes")
+
+            clip_paths = sorted(rendered_dir.glob("*.mp4"))
+            return SimpleNamespace(
+                output_dir=output_dir,
+                manifest_path=manifest_path,
+                rendered_clip_paths=[path for path in clip_paths if path.name != "full_story.mp4"],
+                full_story_path=full_story_path,
+                manifest=SimpleNamespace(title="阶段化测试故事"),
+                merged_clip_count=len([path for path in clip_paths if path.name != "full_story.mp4"]),
+                skipped_clip_count=0,
             )
 
         mock_run_character_image_pipeline.side_effect = fake_run_character_image_pipeline
         mock_run_scene_image_pipeline.side_effect = fake_run_scene_image_pipeline
         mock_run_video_render_pipeline.side_effect = fake_run_video_render_pipeline
+        mock_run_video_merge_pipeline.side_effect = fake_run_video_merge_pipeline
 
         config_path = self._create_test_config()
         app = create_app(project_root=ROOT, config_path=config_path)
@@ -686,11 +989,28 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(video_payload["status"], "completed")
             self.assertEqual(video_payload["result"]["task_stage"], "videos")
             self.assertTrue(video_payload["result"]["rendered_clips"])
-            self.assertIsNotNone(video_payload["result"]["full_story_path"])
+            self.assertIsNone(video_payload["result"]["full_story_path"])
 
             propagated_story_after_videos = client.get(f"/v1/tasks/{story_task_id}").json()
             self.assertIn("seedance_execution_path", propagated_story_after_videos["result"])
-            self.assertIn("full_story_path", propagated_story_after_videos["result"])
+            self.assertIsNone(propagated_story_after_videos["result"].get("full_story_path"))
+
+            merge_response = client.post(
+                "/v1/projects/videos",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                    "merge_only": True,
+                },
+            )
+            self.assertEqual(merge_response.status_code, 202)
+            merge_task_id = merge_response.json()["task_id"]
+
+            merge_payload = self._wait_for_completion(client, merge_task_id)
+            self.assertEqual(merge_payload["status"], "completed")
+            self.assertEqual(merge_payload["result"]["task_stage"], "video_merge")
+            self.assertTrue(merge_payload["result"]["merge_only"])
+            self.assertIsNotNone(merge_payload["result"]["full_story_path"])
 
             root_artifacts = client.get(f"/v1/tasks/{story_task_id}/artifacts")
             self.assertEqual(root_artifacts.status_code, 200)
@@ -711,7 +1031,7 @@ class ApiTestCase(unittest.TestCase):
             detail_response = client.get(f"/v1/projects/{project_id}")
             self.assertEqual(detail_response.status_code, 200)
             detail = detail_response.json()
-            self.assertEqual(len(detail["tasks"]), 5)
+            self.assertEqual(len(detail["tasks"]), 6)
             self.assertEqual(
                 {task["result"]["pipeline_root_task_id"] for task in detail["tasks"] if task["result"]},
                 {story_task_id},

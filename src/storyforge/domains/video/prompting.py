@@ -7,6 +7,12 @@ from storyforge.domains.video.contracts import CharacterVisualProfile, VideoSegm
 
 
 class VideoPromptingMixin:
+    SCENE_NO_TEXT_PROMPT = (
+        "画面中禁止出现任何可见文字、对白字幕、台词字卡、聊天气泡、漫画对话框、旁白框、"
+        "屏幕贴字、海报文案、水印、Logo、片名字样或说明性排版。"
+        "本阶段只生成纯画面分镜，所有对白和硬字幕都只在后续视频阶段添加，不要提前画进图片里。"
+    )
+
     CHARACTER_SHEET_LAYOUT_PROMPT = (
         "统一三视图模板 SF-TURN-01：所有角色定妆图必须使用完全相同的横版 16:9 白底三视图版式，"
         "同一项目内所有角色必须保持同一种美术风格、同一种线条粗细、同一种上色方式和同一种柔和光照，"
@@ -73,6 +79,8 @@ class VideoPromptingMixin:
 - 每章拆成几段必须由你根据该章正文内容自行判断，依据包括：事件推进、场景切换、时间跳跃、情绪转折、镜头密度、对白密度
 - 不要把章节硬压成固定段数，也不要为了凑平均数机械切段
 - 每个片段除画面字段外，还必须输出可直接给 Seedance 使用的旁白、角色对白、环境音、音乐方向和时间节拍
+- 每个片段必须判断是否需要额外的 `mid_frame_prompt` 中段锚点帧；若片段时长 >= 8 秒、多人同框、动作推进明显、情绪关系变化明显，`requires_mid_frame` 必须为 true
+- 当 `requires_mid_frame = true` 时，`mid_frame_prompt` 必须描述片段中段最关键的角色站位、姿态、关系和镜头状态；当不需要时，`mid_frame_prompt` 置空字符串
 - 每个片段的 `duration_seconds` 必须由你根据剧情密度自行判断，范围限定在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒
 - 不要把所有片段都机械写成同一个时长；对白密集、动作更复杂、信息量更大的片段可以更长
 - 如果你无法判断，就优先接近 {self.segment_duration_seconds} 秒
@@ -86,7 +94,14 @@ class VideoPromptingMixin:
 - 必须严格复刻章节正文已经发生的事件、情绪和对白关系，不得自行改写关键情节、改变角色关系或新增冲突
 - 如果正文是告白、表白、对峙、争吵、谈判、审问、双人对话，`involved_characters` 必须同时包含对话/关系双方，不能只写一个角色
 - `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`
-- `scene_prompt`、`start_frame_prompt`、`end_frame_prompt` 必须写清每个出镜角色的位置、动作和相互关系
+- 每个片段都必须单独输出 `start_frame_characters`、`mid_frame_characters`、`end_frame_characters`
+- 这三个字段表示对应关键帧里真正出镜的人物，必须是 `involved_characters` 的子集
+- 如果首帧是单人等待、单人独白、单人回头、单人站立等镜头，不要把尚未出镜的人物写进 `start_frame_characters`
+- 如果尾帧仍然只有一个角色在镜头里，也不要把片段里稍后才出现或已经离场的人物写进 `end_frame_characters`
+- 若 `requires_mid_frame = true`，`mid_frame_characters` 必须准确对应中段锚点帧实际出镜人物；若不需要中段帧，则 `mid_frame_characters` 置空数组
+- `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt` 必须写清每个出镜角色的位置、动作和相互关系
+- `start_frame_prompt` / `mid_frame_prompt` / `end_frame_prompt` 必须与对应的帧角色列表一致，不要出现“帧角色列表只有 1 人，但 prompt 又要求另一人同框”的自相矛盾
+- 若正文明确同一片段里有人尚未入镜、稍后入镜或已经离场，允许帧级角色列表少于 `involved_characters`
 
 章节拆分依据：
 {chapter_blocks}
@@ -241,11 +256,11 @@ class VideoPromptingMixin:
 
     def _build_scene_character_lock(
         self,
-        segment: VideoSegment,
+        character_names: list[str],
         profile_map: dict[str, CharacterVisualProfile],
     ) -> str:
         locked_profiles: list[str] = []
-        for name in segment.involved_characters:
+        for name in character_names:
             profile = profile_map.get(name)
             if profile is None:
                 continue
@@ -265,7 +280,7 @@ class VideoPromptingMixin:
             "角色锁定要求："
             + " | ".join(locked_profiles)
             + "。严格保持与参考设定图一致的人脸结构、发型、服装层次、主配色、年龄感、体型、肩宽、头身比和四肢比例，"
-            "多人同屏时不得省略任何一个 involved_characters，"
+            "多人同屏时不得省略任何一个当前帧实际出镜角色，"
             "不要把角色画得更老、更幼、更胖、更瘦、更壮、更矮或比例失真，"
             "不要新增盔甲、额外武器、外骨骼、奇幻饰品或不相关时代元素。"
         )
@@ -277,28 +292,58 @@ class VideoPromptingMixin:
         character_lock: str,
     ) -> str:
         characters = "、".join(segment.involved_characters) or "环境为主"
+        sanitized_prompt = self._sanitize_image_prompt_text(prompt)
         return (
             "原创虚构场景分镜，风格化概念插画，非真人摄影，"
             "优先展示环境、光线和镜头调度，避免近景人像特写，"
             "若 involved_characters 有 2 人或以上，则这些角色必须同时出镜，不要只画一个人，"
             "每个 involved_characters 都必须按对应参考设定图还原，"
             "若角色出镜，必须保持稳定年龄感、稳定体型、稳定肩宽、稳定四肢比例和稳定脸型轮廓，"
-            f"角色：{characters}，{character_lock}，{prompt}"
+            f"{self.SCENE_NO_TEXT_PROMPT}"
+            f"角色：{characters}，{character_lock}，{sanitized_prompt}"
         )
 
     def _stylize_frame_prompt(
         self,
         prompt: str,
-        segment: VideoSegment,
+        frame_characters: list[str],
         frame_type: str,
         character_lock: str,
     ) -> str:
-        characters = "、".join(segment.involved_characters) or "环境为主"
+        characters = "、".join(frame_characters) or "环境为主"
+        sanitized_prompt = self._sanitize_image_prompt_text(prompt)
         return (
             f"{frame_type}，原创虚构电影分镜，风格化概念插画，非真人摄影，"
-            f"角色：{characters}，若有双人或多人出镜要求则必须全部画出，且全部按对应参考设定图还原，{character_lock}，"
-            f"保持场景连续性、稳定年龄感、稳定体型、稳定肩宽和稳定四肢比例，{prompt}"
+            f"当前帧出镜角色：{characters}，只画这一帧真正入镜的人物；若有双人或多人出镜要求则必须全部画出，且全部按对应参考设定图还原，{character_lock}，"
+            f"保持场景连续性、稳定年龄感、稳定体型、稳定肩宽和稳定四肢比例，"
+            f"{self.SCENE_NO_TEXT_PROMPT}"
+            f"{sanitized_prompt}"
         )
+
+    def _sanitize_image_prompt_text(self, prompt: str) -> str:
+        sanitized = prompt.strip()
+        if not sanitized:
+            return sanitized
+
+        # Remove explicit subtitle/onscreen text instructions from image prompts.
+        sanitized = re.sub(
+            r"(字幕|对白|台词|旁白|对话框|聊天气泡|文字写着|屏幕显示)\s*[：:]\s*[^，。；;]*",
+            "角色正在说话或情绪推进",
+            sanitized,
+        )
+
+        # Replace direct quoted speech with visual action instead of verbatim words.
+        sanitized = re.sub(r"[“\"].{1,40}?[”\"]", "角色正在说话", sanitized)
+
+        # Replace explicit "X说：..." patterns so the model focuses on mouth/action, not text.
+        sanitized = re.sub(
+            r"([\u4e00-\u9fffA-Za-z0-9_]{1,12})(?:轻声|低声|高声|小声|开口|忽然|缓缓)?说\s*[：:]\s*[^，。；;]*",
+            r"\1正在说话",
+            sanitized,
+        )
+
+        sanitized = re.sub(r"\s+", " ", sanitized).strip(" ，。；;")
+        return sanitized
 
     def _build_default_timed_beats(
         self,
@@ -332,6 +377,13 @@ class VideoPromptingMixin:
             f"画面主提示：{segment.scene_prompt}",
             f"旁白：{segment.narration}",
         ]
+        if segment.requires_mid_frame and segment.mid_frame_prompt.strip():
+            lines.append(f"中段锚点：{segment.mid_frame_prompt}")
+            lines.append("镜头推进必须从首帧自然过渡到中段锚点，再收束到尾帧。")
+        if len(segment.involved_characters) >= 2:
+            lines.append(
+                "多人同框要求：所有 involved_characters 在关键镜头中都必须保持身份清晰、体型稳定和关系正确，不要少人、换人或把其中一人弱化成背景路人。"
+            )
         if segment.dialogue_lines:
             lines.append("角色对白：")
             lines.extend(f"- {line}" for line in segment.dialogue_lines)

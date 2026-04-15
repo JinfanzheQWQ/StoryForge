@@ -95,6 +95,24 @@ def propagate_shared_result(
         context.task_store.update_result(task_id, shared_result)
 
 
+def refresh_artifact_revision_for_tasks(
+    context: TaskExecutionContext,
+    task_ids: set[str],
+    artifact_revision: str,
+    exclude_task_id: str | None = None,
+) -> None:
+    for task_id in task_ids:
+        if not task_id or task_id == exclude_task_id:
+            continue
+        record = context.task_store.get(task_id)
+        if record is None or record.result is None:
+            continue
+        updated_result = dict(record.result)
+        updated_result["artifact_revision"] = artifact_revision
+        context.task_store.update_result(task_id, updated_result)
+        context.project_store.mark_task_result(record.project_id, task_id, updated_result)
+
+
 def build_requested_media_error(
     requested: bool,
     seedream_execution: object | None,
@@ -118,18 +136,9 @@ def build_requested_media_error(
                 f"note={getattr(seedream_execution, 'note', '')}"
             )
 
-    seedance_submitted = bool(getattr(seedance_execution, "submitted", False))
-    seedance_failed_count = int(getattr(seedance_execution, "failed_count", 0))
-    seedance_pending_count = int(getattr(seedance_execution, "pending_count", 0))
-    if not seedance_submitted or seedance_failed_count > 0 or seedance_pending_count > 0:
-        errors.append(
-            "Seedance video generation failed: "
-            f"submitted={seedance_submitted}, "
-            f"completed_count={getattr(seedance_execution, 'completed_count', 0)}, "
-            f"failed_count={seedance_failed_count}, "
-            f"pending_count={seedance_pending_count}, "
-            f"note={getattr(seedance_execution, 'note', '')}"
-        )
+    seedance_error = build_requested_video_error(seedance_execution)
+    if seedance_error:
+        errors.append(seedance_error)
 
     return " | ".join(errors)
 
@@ -157,7 +166,7 @@ def build_requested_video_error(seedance_execution: object) -> str:
     seedance_pending_count = int(getattr(seedance_execution, "pending_count", 0))
     if seedance_submitted and seedance_failed_count == 0 and seedance_pending_count == 0:
         return ""
-    return (
+    base_message = (
         "Seedance video generation failed: "
         f"submitted={seedance_submitted}, "
         f"completed_count={getattr(seedance_execution, 'completed_count', 0)}, "
@@ -165,3 +174,32 @@ def build_requested_video_error(seedance_execution: object) -> str:
         f"pending_count={seedance_pending_count}, "
         f"note={getattr(seedance_execution, 'note', '')}"
     )
+    clip_error_details = _build_seedance_clip_error_details(seedance_execution)
+    if clip_error_details:
+        return f"{base_message} | {clip_error_details}"
+    return base_message
+
+
+def _build_seedance_clip_error_details(seedance_execution: object) -> str:
+    raw_clip_results = getattr(seedance_execution, "clip_results", None)
+    if not raw_clip_results:
+        return ""
+
+    details: list[str] = []
+    for item in raw_clip_results:
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("segment_id") or "unknown-segment")
+            error = str(item.get("error") or "").strip()
+        else:
+            title = str(
+                getattr(item, "title", "")
+                or getattr(item, "segment_id", "")
+                or "unknown-segment"
+            )
+            error = str(getattr(item, "error", "") or "").strip()
+        if not error:
+            continue
+        details.append(f"{title}: {error}")
+        if len(details) >= 2:
+            break
+    return " | ".join(details)

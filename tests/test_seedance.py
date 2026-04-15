@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
+import httpx
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -58,8 +60,14 @@ class SeedanceClientTestCase(unittest.TestCase):
             timed_beats=["[0s-2s] 角色入场。"],
             start_frame_path="start.png",
             end_frame_path="end.png",
+            mid_frame_path="mid.png",
             start_frame_url="https://example.com/start.png",
+            mid_frame_url="https://example.com/mid.png",
             end_frame_url="https://example.com/end.png",
+            reference_image_urls=[
+                "https://example.com/char-a.png",
+                "https://example.com/char-b.png",
+            ],
             duration_seconds=5,
             aspect_ratio="16:9",
             with_audio=True,
@@ -73,8 +81,168 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["duration"], 5)
         self.assertFalse(payload["watermark"])
         self.assertEqual(payload["content"][0], {"type": "text", "text": clip.prompt})
-        self.assertEqual(payload["content"][1]["role"], "first_frame")
-        self.assertEqual(payload["content"][2]["role"], "last_frame")
+        self.assertEqual(payload["content"][1]["role"], "reference_image")
+        self.assertEqual(payload["content"][2]["role"], "reference_image")
+        self.assertEqual(payload["content"][3]["role"], "reference_image")
+        self.assertEqual(payload["content"][4]["role"], "first_frame")
+        self.assertEqual(payload["content"][5]["role"], "last_frame")
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/mid.png")
+
+    def test_build_payload_can_drop_character_reference_images(self) -> None:
+        client = SeedanceClient(SeedanceConfig())
+        clip = SeedanceClipTask(
+            segment_id="ch01-seg02",
+            title="测试片段",
+            prompt="测试",
+            narration="测试",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            start_frame_path="start.png",
+            end_frame_path="end.png",
+            mid_frame_path="mid.png",
+            start_frame_url="https://example.com/start.png",
+            mid_frame_url="https://example.com/mid.png",
+            end_frame_url="https://example.com/end.png",
+            reference_image_urls=[
+                "https://example.com/char-a.png",
+                "https://example.com/char-b.png",
+            ],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-seg02.mp4",
+        )
+
+        payload = client.build_payload(
+            clip,
+            include_character_reference_images=False,
+            include_mid_frame_reference=True,
+        )
+
+        self.assertEqual(
+            [item.get("role", "text") for item in payload["content"]],
+            ["text", "reference_image", "first_frame", "last_frame"],
+        )
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/mid.png")
+
+    def test_submit_clip_retries_with_simpler_payload_after_http_400(self) -> None:
+        client = SeedanceClient(SeedanceConfig())
+        clip = SeedanceClipTask(
+            segment_id="seg-retry",
+            title="回退测试",
+            prompt="测试",
+            narration="测试",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            start_frame_path="start.png",
+            end_frame_path="end.png",
+            mid_frame_path="mid.png",
+            start_frame_url="https://example.com/start.png",
+            mid_frame_url="https://example.com/mid.png",
+            end_frame_url="https://example.com/end.png",
+            reference_image_urls=[
+                "https://example.com/char-a.png",
+                "https://example.com/char-b.png",
+            ],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/seg-retry.mp4",
+        )
+
+        request = httpx.Request("POST", "https://example.com/tasks")
+        responses = [
+            httpx.Response(
+                400,
+                json={"error": {"message": "reference_image is invalid"}},
+                request=request,
+            ),
+            httpx.Response(
+                200,
+                json={"id": "task-seedance-1"},
+                request=request,
+            ),
+        ]
+
+        class FakeClient:
+            def __init__(self, response_queue):
+                self.response_queue = list(response_queue)
+                self.calls = []
+
+            def post(self, endpoint, json, headers):
+                self.calls.append(
+                    {
+                        "endpoint": endpoint,
+                        "payload": json,
+                        "headers": headers,
+                    }
+                )
+                return self.response_queue.pop(0)
+
+        fake_client = FakeClient(responses)
+
+        task_id = client._submit_clip(fake_client, clip)
+
+        self.assertEqual(task_id, "task-seedance-1")
+        self.assertEqual(len(fake_client.calls), 2)
+        self.assertEqual(
+            [item.get("role", "text") for item in fake_client.calls[0]["payload"]["content"]],
+            ["text", "reference_image", "reference_image", "reference_image", "first_frame", "last_frame"],
+        )
+        self.assertEqual(
+            [item.get("role", "text") for item in fake_client.calls[1]["payload"]["content"]],
+            ["text", "reference_image", "first_frame", "last_frame"],
+        )
+
+    def test_submit_clip_raises_detailed_error_after_all_payload_variants_fail(self) -> None:
+        client = SeedanceClient(SeedanceConfig())
+        clip = SeedanceClipTask(
+            segment_id="seg-fail",
+            title="失败片段",
+            prompt="测试",
+            narration="测试",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            start_frame_path="start.png",
+            end_frame_path="end.png",
+            mid_frame_path="mid.png",
+            start_frame_url="https://example.com/start.png",
+            mid_frame_url="https://example.com/mid.png",
+            end_frame_url="https://example.com/end.png",
+            reference_image_urls=[
+                "https://example.com/char-a.png",
+            ],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/seg-fail.mp4",
+        )
+
+        request = httpx.Request("POST", "https://example.com/tasks")
+        responses = [
+            httpx.Response(400, json={"error": {"message": "bad full_context"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad scene_anchor_only"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad first_last_only"}}, request=request),
+        ]
+
+        class FakeClient:
+            def __init__(self, response_queue):
+                self.response_queue = list(response_queue)
+
+            def post(self, endpoint, json, headers):
+                return self.response_queue.pop(0)
+
+        with self.assertRaisesRegex(RuntimeError, "bad first_last_only"):
+            client._submit_clip(FakeClient(responses), clip)
 
     def test_extract_video_url_from_live_status_shape(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -200,6 +368,97 @@ class SeedanceClientTestCase(unittest.TestCase):
             self.assertEqual(pending_clip.submit_status, "completed")
             self.assertEqual(pending_clip.remote_status, "succeeded")
             self.assertEqual(pending_clip.downloaded_path, str(pending_path))
+
+    def test_execute_manifest_only_processes_selected_segment(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            clip_a_path = Path(temp_dir) / "clip-a.mp4"
+            clip_b_path = Path(temp_dir) / "clip-b.mp4"
+            clip_a = SeedanceClipTask(
+                segment_id="seg-a",
+                title="片段A",
+                prompt="A",
+                narration="A",
+                dialogue_lines=[],
+                subtitle_lines=[],
+                sound_effects=[],
+                music_direction="",
+                timed_beats=[],
+                start_frame_path="a_start.png",
+                end_frame_path="a_end.png",
+                duration_seconds=5,
+                aspect_ratio="16:9",
+                with_audio=True,
+                output_path=str(clip_a_path),
+                start_frame_url="https://example.com/a_start.png",
+                end_frame_url="https://example.com/a_end.png",
+            )
+            clip_b = SeedanceClipTask(
+                segment_id="seg-b",
+                title="片段B",
+                prompt="B",
+                narration="B",
+                dialogue_lines=[],
+                subtitle_lines=[],
+                sound_effects=[],
+                music_direction="",
+                timed_beats=[],
+                start_frame_path="b_start.png",
+                end_frame_path="b_end.png",
+                duration_seconds=5,
+                aspect_ratio="16:9",
+                with_audio=True,
+                output_path=str(clip_b_path),
+                start_frame_url="https://example.com/b_start.png",
+                end_frame_url="https://example.com/b_end.png",
+            )
+            manifest = SeedanceManifest(
+                title="片段选择测试",
+                model="doubao-seedance-2-0-260128",
+                base_url="",
+                clips=[clip_a, clip_b],
+            )
+            client = SeedanceClient(
+                SeedanceConfig(
+                    auto_submit=False,
+                    download_outputs=False,
+                )
+            )
+            client.api_key = "test-key"
+
+            def fake_submit_clip(_http_client, clip):
+                clip.remote_task_id = "task-b"
+                clip.submit_status = "submitted"
+                clip.remote_status = "submitted"
+                return "task-b"
+
+            with (
+                patch.object(client, "_submit_clip", side_effect=fake_submit_clip) as submit,
+                patch.object(
+                    client,
+                    "_resolve_clip_status_payload",
+                    return_value={
+                        "status": "succeeded",
+                        "content": {"video_url": "https://example.com/seg-b.mp4"},
+                    },
+                ) as resolve_status,
+                patch.object(client, "_complete_succeeded_clip") as complete_succeeded_clip,
+            ):
+                report = client.execute_manifest(
+                    manifest,
+                    force_submit=True,
+                    segment_ids={"seg-b"},
+                )
+
+        submit.assert_called_once()
+        resolve_status.assert_called_once()
+        complete_succeeded_clip.assert_called_once()
+        self.assertEqual(report.completed_count, 1)
+        self.assertEqual(report.failed_count, 0)
+        self.assertEqual(report.pending_count, 0)
+        self.assertEqual(len(report.clip_results), 1)
+        self.assertEqual(report.clip_results[0].segment_id, "seg-b")
+        self.assertEqual(clip_a.remote_task_id, "")
+        self.assertEqual(clip_b.remote_task_id, "task-b")
 
 
 if __name__ == "__main__":

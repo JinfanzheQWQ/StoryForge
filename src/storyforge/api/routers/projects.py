@@ -240,6 +240,30 @@ def _find_existing_story_analysis_task(
     return None
 
 
+def _find_existing_stage_task(
+    container,
+    *,
+    project_id: str,
+    task_type: str,
+    source_task_id: str,
+    segment_id: str | None,
+    merge_only: bool = False,
+):
+    expected_segment_id = segment_id or ""
+    for task in container.task_queue.store.list(project_id=project_id):
+        if task.task_type != task_type:
+            continue
+        if str(task.payload.get("source_task_id", "")) != source_task_id:
+            continue
+        if str(task.payload.get("segment_id", "")) != expected_segment_id:
+            continue
+        if bool(task.payload.get("merge_only", False)) != merge_only:
+            continue
+        if task.status in {"queued", "running"}:
+            return task
+    return None
+
+
 @router.post("/characters", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_character_job(
     payload: CreateStageTaskRequest,
@@ -281,13 +305,32 @@ async def create_scene_job(
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
 
+    existing_task = _find_existing_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.scenes",
+        source_task_id=payload.source_task_id,
+        segment_id=payload.segment_id,
+        merge_only=False,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+    }
+    if payload.segment_id:
+        task_payload["segment_id"] = payload.segment_id
+
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.scenes",
-        payload={
-            "project_id": payload.project_id,
-            "source_task_id": payload.source_task_id,
-        },
+        payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
     return JobAcceptedResponse(
@@ -307,10 +350,29 @@ async def create_video_job(
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
 
+    existing_task = _find_existing_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.videos",
+        source_task_id=payload.source_task_id,
+        segment_id=payload.segment_id,
+        merge_only=payload.merge_only,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
     task_payload = {
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
     }
+    if payload.merge_only:
+        task_payload["merge_only"] = True
+    if payload.segment_id:
+        task_payload["segment_id"] = payload.segment_id
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.videos",

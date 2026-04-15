@@ -1,6 +1,7 @@
 # 使用文档
 
 这份文档面向“如何把 StoryForge 跑起来并完成一轮实际工作流”。
+它是当前唯一的操作手册；README 不再重复这里的步骤细节，`status.md` 也不再重复这里的产物说明。
 
 如果你只想先快速体验，优先看 [`README.md`](../README.md)。  
 如果你需要 HTTP 接口示例，配合阅读 [`api.md`](api.md)。
@@ -11,7 +12,7 @@
 - `uv`
 - `ffmpeg`
 - 可访问的 DeepSeek / Seedream / Seedance 接口
-- 可选：MySQL 8+
+- MySQL 8+
 
 ## 安装
 
@@ -53,6 +54,7 @@ SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 
 - `storyforge.example.toml`：主配置，默认开发与日常运行使用
 - `storyforge.live.example.toml`：真实提交模板，默认打开真实媒体提交相关开关
+- StoryForge 现在要求 MySQL 必须可连接；没有数据库时不会以“内存态”降级运行
 
 关键配置项：
 
@@ -75,7 +77,6 @@ with_audio = true
 subtitle_mode = "burned_in"
 
 [database]
-enabled = true
 host = "127.0.0.1"
 port = 3306
 user = "root"
@@ -111,15 +112,15 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 2. 在项目详情页的“小说”标签页检查并按需修改正文
 3. 生成结构化信息
 4. 生成角色图
-5. 检查角色图后生成场景图
-6. 检查场景图后生成视频
+5. 在项目详情页时间线里按 segment 逐段生成场景图
+6. 在同一条时间线里按 segment 逐段生成视频
 
 这样可以逐阶段观察：
 
 - 小说正文是否符合预期
 - 结构化角色 / 分章 / 摘要是否符合预期
 - 角色视觉是否稳定
-- 场景首尾帧是否合理
+- 场景关键帧是否合理，尤其是双人 / 多人片段的中段站位是否稳定
 - 视频时长和字幕是否可接受
 
 删除项目：
@@ -225,6 +226,10 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果首轮角色表仍然缺失某些 slot，系统会额外发起一次“只补缺失角色”的结构化补生请求，再把结果合并回完整角色表
 - 视频规划在本阶段同步生成，后续角色图、场景图和视频阶段只读取这些规划文件，不再等到生成角色图时才拆分视频片段
 - `segment_plan.json` 会要求 LLM 按中文自然口播语速估算时长；对白、旁白或硬字幕超过当前时长可说完的字数时，必须拆成下一个片段
+- `segment_plan.json` 现在还会显式规划 `requires_mid_frame` 与 `mid_frame_prompt`；多人同框、长时长、动作推进明显的片段会在首尾帧之外额外生成中段锚点帧
+- `segment_plan.json` 现在还会显式规划 `start_frame_characters`、`mid_frame_characters`、`end_frame_characters`。`involved_characters` 只表示这个片段剧情涉及谁，不再等同于每一帧都必须同框
+- 帧级角色会按首帧 / 中段 / 尾帧对应的 `timed_beats` 与画面 prompt 二次归一化；“等待某人”“想起某人”这类未实际入镜的提及不会自动绑定该角色参考图
+- 场景生图阶段只负责纯画面关键帧，不允许把对白、硬字幕、聊天气泡、旁白框或任何可见文字直接画进图片；字幕只在视频阶段烧录
 
 ### 第三步：生成角色图
 
@@ -238,8 +243,16 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 产出：
 
 - `assets/frames/*_start.png`
+- `assets/frames/*_mid.png`
 - `assets/frames/*_end.png`
 - `seedream_scene_execution.json`
+
+说明：
+
+- Web 端会根据 `segment_plan.json` 先把所有片段列在时间线里
+- 场景图不再默认一口气生成全部片段
+- 你可以针对单个 segment 单独点击“生成场景图”或“重生成场景图”
+- 单段生成只会更新该 segment 对应的首帧 / 中段锚点帧 / 尾帧，不会把其它片段重跑
 
 ### 第五步：生成视频
 
@@ -248,7 +261,25 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `seedance_manifest.json`
 - `seedance_execution.json`
 - `rendered/*.mp4`
+
+说明：
+
+- 视频阶段也改成按 segment 单独触发
+- 只有某个 segment 的场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
+- 单段视频任务不会自动把全部 segment 再生成一遍
+
+### 第六步：手动合并总片
+
+产出：
+
 - `rendered/full_story.mp4`
+
+说明：
+
+- 总片不再自动合并
+- 页面会提供单独的“合并已生成片段”按钮
+- 合并时会按 `seedance_manifest.json` 的片段顺序，把当前已经存在本地 mp4 的片段拼成 `full_story.mp4`
+- 至少需要 2 个已生成片段才能执行合并
 
 ## 输出目录
 
@@ -295,26 +326,29 @@ outputs/<story-slug>/
   角色定妆图任务清单，记录每个角色要怎么生成、输出到哪里、当前状态是什么。
   角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只保留角色姓名和人物描述，要求正面、左侧面、背面三栏全身站姿一致。不再要求信息格、色卡、材质块或灰底设计板；性别、身份和职业只作为造型参考，不允许作为画面文字。
 - `segment_plan.json`
-  视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首尾帧 prompt 和分段关系。
+  视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首帧 / 中段锚点帧 / 尾帧 prompt，以及分段关系。
+  其中 `requires_mid_frame = true` 表示该片段会额外生成中段锚点帧；常见于双人 / 多人同框、8 秒以上片段、动作推进明显或中段关系变化明显的镜头。
+  页面时间线会直接读取这份规划来展示完整片段列表，即使某个片段还没有生成任何图片或视频，也会先显示出来等待单独触发。
 - `scene_image_manifest.json`
-  场景首尾帧任务清单，记录每个片段的首帧、尾帧、参考图和输出位置。
+  场景关键帧任务清单，记录每个片段的首帧、中段锚点帧（如有）、尾帧、每一帧实际出镜角色、角色参考图和输出位置。
 - `seedream_character_execution.json`
   角色图执行报告，只用于确认角色图阶段是否成功以及失败原因。
 - `seedream_scene_execution.json`
   场景图执行报告，只用于确认场景图阶段是否成功以及失败原因。
 - `seedance_manifest.json`
   最终视频提交清单，Seedance 会按这里的每个 clip 去生成视频。
+  StoryForge 会优先用“角色定妆图 + 中段锚点图（如有）+ 首尾帧”的完整组合提交；若 Seedance 对该组合返回 400，会自动降级到更保守的图片组合继续重试。
   `title` 应继承真实小说标题，不再使用 `segment_video_manifest` 这类文件用途名；旧产物重载时也会优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - `seedance_execution.json`
   视频执行报告，记录提交状态、完成数量、失败数量和下载结果。
 - `assets/characters/*.png`
   实际生成出来的角色图文件。
 - `assets/frames/*.png`
-  实际生成出来的场景首帧和尾帧文件。
+  实际生成出来的场景关键帧文件，包含首帧、必要时的中段锚点帧和尾帧。
 - `rendered/*.mp4`
   各个视频片段的下载结果。
 - `rendered/full_story.mp4`
-  条件满足时自动拼出的总片。
+  用户手动触发合并后生成的总片。
 
 ## 推荐联调顺序
 
@@ -330,18 +364,22 @@ outputs/<story-slug>/
 
 1. 生成角色图
 2. 检查角色外观、性别、体态和服装是否稳定
-3. 再生成场景首尾帧
-4. 检查场景图是否引用同一组角色图
+3. 再到项目详情时间线里按 segment 逐段生成场景关键帧
+4. 检查场景图是否引用同一组角色图；若是双人 / 多人片段，重点检查中段锚点帧是否把所有角色都稳定画出
+   现在首帧 / 中段 / 尾帧会按各自的 `*_frame_characters` 和对应时间节拍选参考图；如果首帧或中段明明是单人等待镜头，就不会因为整段 `involved_characters` 有两个人而自动喂入另一位角色图
+5. 优先重跑具体有问题的 segment，不要默认整批重跑
 
 ### 阶段三：提交真实视频
 
-1. 确认 `seedance_manifest.json` 里的片段数量、时长、字幕和首尾帧路径
+1. 确认 `seedance_manifest.json` 里的片段数量、时长、字幕，以及角色参考图 / 中段锚点图 / 首尾帧路径
 2. 确认没有使用 `--reload` 启动服务
-3. 最后再提交 Seedance 视频任务
+3. 在项目详情时间线里按 segment 单独提交 Seedance 视频任务
+4. 当至少已有 2 个片段生成完成后，再手动点击“合并已生成片段”
 
 ## 失败与重试
 
 - 所有任务都会在接口和页面上返回 `error` 字段，前端会展示任务级和阶段级失败原因。
+- Seedance 视频任务如果提交阶段就被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和各次降级尝试，不再只显示 `failed_count=1`。
 - LLM 结构化输出失败会由 StoryForge 外层最多重试 3 次；仍失败会显式标记任务失败。
 - LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果返回空结构，会显示“模型没有返回结构化对象”这类明确原因。
 - 服务重启时，残留的 `running` 任务会重新回到 `queued`，启动后会重新执行。

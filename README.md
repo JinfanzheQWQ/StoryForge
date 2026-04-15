@@ -28,7 +28,7 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 - 基于 `DeepSeek` 的默认 LLM 接入
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
-- `FastAPI` + 异步任务队列 + 项目 / 任务持久化
+- `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
 - 浏览器端五步式工作台、CLI 和 HTTP API 三种入口
 
 ## 核心工作流
@@ -59,7 +59,7 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
 - 项目级管理：支持同一项目下多次运行结果追踪
-- 元数据持久化：支持本地 JSON 或 MySQL
+- 元数据持久化：基于 MySQL
 - 页面会展示任务和各阶段失败原因，便于定位 LLM schema、Seedream、Seedance 或下载失败
 - 自动产物落盘：核心 JSON、图片、视频和执行报告会保存到输出目录
 
@@ -124,7 +124,7 @@ SEEDREAM_BASE_URL=...
 SEEDANCE_BASE_URL=...
 ```
 
-如果启用 MySQL 持久化，还需要：
+还必须配置 MySQL 密码：
 
 ```bash
 STORYFORGE_DB_PASSWORD=...
@@ -143,7 +143,6 @@ STORYFORGE_DB_PASSWORD=...
 - `llm.provider` / `llm.model`
 - `seedream.base_url` / `seedream.model`
 - `seedance.base_url` / `seedance.model`
-- `database.enabled`
 - `queue.concurrency`
 - 内容合规由接入的 LLM / 媒体供应商负责，StoryForge 后端不再做本地规则拦截
 
@@ -167,7 +166,7 @@ uv run storyforge api serve
 3. 手动触发结构化信息生成
 4. 在同一条 story run 上生成角色图
 5. 基于同一条 story run 生成场景图
-6. 生成视频片段，并在条件满足时自动合并总片
+6. 生成视频片段，并在需要时手动合并总片
 
 ## CLI 用法
 
@@ -203,7 +202,7 @@ uv run storyforge video plan \
 
 ## API 概览
 
-主要接口：
+常用接口：
 
 - `POST /v1/projects/novel`
 - `POST /v1/projects/story-analysis`
@@ -218,21 +217,17 @@ uv run storyforge video plan \
 - `GET /v1/tasks/{task_id}`
 - `GET /v1/tasks/{task_id}/artifacts`
 
-删除项目会同步移除项目元数据、任务记录和该项目任务结果记录过的输出目录；后端只允许删除 `paths.output_dir` 下的项目产物目录，不会删除输出根目录本身或外部路径。
-
-详细接口文档见：[docs/api.md](docs/api.md)
+删除项目时，后端会同步清理项目元数据、任务记录和安全范围内的输出目录。
+完整字段、请求示例和阶段接口说明见：[docs/api.md](docs/api.md)
 
 ## 输出产物
 
-典型输出包括：
+核心产物包括：
 
 - `story_source.json`
 - `novel_package.json`
 - `novel_audit.json`
-- `character_visual_bible.json`
-- `character_image_manifest.json`
 - `segment_plan.json`
-- `scene_image_manifest.json`
 - `seedream_character_execution.json`
 - `seedream_scene_execution.json`
 - `seedance_manifest.json`
@@ -240,10 +235,8 @@ uv run storyforge video plan \
 - `rendered/*.mp4`
 - `rendered/full_story.mp4`
 
-CLI 直接运行时，默认输出到 `outputs/<story-slug>/`。  
-通过五步式项目任务运行时，后续阶段会复用同一个 `output_dir`。
-其中 `character_visual_bible.json`、`character_image_manifest.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 会在“生成结构化信息”阶段提前落盘；角色图、场景图和视频阶段只继续消费并更新这些规划文件。
-`segment_plan.json` 会按中文口播语速预算控制对白、旁白、字幕和视频时长，超出单段可说完的内容会拆成后续片段。
+CLI 默认输出到 `outputs/<story-slug>/`，Web 项目任务会在同一 `output_dir` 上分阶段复用。
+更完整的目录结构、产物职责和联调顺序见：[docs/usage.md](docs/usage.md)
 
 ## 仓库结构
 
@@ -269,28 +262,24 @@ StoryForge/
 
 ## 当前状态
 
-已经完成：
+当前已经打通：
 
-- 小说生成主链路
-- 角色图与场景图生成主链路
-- Seedance 视频任务提交、轮询、下载
-- `ffmpeg` 片段合并
-- Web 控制台
-- 项目 / 任务持久化
-- 服务重启时，残留的 `running` 任务会重新排回队列，而不是直接标记失败
-- 前端失败原因展示
-- 前后端首轮模块化
-- 后端核心域服务拆分与测试基线恢复
+- 小说生成
+- 结构化解析
+- 角色图 / 场景图
+- Seedance 视频片段生成与下载
+- 手动总片合并
+- Web 控制台、CLI、HTTP API
+- MySQL 项目 / 任务持久化
 
-当前仍未完成或仍需按环境继续补强：
+当前仍需继续补强：
 
 - 生产级持久化执行队列
 - 对象存储与公网素材管理
-- 更强的角色一致性控制
-- 更强的声音一致性控制
+- 更强的角色 / 音色一致性
 - 认证、权限和生产级治理
 
-最新状态与路线图见：[docs/status.md](docs/status.md)
+详细状态、限制与路线图见：[docs/status.md](docs/status.md)
 
 ## 测试
 

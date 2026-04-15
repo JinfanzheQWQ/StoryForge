@@ -7,6 +7,7 @@ from storyforge.application.task_support import (
     build_requested_image_error,
     build_requested_media_error,
     build_requested_video_error,
+    refresh_artifact_revision_for_tasks,
     load_novel_package,
     load_story_source,
     persist_task_progress,
@@ -25,6 +26,7 @@ from storyforge.pipelines.story_pipeline import (
 from storyforge.pipelines.video_pipeline import (
     run_character_image_pipeline,
     run_image_pipeline,
+    run_video_merge_pipeline,
     run_scene_image_pipeline,
     run_video_pipeline,
     run_video_render_pipeline,
@@ -216,6 +218,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    segment_id = str(task.payload.get("segment_id", "")).strip() or None
     partial_response = _build_stage_response(
         task=task,
         source_task=source_task,
@@ -231,6 +234,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         project_root=context.project_root,
         output_root=output_dir,
         submit_scenes=True,
+        segment_id=segment_id,
     )
     response = {
         **partial_response,
@@ -247,13 +251,23 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "pipeline_stage": "scenes_completed",
         "artifact_revision": utc_now(),
     }
+    if segment_id:
+        response["segment_id"] = segment_id
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    propagate_shared_result(
-        context,
-        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-        result=response,
-        exclude_task_id=task.task_id,
-    )
+    if segment_id:
+        refresh_artifact_revision_for_tasks(
+            context,
+            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+            artifact_revision=str(response["artifact_revision"]),
+            exclude_task_id=task.task_id,
+        )
+    else:
+        propagate_shared_result(
+            context,
+            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+            result=response,
+            exclude_task_id=task.task_id,
+        )
     scene_error = build_requested_image_error(scene_result.seedream_execution)
     if scene_error:
         raise TaskExecutionError(scene_error, result=response)
@@ -264,46 +278,82 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    segment_id = str(task.payload.get("segment_id", "")).strip() or None
+    merge_only = bool(task.payload.get("merge_only", False))
     partial_response = _build_stage_response(
         task=task,
         source_task=source_task,
         output_dir=output_dir,
-        task_stage="videos",
-        pipeline_stage="video_render_started",
+        task_stage="video_merge" if merge_only else "videos",
+        pipeline_stage="video_merge_started" if merge_only else "video_render_started",
         pipeline_root_task_id=pipeline_root_task_id,
     )
     persist_task_progress(context, task, partial_response)
 
-    video_result = run_video_render_pipeline(
-        config=context.config,
-        project_root=context.project_root,
-        output_root=output_dir,
-        submit_seedance=True,
-    )
-    response = {
-        **partial_response,
-        "story_title": resolve_story_title(source_task),
-        "output_dir": str(video_result.output_dir),
-        "seedance_manifest_path": str(video_result.manifest_path),
-        "seedance_execution_path": str(video_result.seedance_execution_path),
-        "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
-        "full_story_path": (
-            str(video_result.full_story_path) if video_result.full_story_path else None
-        ),
-        "pipeline_stage": "video_completed",
-        "seedance_submitted": video_result.seedance_execution.submitted,
-        "artifact_revision": utc_now(),
-    }
+    if merge_only:
+        video_result = run_video_merge_pipeline(
+            config=context.config,
+            project_root=context.project_root,
+            output_root=output_dir,
+        )
+        response = {
+            **partial_response,
+            "story_title": resolve_story_title(source_task),
+            "output_dir": str(video_result.output_dir),
+            "seedance_manifest_path": str(video_result.manifest_path),
+            "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
+            "full_story_path": str(video_result.full_story_path),
+            "pipeline_stage": "video_merge_completed",
+            "merge_only": True,
+            "merged_clip_count": video_result.merged_clip_count,
+            "skipped_clip_count": video_result.skipped_clip_count,
+            "artifact_revision": utc_now(),
+        }
+    else:
+        video_result = run_video_render_pipeline(
+            config=context.config,
+            project_root=context.project_root,
+            output_root=output_dir,
+            submit_seedance=True,
+            segment_id=segment_id,
+        )
+        response = {
+            **partial_response,
+            "story_title": resolve_story_title(source_task),
+            "output_dir": str(video_result.output_dir),
+            "seedance_manifest_path": str(video_result.manifest_path),
+            "seedance_execution_path": str(video_result.seedance_execution_path),
+            "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
+            "full_story_path": (
+                str(video_result.full_story_path) if video_result.full_story_path else None
+            ),
+            "pipeline_stage": "video_completed",
+            "seedance_submitted": video_result.seedance_execution.submitted,
+            "artifact_revision": utc_now(),
+        }
+    if segment_id:
+        response["segment_id"] = segment_id
+    if merge_only:
+        response["merge_only"] = True
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    propagate_shared_result(
-        context,
-        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-        result=response,
-        exclude_task_id=task.task_id,
-    )
-    video_error = build_requested_video_error(video_result.seedance_execution)
-    if video_error:
-        raise TaskExecutionError(video_error, result=response)
+    if segment_id:
+        refresh_artifact_revision_for_tasks(
+            context,
+            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+            artifact_revision=str(response["artifact_revision"]),
+            exclude_task_id=task.task_id,
+        )
+    else:
+        propagate_shared_result(
+            context,
+            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+            result=response,
+            exclude_task_id=task.task_id,
+        )
+    if not merge_only:
+        video_error = build_requested_video_error(video_result.seedance_execution)
+        if video_error:
+            raise TaskExecutionError(video_error, result=response)
     return response
 
 
@@ -422,7 +472,7 @@ def _build_stage_response(
     pipeline_stage: str,
     pipeline_root_task_id: str,
 ) -> dict[str, object]:
-    return {
+    response = {
         "project_id": task.project_id,
         "story_title": resolve_story_title(source_task),
         "output_dir": str(output_dir),
@@ -439,3 +489,7 @@ def _build_stage_response(
         "source_task_id": str(task.payload["source_task_id"]),
         "artifact_revision": utc_now(),
     }
+    segment_id = str(task.payload.get("segment_id", "")).strip()
+    if segment_id:
+        response["segment_id"] = segment_id
+    return response

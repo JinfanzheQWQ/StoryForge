@@ -73,6 +73,9 @@ class VideoPlanningMixin:
                         "title": f"{chapter.title} / 片段 {scene_index}",
                         "summary": beat,
                         "involved_characters": focus_characters,
+                        "start_frame_characters": focus_characters,
+                        "mid_frame_characters": focus_characters,
+                        "end_frame_characters": focus_characters,
                         "narration": (
                             f"{chapter.summary} 当前片段聚焦：{beat}。"
                             f"结尾要保留 {chapter.cliffhanger} 的余波。"
@@ -141,8 +144,38 @@ class VideoPlanningMixin:
                             f"角色色彩：{prompt_suffix or novel_package.brief.tone}"
                         ),
                         "start_frame_prompt": f"首帧，{beat} 的起始瞬间，情绪压低，镜头建立环境。",
+                        "mid_frame_prompt": (
+                            f"中段锚点帧，{beat} 的中段推进，"
+                            f"角色 {'、'.join(focus_characters) or '环境'} 的位置关系保持稳定。"
+                        ),
                         "end_frame_prompt": f"尾帧，指向 {chapter.cliffhanger} 的情绪或动作定格。",
                         "duration_seconds": self.segment_duration_seconds,
+                        "requires_mid_frame": self._should_require_mid_frame(
+                            involved_characters=focus_characters,
+                            duration_seconds=self.segment_duration_seconds,
+                            dialogue_lines=[
+                                f"{focus_characters[0]}（压低声音）：“{chapter.key_conflict}”"
+                            ]
+                            if focus_characters
+                            else [],
+                            timed_beats=self._build_default_timed_beats(
+                                beat=beat,
+                                chapter_summary=chapter.summary,
+                                narration=(
+                                    f"{chapter.summary} 当前片段聚焦：{beat}。"
+                                    f"结尾要保留 {chapter.cliffhanger} 的余波。"
+                                ),
+                                dialogue_lines=[
+                                    f"{focus_characters[0]}（压低声音）：“{chapter.key_conflict}”"
+                                ]
+                                if focus_characters
+                                else [],
+                                sound_effects=[
+                                    "环境底噪保持低频压迫感",
+                                    f"突出 {'、'.join(novel_package.outline.visual_motifs[:2])} 对应的环境音",
+                                ],
+                            ),
+                        ),
                         "transition_hint": "auto",
                     }
                 )
@@ -181,17 +214,54 @@ class VideoPlanningMixin:
         tasks: list[SceneImageTask] = []
         previous_segment: VideoSegment | None = None
         for segment in segments:
-            character_lock = self._build_scene_character_lock(segment, profile_map)
-            reference_images = [
-                path
-                for name in segment.involved_characters
-                for path in reference_map.get(name, [])
-            ]
-            if not reference_images and character_images:
-                reference_images = [character_images[0].output_path]
+            scene_character_lock = self._build_scene_character_lock(
+                segment.involved_characters,
+                profile_map,
+            )
+            start_frame_characters = self._normalize_frame_character_list(
+                segment.start_frame_characters,
+                segment.involved_characters,
+            )
+            mid_frame_characters = self._normalize_frame_character_list(
+                segment.mid_frame_characters,
+                segment.involved_characters,
+            )
+            end_frame_characters = self._normalize_frame_character_list(
+                segment.end_frame_characters,
+                segment.involved_characters,
+            )
             continuity_source_segment_id = self._resolve_continuity_source_segment_id(
                 current_segment=segment,
                 previous_segment=previous_segment,
+            )
+            requires_mid_frame = self._should_require_mid_frame(
+                involved_characters=segment.involved_characters,
+                duration_seconds=segment.duration_seconds,
+                dialogue_lines=segment.dialogue_lines,
+                timed_beats=segment.timed_beats,
+                requested=segment.requires_mid_frame,
+            )
+            effective_mid_frame_characters = mid_frame_characters if requires_mid_frame else []
+            reference_images = self._merge_unique_paths(
+                [
+                path
+                for name in self._merge_unique_character_names(
+                    start_frame_characters,
+                    effective_mid_frame_characters,
+                    end_frame_characters,
+                )
+                for path in reference_map.get(name, [])
+                ]
+            )
+            mid_frame_prompt = (
+                self._stylize_frame_prompt(
+                    segment.mid_frame_prompt or self._build_default_mid_frame_prompt(segment),
+                    effective_mid_frame_characters,
+                    "中段锚点帧",
+                    self._build_scene_character_lock(effective_mid_frame_characters, profile_map),
+                )
+                if requires_mid_frame
+                else ""
             )
             tasks.append(
                 SceneImageTask(
@@ -199,24 +269,35 @@ class VideoPlanningMixin:
                     scene_prompt=self._stylize_scene_prompt(
                         segment.scene_prompt,
                         segment,
-                        character_lock,
+                        scene_character_lock,
                     ),
                     start_frame_prompt=self._stylize_frame_prompt(
                         segment.start_frame_prompt,
-                        segment,
+                        start_frame_characters,
                         "首帧",
-                        character_lock,
+                        self._build_scene_character_lock(start_frame_characters, profile_map),
                     ),
+                    mid_frame_prompt=mid_frame_prompt,
                     end_frame_prompt=self._stylize_frame_prompt(
                         segment.end_frame_prompt,
-                        segment,
+                        end_frame_characters,
                         "尾帧",
-                        character_lock,
+                        self._build_scene_character_lock(end_frame_characters, profile_map),
                     ),
                     reference_images=reference_images,
                     start_frame_path=f"{output_dir}/assets/frames/{segment.segment_id}_start.png",
+                    mid_frame_path=(
+                        f"{output_dir}/assets/frames/{segment.segment_id}_mid.png"
+                        if requires_mid_frame
+                        else ""
+                    ),
                     end_frame_path=f"{output_dir}/assets/frames/{segment.segment_id}_end.png",
                     provider=self.scene_image_provider,
+                    involved_characters=list(segment.involved_characters),
+                    start_frame_characters=start_frame_characters,
+                    mid_frame_characters=effective_mid_frame_characters,
+                    end_frame_characters=end_frame_characters,
+                    requires_mid_frame=requires_mid_frame,
                     reuse_previous_end_frame=bool(continuity_source_segment_id),
                     continuity_source_segment_id=continuity_source_segment_id,
                 )
@@ -244,11 +325,13 @@ class VideoPlanningMixin:
                 music_direction=item.music_direction,
                 timed_beats=item.timed_beats,
                 start_frame_path=scene_map[item.segment_id].start_frame_path,
+                mid_frame_path=scene_map[item.segment_id].mid_frame_path,
                 end_frame_path=scene_map[item.segment_id].end_frame_path,
                 duration_seconds=item.duration_seconds,
                 aspect_ratio=self.aspect_ratio,
                 with_audio=self.seedance_config.with_audio,
                 output_path=f"{output_dir}/rendered/{item.segment_id}.mp4",
+                reference_image_paths=self._merge_unique_paths(scene_map[item.segment_id].reference_images),
             )
             for item in segments
         ]
@@ -259,7 +342,8 @@ class VideoPlanningMixin:
             clips=clips,
             notes=[
                 "先生成角色图，再让场景生图阶段引用角色图作为 reference。",
-                "每个视频片段使用首尾帧 prompt 约束视觉连续性。",
+                "多人同框、长时长或镜头推进明显的片段会额外生成中段锚点帧。",
+                "每个视频片段使用首帧、尾帧，以及必要时的中段锚点图共同约束视觉连续性。",
                 "每个片段都会输出旁白、对白、音效和音乐方向，再编译成 Seedance 音视频 prompt。",
                 "Seedance 负责生成视频与自带音频，无需单独 TTS。",
             ],
@@ -304,6 +388,13 @@ class VideoPlanningMixin:
                 dialogue_lines=segment.dialogue_lines,
                 timed_beats=timed_beats,
             )
+            requires_mid_frame = self._should_require_mid_frame(
+                involved_characters=segment.involved_characters,
+                duration_seconds=normalized_duration,
+                dialogue_lines=segment.dialogue_lines,
+                timed_beats=timed_beats,
+                requested=segment.requires_mid_frame,
+            )
             if normalized_duration != segment.duration_seconds:
                 timed_beats = self._retime_beat_descriptions(
                     self._extract_beat_descriptions(timed_beats),
@@ -316,6 +407,15 @@ class VideoPlanningMixin:
                         "narration": narration,
                         "timed_beats": timed_beats,
                         "subtitle_lines": subtitle_lines,
+                        "mid_frame_prompt": (
+                            (
+                                segment.mid_frame_prompt
+                                or self._build_default_mid_frame_prompt(segment)
+                            )
+                            if requires_mid_frame
+                            else ""
+                        ),
+                        "requires_mid_frame": requires_mid_frame,
                         "transition_hint": self._normalize_transition_hint(segment.transition_hint),
                         "source_segment_id": segment.source_segment_id or segment.segment_id,
                         "subsegment_index": 1,
@@ -346,6 +446,13 @@ class VideoPlanningMixin:
                 or self._fallback_subsegment_narration(segment.summary, index, split_count)
             )
             timed_beats_chunk = self._retime_beat_descriptions(beat_descriptions, clip_duration)
+            requires_mid_frame = self._should_require_mid_frame(
+                involved_characters=segment.involved_characters,
+                duration_seconds=clip_duration,
+                dialogue_lines=dialogue_lines,
+                timed_beats=timed_beats_chunk,
+                requested=segment.requires_mid_frame,
+            )
             subtitle_lines = subtitle_chunks[index - 1] or self._build_subtitle_lines(
                 narration=narration,
                 dialogue_lines=dialogue_lines,
@@ -376,11 +483,20 @@ class VideoPlanningMixin:
                             f"{segment.start_frame_prompt} 当前子片段：第{index}/{split_count}段，"
                             f"开场重点：{beat_descriptions[0]}"
                         ),
+                        "mid_frame_prompt": (
+                            (
+                                f"{segment.mid_frame_prompt or self._build_default_mid_frame_prompt(segment, focus_summary)} "
+                                f"当前子片段：第{index}/{split_count}段，中段重点：{focus_summary}"
+                            )
+                            if requires_mid_frame
+                            else ""
+                        ),
                         "end_frame_prompt": (
                             f"{segment.end_frame_prompt} 当前子片段：第{index}/{split_count}段，"
                             f"收束重点：{beat_descriptions[-1]}"
                         ),
                         "duration_seconds": clip_duration,
+                        "requires_mid_frame": requires_mid_frame,
                         "transition_hint": (
                             self._normalize_transition_hint(segment.transition_hint)
                             if index == 1
@@ -395,6 +511,82 @@ class VideoPlanningMixin:
             )
 
         return expanded_segments
+
+    def _should_require_mid_frame(
+        self,
+        involved_characters: list[str],
+        duration_seconds: int,
+        dialogue_lines: list[str],
+        timed_beats: list[str],
+        requested: bool = False,
+    ) -> bool:
+        if requested:
+            return True
+        if len(involved_characters) >= 2:
+            return True
+        if duration_seconds >= 8:
+            return True
+        if len(dialogue_lines) >= 2:
+            return True
+        if len(self._extract_beat_descriptions(timed_beats)) >= 3:
+            return True
+        return False
+
+    def _build_default_mid_frame_prompt(
+        self,
+        segment: VideoSegment | VideoSegmentSchema,
+        focus_summary: str = "",
+    ) -> str:
+        focus = focus_summary or segment.summary
+        characters = "、".join(
+            self._normalize_frame_character_list(
+                segment.mid_frame_characters,
+                segment.involved_characters,
+            )
+        ) or "环境"
+        return (
+            f"中段锚点帧，角色：{characters}，"
+            f"镜头推进到片段中段，重点呈现 {focus}，"
+            f"保持与当前片段首尾帧一致的场景、角色关系和动作方向。"
+            f"场景主提示：{segment.scene_prompt}"
+        )
+
+    def _normalize_frame_character_list(
+        self,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> list[str]:
+        normalized = [
+            name
+            for name in frame_characters
+            if name and name in involved_characters
+        ]
+        if normalized:
+            return normalized
+        if len(involved_characters) == 1:
+            return list(involved_characters)
+        return []
+
+    def _merge_unique_character_names(
+        self,
+        *character_lists: list[str],
+    ) -> list[str]:
+        merged: list[str] = []
+        for character_list in character_lists:
+            for name in character_list:
+                if name and name not in merged:
+                    merged.append(name)
+        return merged
+
+    def _merge_unique_paths(
+        self,
+        paths: list[str],
+    ) -> list[str]:
+        merged: list[str] = []
+        for path in paths:
+            if path and path not in merged:
+                merged.append(path)
+        return merged
 
     def _resolve_continuity_source_segment_id(
         self,

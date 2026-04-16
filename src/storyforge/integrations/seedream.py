@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import os
 import shutil
@@ -9,11 +10,13 @@ from typing import Any
 import httpx
 
 from storyforge.core.config import SeedreamConfig
-from storyforge.domains.video.contracts import CharacterImageTask, SceneImageTask, VideoProjectPackage
+from storyforge.domains.video.contracts import CharacterImageTask, SceneImageTask, VideoProjectPackage, VideoScene
 
 
 DEFAULT_SEEDREAM_BASE_URL = "https://operator.las.cn-beijing.volces.com/api/v1"
 SEEDREAM_BASE_URL_ENV = "SEEDREAM_BASE_URL"
+SEEDREAM_MAX_FRAME_REFERENCE_IMAGES = 4
+SEEDREAM_MAX_CHARACTER_REFERENCE_IMAGES = 2
 
 
 @dataclass(slots=True)
@@ -22,6 +25,12 @@ class SeedreamExecutionReport:
     generated_count: int
     failed_count: int
     note: str
+
+
+@dataclass(slots=True)
+class SeedreamPayloadAttempt:
+    label: str
+    payload: dict[str, Any]
 
 
 class SeedreamClient:
@@ -91,14 +100,47 @@ class SeedreamClient:
             item.segment_id: item
             for item in project_package.scene_images
         }
+        scene_lookup = {
+            item.scene_id: item
+            for item in project_package.scenes
+            if item.scene_id
+        }
+        selected_scene_ids = {
+            task.scene_id
+            for task in target_scene_tasks
+            if task.scene_id
+        }
+        failed_scene_ids: set[str] = set()
 
         with httpx.Client(timeout=120) as client:
+            for scene_id in sorted(selected_scene_ids):
+                scene = scene_lookup.get(scene_id)
+                if scene is None:
+                    continue
+                success, generated_now = self._ensure_scene_master_frame(client, scene)
+                if generated_now:
+                    generated_count += 1
+                if not success:
+                    failed_scene_ids.add(scene_id)
+
             for task in target_scene_tasks:
+                scene = scene_lookup.get(task.scene_id)
+                self._sync_scene_master_to_task(task, scene)
+                if task.scene_id and task.scene_id in failed_scene_ids:
+                    task.status = "failed"
+                    task.error = (
+                        scene.scene_master_frame_error
+                        if scene is not None and scene.scene_master_frame_error
+                        else "scene_master_frame generation failed."
+                    )
+                    failed_count += 1
+                    continue
                 success = self._generate_scene_frames(
                     client,
                     task,
                     project_package.character_images,
                     scene_map,
+                    scene_lookup,
                 )
                 generated_count += self._planned_scene_frame_count(task) if success else 0
                 failed_count += int(not success)
@@ -108,6 +150,45 @@ class SeedreamClient:
             "Seedream scene image tasks executed successfully."
             if failed_count == 0
             else "Seedream scene image generation completed with partial failures."
+        )
+        return SeedreamExecutionReport(
+            submitted=True,
+            generated_count=generated_count,
+            failed_count=failed_count,
+            note=note,
+        )
+
+    def generate_scene_master_frames(
+        self,
+        project_package: VideoProjectPackage,
+        force_submit: bool = False,
+        scene_ids: set[str] | None = None,
+        force_regenerate: bool = False,
+    ) -> SeedreamExecutionReport:
+        preflight = self._build_preflight_report(force_submit=force_submit)
+        if preflight is not None:
+            return preflight
+
+        target_scenes = self._select_scenes(project_package, scene_ids)
+        generated_count = 0
+        failed_count = 0
+
+        with httpx.Client(timeout=120) as client:
+            for scene in target_scenes:
+                success, generated_now = self._ensure_scene_master_frame(
+                    client,
+                    scene,
+                    force_regenerate=force_regenerate,
+                )
+                self._sync_scene_master_to_scene_tasks(project_package.scene_images, scene)
+                generated_count += int(generated_now)
+                failed_count += int(not success)
+
+        self._apply_scene_urls_to_seedance_manifest(project_package)
+        note = (
+            "Seedream scene master frame tasks executed successfully."
+            if failed_count == 0
+            else "Seedream scene master frame generation completed with partial failures."
         )
         return SeedreamExecutionReport(
             submitted=True,
@@ -156,6 +237,26 @@ class SeedreamClient:
             )
         return selected_tasks
 
+    def _select_scenes(
+        self,
+        project_package: VideoProjectPackage,
+        scene_ids: set[str] | None,
+    ) -> list[VideoScene]:
+        if not scene_ids:
+            return list(project_package.scenes)
+        selected_scenes = [
+            scene
+            for scene in project_package.scenes
+            if scene.scene_id in scene_ids
+        ]
+        missing_scenes = sorted(scene_ids - {scene.scene_id for scene in selected_scenes})
+        if missing_scenes:
+            raise ValueError(
+                "Requested scenes are not present in scene_plan.json: "
+                + ", ".join(missing_scenes)
+            )
+        return selected_scenes
+
     def _generate_character_image(self, client: httpx.Client, task: CharacterImageTask) -> bool:
         task.status = "running"
         try:
@@ -176,29 +277,29 @@ class SeedreamClient:
         task: SceneImageTask,
         character_images: list[CharacterImageTask],
         scene_map: dict[str, SceneImageTask],
+        scene_lookup: dict[str, VideoScene],
     ) -> bool:
         task.status = "running"
         try:
+            scene = scene_lookup.get(task.scene_id)
+            self._sync_scene_master_to_task(task, scene)
+            scene_master_reference_urls = (
+                [task.scene_master_frame_url]
+                if task.scene_master_frame_url
+                else []
+            )
             reference_urls = self._resolve_reference_urls(task.reference_images, character_images)
-            start_reference_urls = self._resolve_character_reference_urls(
-                task.start_frame_characters,
-                character_images,
-                fallback_urls=reference_urls,
-            )
-            mid_reference_urls = self._resolve_character_reference_urls(
-                task.mid_frame_characters,
-                character_images,
-                fallback_urls=reference_urls,
-            )
-            end_reference_urls = self._resolve_character_reference_urls(
-                task.end_frame_characters,
-                character_images,
-                fallback_urls=reference_urls,
-            )
             start_frame_url = self._resolve_continuity_start_frame(task, scene_map)
             if start_frame_url:
                 self._materialize_reused_start_frame(task, scene_map, client, start_frame_url)
             else:
+                start_reference_urls = self._build_frame_reference_urls(
+                    temporal_anchor_urls=[],
+                    scene_master_reference_urls=scene_master_reference_urls,
+                    frame_character_names=task.start_frame_characters,
+                    character_images=character_images,
+                    fallback_urls=reference_urls,
+                )
                 start_frame_url = self._create_image(
                     client,
                     prompt=task.start_frame_prompt,
@@ -207,9 +308,12 @@ class SeedreamClient:
 
             mid_frame_url = ""
             if task.requires_mid_frame and task.mid_frame_prompt.strip():
-                mid_frame_references = self._merge_reference_urls(
-                    [start_frame_url] if start_frame_url else [],
-                    mid_reference_urls,
+                mid_frame_references = self._build_frame_reference_urls(
+                    temporal_anchor_urls=[start_frame_url] if start_frame_url else [],
+                    scene_master_reference_urls=scene_master_reference_urls,
+                    frame_character_names=task.mid_frame_characters,
+                    character_images=character_images,
+                    fallback_urls=reference_urls,
                 )
                 mid_frame_url = self._create_image(
                     client,
@@ -217,9 +321,16 @@ class SeedreamClient:
                     reference_images=mid_frame_references,
                 )
 
-            end_frame_references = self._merge_reference_urls(
-                [mid_frame_url] if mid_frame_url else ([start_frame_url] if start_frame_url else []),
-                end_reference_urls,
+            end_frame_references = self._build_frame_reference_urls(
+                temporal_anchor_urls=(
+                    [mid_frame_url]
+                    if mid_frame_url
+                    else ([start_frame_url] if start_frame_url else [])
+                ),
+                scene_master_reference_urls=scene_master_reference_urls,
+                frame_character_names=task.end_frame_characters,
+                character_images=character_images,
+                fallback_urls=reference_urls,
             )
             end_frame_url = self._create_image(
                 client,
@@ -242,47 +353,176 @@ class SeedreamClient:
             task.error = str(exc)
             return False
 
+    def _ensure_scene_master_frame(
+        self,
+        client: httpx.Client,
+        scene: VideoScene,
+        *,
+        force_regenerate: bool = False,
+    ) -> tuple[bool, bool]:
+        if (
+            not force_regenerate
+            and scene.scene_master_frame_url
+            and scene.scene_master_frame_status == "completed"
+        ):
+            return True, False
+        previous_url = scene.scene_master_frame_url
+        scene.scene_master_frame_status = "running"
+        scene.scene_master_frame_error = ""
+        try:
+            master_frame_url = self._create_image(
+                client,
+                prompt=scene.scene_master_frame_prompt,
+            )
+            scene.scene_master_frame_url = master_frame_url
+            scene.scene_master_frame_status = "completed"
+            if self.config.download_outputs and master_frame_url and scene.scene_master_frame_path:
+                self._download_image(client, master_frame_url, Path(scene.scene_master_frame_path))
+            return True, True
+        except Exception as exc:
+            scene.scene_master_frame_status = "failed"
+            scene.scene_master_frame_error = str(exc)
+            if not previous_url:
+                scene.scene_master_frame_url = ""
+            return False, False
+
+    def _sync_scene_master_to_task(
+        self,
+        task: SceneImageTask,
+        scene: VideoScene | None,
+    ) -> None:
+        if scene is None:
+            return
+        task.scene_master_frame_prompt = scene.scene_master_frame_prompt
+        task.scene_master_frame_path = scene.scene_master_frame_path
+        task.scene_master_frame_url = scene.scene_master_frame_url
+        task.scene_master_frame_status = scene.scene_master_frame_status
+        task.scene_master_frame_error = scene.scene_master_frame_error
+
+    def _sync_scene_master_to_scene_tasks(
+        self,
+        scene_tasks: list[SceneImageTask],
+        scene: VideoScene,
+    ) -> None:
+        for task in scene_tasks:
+            if task.scene_id != scene.scene_id:
+                continue
+            self._sync_scene_master_to_task(task, scene)
+
     def _create_image(
         self,
         client: httpx.Client,
         prompt: str,
         reference_images: list[str] | None = None,
     ) -> str:
-        payload: dict[str, Any] = {
+        payload_attempts = self._payload_attempts(prompt, reference_images or [])
+        last_error: Exception | None = None
+        attempted_variants: list[str] = []
+        for endpoint in self._candidate_endpoints():
+            for payload_attempt in payload_attempts:
+                attempted_variants.append(f"{endpoint} [{payload_attempt.label}]")
+                try:
+                    response = client.post(
+                        endpoint,
+                        json=payload_attempt.payload,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    response.raise_for_status()
+                    return self._extract_image_url(response.json())
+                except Exception as exc:
+                    last_error = exc
+                    continue
+
+        raise RuntimeError(
+            "Seedream image generation failed "
+            f"after trying {attempted_variants}: {last_error}"
+        )
+
+    def _payload_attempts(
+        self,
+        prompt: str,
+        reference_images: list[str],
+    ) -> list[SeedreamPayloadAttempt]:
+        base_payload = self._base_payload(prompt)
+        attempts: list[SeedreamPayloadAttempt] = []
+        seen_signatures: set[str] = set()
+        for reference_variant in self._reference_image_candidates(reference_images):
+            for field_label, field_payload in self._reference_field_payloads(reference_variant):
+                payload = dict(base_payload)
+                payload.update(field_payload)
+                signature = self._payload_signature(payload)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                attempts.append(
+                    SeedreamPayloadAttempt(
+                        label=f"{field_label}; refs={len(reference_variant)}",
+                        payload=payload,
+                    )
+                )
+        return attempts
+
+    def _base_payload(self, prompt: str) -> dict[str, Any]:
+        return {
             "model": self.config.model,
             "prompt": prompt,
             "size": self.config.image_size,
             "response_format": self.config.response_format,
         }
-        if reference_images:
-            # Seedream's image-conditioning path accepts image inputs; we pass the
-            # available references through directly so scene frames can stay close
-            # to the approved character portraits.
-            payload["image"] = reference_images if len(reference_images) > 1 else reference_images[0]
 
-        last_error: Exception | None = None
-        attempted_endpoints: list[str] = []
-        for endpoint in self._candidate_endpoints():
-            attempted_endpoints.append(endpoint)
-            try:
-                response = client.post(
-                    endpoint,
-                    json=payload,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                )
-                response.raise_for_status()
-                return self._extract_image_url(response.json())
-            except Exception as exc:
-                last_error = exc
+    def _reference_image_candidates(self, reference_images: list[str]) -> list[list[str]]:
+        normalized: list[str] = []
+        for url in reference_images:
+            normalized_url = url.strip()
+            if normalized_url and normalized_url not in normalized:
+                normalized.append(normalized_url)
+        if not normalized:
+            return [[]]
+
+        candidates: list[list[str]] = [normalized]
+        if len(normalized) > 2:
+            candidates.append(normalized[:2])
+        if len(normalized) > 1:
+            candidates.append([normalized[0]])
+            candidates.append([normalized[1]])
+
+        deduped: list[list[str]] = []
+        seen: set[tuple[str, ...]] = set()
+        for candidate in candidates:
+            signature = tuple(candidate)
+            if signature in seen:
                 continue
+            seen.add(signature)
+            deduped.append(candidate)
+        return deduped
 
-        raise RuntimeError(
-            "Seedream image generation failed "
-            f"after trying {attempted_endpoints}: {last_error}"
-        )
+    def _reference_field_payloads(
+        self,
+        reference_images: list[str],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        if not reference_images:
+            return [("text_only", {})]
+        if len(reference_images) == 1:
+            single_reference = reference_images[0]
+            return [
+                ("image_string", {"image": single_reference}),
+                ("reference_images_string", {"reference_images": single_reference}),
+                ("reference_images_list", {"reference_images": [single_reference]}),
+            ]
+        return [
+            ("image_list", {"image": reference_images}),
+            ("reference_images_list", {"reference_images": reference_images}),
+            (
+                "reference_images_objects",
+                {"reference_images": [{"url": url} for url in reference_images]},
+            ),
+        ]
+
+    def _payload_signature(self, payload: dict[str, Any]) -> str:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
 
     def _candidate_endpoints(self) -> list[str]:
         base = (
@@ -369,6 +609,29 @@ class SeedreamClient:
             return urls
         return list(fallback_urls)
 
+    def _build_frame_reference_urls(
+        self,
+        *,
+        temporal_anchor_urls: list[str],
+        scene_master_reference_urls: list[str],
+        frame_character_names: list[str],
+        character_images: list[CharacterImageTask],
+        fallback_urls: list[str],
+    ) -> list[str]:
+        # Keep frame references intentionally sparse: a temporal anchor, the stable
+        # scene master, and only the characters actually visible in this frame.
+        character_reference_urls = self._resolve_character_reference_urls(
+            frame_character_names,
+            character_images,
+            fallback_urls=fallback_urls,
+        )[:SEEDREAM_MAX_CHARACTER_REFERENCE_IMAGES]
+        merged = self._merge_reference_url_groups(
+            temporal_anchor_urls,
+            scene_master_reference_urls,
+            character_reference_urls,
+        )
+        return merged[:SEEDREAM_MAX_FRAME_REFERENCE_IMAGES]
+
     def _apply_scene_urls_to_seedance_manifest(self, project_package: VideoProjectPackage) -> None:
         scene_map = {item.segment_id: item for item in project_package.scene_images}
         character_reference_map = {
@@ -383,8 +646,8 @@ class SeedreamClient:
             clip.start_frame_url = scene.start_frame_url
             clip.mid_frame_url = scene.mid_frame_url
             clip.end_frame_url = scene.end_frame_url
-            clip.reference_image_urls = self._merge_reference_urls(
-                [scene.mid_frame_url] if scene.mid_frame_url else [],
+            clip.reference_image_urls = self._merge_reference_url_groups(
+                [scene.scene_master_frame_url] if scene.scene_master_frame_url else [],
                 [
                     character_reference_map[path]
                     for path in clip.reference_image_paths
@@ -435,6 +698,17 @@ class SeedreamClient:
         for url in primary + secondary:
             if url and url not in merged:
                 merged.append(url)
+        return merged
+
+    def _merge_reference_url_groups(
+        self,
+        *groups: list[str],
+    ) -> list[str]:
+        merged: list[str] = []
+        for group in groups:
+            for url in group:
+                if url and url not in merged:
+                    merged.append(url)
         return merged
 
     def _planned_scene_frame_count(self, task: SceneImageTask) -> int:

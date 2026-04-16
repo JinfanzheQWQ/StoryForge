@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from storyforge.domains.novel.contracts import CharacterVoiceProfile, NovelPackage
-from storyforge.domains.video.contracts import CharacterVisualProfile, VideoSegment
+from storyforge.domains.video.contracts import CharacterVisualProfile, VideoScene, VideoSegment
 
 
 class VideoPromptingMixin:
@@ -11,6 +11,11 @@ class VideoPromptingMixin:
         "画面中禁止出现任何可见文字、对白字幕、台词字卡、聊天气泡、漫画对话框、旁白框、"
         "屏幕贴字、海报文案、水印、Logo、片名字样或说明性排版。"
         "本阶段只生成纯画面分镜，所有对白和硬字幕都只在后续视频阶段添加，不要提前画进图片里。"
+    )
+    SCENE_MASTER_FRAME_NO_PEOPLE_PROMPT = (
+        "这是一张纯场景参考图。画面中不得出现任何人物、角色、人脸、人体局部、背影、剪影、"
+        "倒影、影子、手脚、服装边角、人物海报、人物照片、人物雕像或其它拟人主体。"
+        "如果输入材料里出现角色名、人物站位、动作、表演、对白、情绪，请全部忽略，只保留空场景本身。"
     )
 
     CHARACTER_SHEET_LAYOUT_PROMPT = (
@@ -74,8 +79,16 @@ class VideoPromptingMixin:
 - 小说标题：{novel_package.outline.title}
 - 角色原名白名单：{allowed_names}
 - 只能使用小说中已存在的角色原名，不得改名，不得新增角色
-- 每个章节都必须至少产出 1 个片段
-- 视频“段”是章节内部的叙事切片，不是章节本身；同一章节可以拆成 1 段、2 段、3 段或更多
+- 每个章节都必须至少产出 1 个场景，每个场景至少产出 1 个片段
+- 你必须先输出 `scenes`，再在每个 scene 下输出 `segments`
+- 视频“段”是场景内部的叙事切片，不是章节本身；同一章节可以拆成 1 个或多个场景，每个场景又可以拆成 1 段、2 段、3 段或更多
+- `scene_id` 必须在全故事唯一，推荐格式 `ch01-sc01`
+- `segment_id` 必须在全故事唯一，推荐格式 `ch01-sc01-seg01`
+- 每个 scene 必须包含 `scene_id`、`chapter_number`、`title`、`summary`、`scene_anchor`、`scene_bible`、`involved_characters`、`segments`
+- `scene_anchor` 必须概括这个场景的连续性锚点，例如地点、时间、光线、天气、固定背景物、空间关系或反复出现的道具
+- `scene_bible` 是同一 scene 下所有片段共享的场景圣经，必须至少填写：`location`、`time_window`、`weather`、`lighting`、`dominant_palette`、`background_anchors`、`fixed_props`、`spatial_layout`、`character_blocking`、`continuity_notes`
+- `scene_bible` 要服务于场景连续性，内容必须稳定、可复用、偏视觉与调度，不要写成剧情摘要，不要把对白和字幕写进去
+- 同一 scene 下的多个片段必须共享同一时空和连续性的视觉基线；如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene
 - 每章拆成几段必须由你根据该章正文内容自行判断，依据包括：事件推进、场景切换、时间跳跃、情绪转折、镜头密度、对白密度
 - 不要把章节硬压成固定段数，也不要为了凑平均数机械切段
 - 每个片段除画面字段外，还必须输出可直接给 Seedance 使用的旁白、角色对白、环境音、音乐方向和时间节拍
@@ -91,15 +104,26 @@ class VideoPromptingMixin:
 - `timed_beats` 必须明确每一句旁白或对白在几秒到几秒说出，不能只写泛泛的镜头节奏
 - 每个片段必须输出 `transition_hint`，取值只能是 `continue` / `cut` / `auto`
 - 片段必须覆盖全部章节，`chapter_number` 必须与来源章节一致
+- 片段里的 `scene_id`、`scene_title`、`scene_summary`、`scene_anchor`、`scene_bible` 必须与所属 scene 保持一致
 - 必须严格复刻章节正文已经发生的事件、情绪和对白关系，不得自行改写关键情节、改变角色关系或新增冲突
 - 如果正文是告白、表白、对峙、争吵、谈判、审问、双人对话，`involved_characters` 必须同时包含对话/关系双方，不能只写一个角色
 - `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`
 - 每个片段都必须单独输出 `start_frame_characters`、`mid_frame_characters`、`end_frame_characters`
+- 每个片段都必须输出 `shot_state`
+- 每个片段都必须输出 `continuity_link`
+- `shot_state` 至少包含：`framing`、`camera_motion`、`blocking`、`action_progression`、`emotion_progression`、`prop_continuity`、`screen_direction`、`end_state_lock`
+- `shot_state` 只写镜头、调度、动作、道具和承接状态，不要写成剧情摘要，也不要写对白台词
+- `continuity_link` 至少包含：`previous_segment_id`、`transition_mode`、`opening_match`、`carry_over_elements`、`allowed_changes`、`transition_reason`
+- 若当前片段是同场景连续承接上一段，`transition_mode` 必须为 `continue`，并明确开场要继承上一段尾部的哪些状态
+- 若当前片段发生明确转场或切断承接，`transition_mode` 必须为 `cut`
+- 若当前片段是故事或场景起始段，可用 `transition_mode = start`
 - 这三个字段表示对应关键帧里真正出镜的人物，必须是 `involved_characters` 的子集
 - 如果首帧是单人等待、单人独白、单人回头、单人站立等镜头，不要把尚未出镜的人物写进 `start_frame_characters`
 - 如果尾帧仍然只有一个角色在镜头里，也不要把片段里稍后才出现或已经离场的人物写进 `end_frame_characters`
 - 若 `requires_mid_frame = true`，`mid_frame_characters` 必须准确对应中段锚点帧实际出镜人物；若不需要中段帧，则 `mid_frame_characters` 置空数组
 - `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt` 必须写清每个出镜角色的位置、动作和相互关系
+- `start_frame_prompt` / `mid_frame_prompt` / `end_frame_prompt` 必须与 `shot_state` 一致，不能一边说角色向左推进，一边又写成反方向收束
+- `start_frame_prompt` 必须与 `continuity_link.opening_match` 一致；如果要求承接上一段尾部，就不要把开场写成完全不同的站位和持物状态
 - `start_frame_prompt` / `mid_frame_prompt` / `end_frame_prompt` 必须与对应的帧角色列表一致，不要出现“帧角色列表只有 1 人，但 prompt 又要求另一人同框”的自相矛盾
 - 若正文明确同一片段里有人尚未入镜、稍后入镜或已经离场，允许帧级角色列表少于 `involved_characters`
 
@@ -293,14 +317,34 @@ class VideoPromptingMixin:
     ) -> str:
         characters = "、".join(segment.involved_characters) or "环境为主"
         sanitized_prompt = self._sanitize_image_prompt_text(prompt)
+        scene_bible_context = self._scene_bible_prompt_context(segment.scene_bible)
         return (
             "原创虚构场景分镜，风格化概念插画，非真人摄影，"
             "优先展示环境、光线和镜头调度，避免近景人像特写，"
             "若 involved_characters 有 2 人或以上，则这些角色必须同时出镜，不要只画一个人，"
             "每个 involved_characters 都必须按对应参考设定图还原，"
             "若角色出镜，必须保持稳定年龄感、稳定体型、稳定肩宽、稳定四肢比例和稳定脸型轮廓，"
+            f"{scene_bible_context}"
+            f"{self._shot_state_prompt_context(segment.shot_state)}"
             f"{self.SCENE_NO_TEXT_PROMPT}"
             f"角色：{characters}，{character_lock}，{sanitized_prompt}"
+        )
+
+    def _build_scene_master_frame_prompt(self, scene: VideoScene) -> str:
+        scene_master_context = self._scene_master_frame_prompt_context(
+            scene.scene_bible,
+            scene.involved_characters,
+        )
+        return (
+            "原创虚构场景母图，风格化概念插画，非真人摄影，"
+            "这是同一 scene 所有片段共用的环境与空间基准图，不是具体分镜终稿。"
+            "优先稳定锁定地点、时间、天气、光线、背景锚点、固定道具和空间布局，"
+            "不要把它画成情绪过满、动作过强或表演瞬间过于具体的剧情镜头。"
+            "尽量以环境和空间关系为主体，生成无角色的空场景板。"
+            f"{scene_master_context}"
+            f"{self.SCENE_MASTER_FRAME_NO_PEOPLE_PROMPT}"
+            f"{self.SCENE_NO_TEXT_PROMPT}"
+            "目标：生成稳定、可复用、可供后续首帧/中段/尾帧继续派生的场景母图。"
         )
 
     def _stylize_frame_prompt(
@@ -309,6 +353,9 @@ class VideoPromptingMixin:
         frame_characters: list[str],
         frame_type: str,
         character_lock: str,
+        scene_bible_context: str = "",
+        shot_state_context: str = "",
+        continuity_link_context: str = "",
     ) -> str:
         characters = "、".join(frame_characters) or "环境为主"
         sanitized_prompt = self._sanitize_image_prompt_text(prompt)
@@ -316,6 +363,9 @@ class VideoPromptingMixin:
             f"{frame_type}，原创虚构电影分镜，风格化概念插画，非真人摄影，"
             f"当前帧出镜角色：{characters}，只画这一帧真正入镜的人物；若有双人或多人出镜要求则必须全部画出，且全部按对应参考设定图还原，{character_lock}，"
             f"保持场景连续性、稳定年龄感、稳定体型、稳定肩宽和稳定四肢比例，"
+            f"{scene_bible_context}"
+            f"{shot_state_context}"
+            f"{continuity_link_context}"
             f"{self.SCENE_NO_TEXT_PROMPT}"
             f"{sanitized_prompt}"
         )
@@ -344,6 +394,223 @@ class VideoPromptingMixin:
 
         sanitized = re.sub(r"\s+", " ", sanitized).strip(" ，。；;")
         return sanitized
+
+    def _scene_bible_prompt_context(self, scene_bible: object) -> str:
+        line = self._scene_bible_prompt_line(scene_bible)
+        if not line:
+            return ""
+        return f"场景圣经约束：{line}。"
+
+    def _scene_master_frame_prompt_context(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> str:
+        line = self._scene_master_frame_prompt_line(scene_bible, involved_characters)
+        if not line:
+            return ""
+        return f"空场景环境约束：{line}。"
+
+    def _shot_state_prompt_context(self, shot_state: object) -> str:
+        line = self._shot_state_prompt_line(shot_state)
+        if not line:
+            return ""
+        return f"镜头状态约束：{line}。"
+
+    def _continuity_link_prompt_context(self, continuity_link: object) -> str:
+        line = self._continuity_link_prompt_line(continuity_link)
+        if not line:
+            return ""
+        return f"连续性承接约束：{line}。"
+
+    def _scene_bible_prompt_line(self, scene_bible: object) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("地点", self._scene_bible_value(scene_bible, "location")),
+            ("时间", self._scene_bible_value(scene_bible, "time_window")),
+            ("天气", self._scene_bible_value(scene_bible, "weather")),
+            ("光线", self._scene_bible_value(scene_bible, "lighting")),
+            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
+            ("角色调度", self._scene_bible_value(scene_bible, "character_blocking")),
+            ("连续性说明", self._scene_bible_value(scene_bible, "continuity_notes")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized:
+                parts.append(f"{label}：{normalized}")
+
+        for label, values in (
+            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
+            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
+            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+        ):
+            normalized_values = [str(item).strip() for item in values or [] if str(item).strip()]
+            if normalized_values:
+                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
+
+        return "；".join(parts)
+
+    def _scene_master_frame_prompt_line(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("地点", self._scene_bible_value(scene_bible, "location")),
+            ("时间", self._scene_bible_value(scene_bible, "time_window")),
+            ("天气", self._scene_bible_value(scene_bible, "weather")),
+            ("光线", self._scene_bible_value(scene_bible, "lighting")),
+            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and not self._contains_scene_master_human_signal(
+                normalized,
+                involved_characters,
+            ):
+                parts.append(f"{label}：{normalized}")
+
+        for label, values in (
+            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
+            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
+            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+        ):
+            filtered_values = [
+                item
+                for item in values
+                if not self._contains_scene_master_human_signal(item, involved_characters)
+            ]
+            normalized_values = [str(item).strip() for item in filtered_values if str(item).strip()]
+            if normalized_values:
+                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
+
+        return "；".join(parts)
+
+    def _shot_state_prompt_line(self, shot_state: object) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("景别", self._shot_state_value(shot_state, "framing")),
+            ("镜头运动", self._shot_state_value(shot_state, "camera_motion")),
+            ("调度", self._shot_state_value(shot_state, "blocking")),
+            ("动作推进", self._shot_state_value(shot_state, "action_progression")),
+            ("情绪推进", self._shot_state_value(shot_state, "emotion_progression")),
+            ("道具连续性", self._shot_state_value(shot_state, "prop_continuity")),
+            ("方向", self._shot_state_value(shot_state, "screen_direction")),
+            ("尾部承接", self._shot_state_value(shot_state, "end_state_lock")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized:
+                parts.append(f"{label}：{normalized}")
+        return "；".join(parts)
+
+    def _continuity_link_prompt_line(self, continuity_link: object) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("上一段", self._continuity_link_value(continuity_link, "previous_segment_id")),
+            ("模式", self._continuity_link_value(continuity_link, "transition_mode")),
+            ("开场匹配", self._continuity_link_value(continuity_link, "opening_match")),
+            ("允许变化", self._continuity_link_value(continuity_link, "allowed_changes")),
+            ("原因", self._continuity_link_value(continuity_link, "transition_reason")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized:
+                parts.append(f"{label}：{normalized}")
+        carry_over_elements = self._continuity_link_list(continuity_link, "carry_over_elements")
+        if carry_over_elements:
+            parts.append(f"延续元素：{'、'.join(carry_over_elements[:4])}")
+        return "；".join(parts)
+
+    def _scene_bible_value(self, scene_bible: object, key: str) -> str:
+        if isinstance(scene_bible, dict):
+            return str(scene_bible.get(key, "") or "")
+        return str(getattr(scene_bible, key, "") or "")
+
+    def _scene_bible_list(self, scene_bible: object, key: str) -> list[str]:
+        if isinstance(scene_bible, dict):
+            raw = scene_bible.get(key, [])
+        else:
+            raw = getattr(scene_bible, key, [])
+        return [str(item).strip() for item in raw or [] if str(item).strip()]
+
+    def _contains_involved_character_name(
+        self,
+        text: str,
+        involved_characters: list[str],
+    ) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        return any(name and name in normalized for name in involved_characters)
+
+    def _contains_scene_master_human_signal(
+        self,
+        text: str,
+        involved_characters: list[str],
+    ) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        if self._contains_involved_character_name(normalized, involved_characters):
+            return True
+        return any(
+            token in normalized
+            for token in (
+                "人物",
+                "角色",
+                "学生",
+                "老师",
+                "同学",
+                "男生",
+                "女生",
+                "乘客",
+                "路人",
+                "行人",
+                "监考",
+                "巡视",
+                "男主",
+                "女主",
+                "主角",
+                "配角",
+                "人影",
+                "背影",
+                "站位",
+                "走位",
+                "站在",
+                "坐在",
+                "走近",
+                "走向",
+                "走进",
+                "对视",
+                "靠近",
+                "等待",
+                "追逐",
+                "奔跑",
+                "拥抱",
+                "回头",
+                "低头",
+                "抬眼",
+                "伏在",
+                "说话",
+                "表情",
+                "情绪",
+            )
+        )
+
+    def _shot_state_value(self, shot_state: object, key: str) -> str:
+        if isinstance(shot_state, dict):
+            return str(shot_state.get(key, "") or "")
+        return str(getattr(shot_state, key, "") or "")
+
+    def _continuity_link_value(self, continuity_link: object, key: str) -> str:
+        if isinstance(continuity_link, dict):
+            return str(continuity_link.get(key, "") or "")
+        return str(getattr(continuity_link, key, "") or "")
+
+    def _continuity_link_list(self, continuity_link: object, key: str) -> list[str]:
+        if isinstance(continuity_link, dict):
+            raw = continuity_link.get(key, [])
+        else:
+            raw = getattr(continuity_link, key, [])
+        return [str(item).strip() for item in raw or [] if str(item).strip()]
 
     def _build_default_timed_beats(
         self,
@@ -374,6 +641,9 @@ class VideoPromptingMixin:
             f"时长：{segment.duration_seconds} 秒。",
             f"语速预算：中文口播总量控制在约 {speech_budget} 字以内，所有对白和旁白必须在片尾前自然说完。",
             f"角色：{'、'.join(segment.involved_characters) or '环境为主'}。",
+            f"场景圣经：{self._scene_bible_prompt_line(segment.scene_bible)}",
+            f"镜头状态：{self._shot_state_prompt_line(segment.shot_state)}",
+            f"连续性承接：{self._continuity_link_prompt_line(segment.continuity_link)}",
             f"画面主提示：{segment.scene_prompt}",
             f"旁白：{segment.narration}",
         ]

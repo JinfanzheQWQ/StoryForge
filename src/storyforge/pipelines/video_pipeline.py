@@ -65,6 +65,7 @@ def run_video_pipeline(
             output_dir=image_result.output_dir,
             character_bible_path=image_result.character_bible_path,
             character_images_path=image_result.character_images_path,
+            scene_plan_path=image_result.scene_plan_path,
             segment_plan_path=image_result.segment_plan_path,
             scene_images_path=image_result.scene_images_path,
             manifest_path=image_result.manifest_path,
@@ -88,6 +89,7 @@ def run_video_pipeline(
         output_dir=image_result.output_dir,
         character_bible_path=image_result.character_bible_path,
         character_images_path=image_result.character_images_path,
+        scene_plan_path=image_result.scene_plan_path,
         segment_plan_path=image_result.segment_plan_path,
         scene_images_path=image_result.scene_images_path,
         manifest_path=video_render_result.manifest_path,
@@ -130,6 +132,7 @@ def run_image_pipeline(
         output_dir=scene_result.output_dir,
         character_bible_path=scene_result.character_bible_path,
         character_images_path=scene_result.character_images_path,
+        scene_plan_path=scene_result.scene_plan_path,
         segment_plan_path=scene_result.segment_plan_path,
         scene_images_path=scene_result.scene_images_path,
         manifest_path=scene_result.manifest_path,
@@ -160,6 +163,7 @@ def run_character_image_pipeline(
     character_execution_path = planning.output_dir / "seedream_character_execution.json"
 
     write_json(planning.character_images_path, planning.project_package.character_images)
+    write_json(planning.scene_plan_path, {"scenes": planning.project_package.scenes})
     write_json(planning.scene_images_path, planning.project_package.scene_images)
     write_json(planning.manifest_path, planning.manifest)
     write_json(character_execution_path, character_execution)
@@ -168,6 +172,7 @@ def run_character_image_pipeline(
         output_dir=planning.output_dir,
         character_bible_path=planning.character_bible_path,
         character_images_path=planning.character_images_path,
+        scene_plan_path=planning.scene_plan_path,
         segment_plan_path=planning.segment_plan_path,
         scene_images_path=planning.scene_images_path,
         manifest_path=planning.manifest_path,
@@ -185,22 +190,35 @@ def run_scene_image_pipeline(
     output_root: Path | None = None,
     submit_scenes: bool = True,
     segment_id: str | None = None,
+    scene_id: str | None = None,
+    master_only: bool = False,
 ) -> SceneImagePipelineResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     planning = load_video_planning_artifacts(output_dir)
     seedream_client = SeedreamClient(config.seedream)
-    scene_execution = seedream_client.generate_scene_images(
-        planning.project_package,
-        force_submit=submit_scenes,
-        segment_ids={segment_id} if segment_id else None,
-    )
-
     character_execution_path = output_dir / "seedream_character_execution.json"
+    selected_scene_ids = {scene_id} if scene_id else None
+    if master_only:
+        scene_execution = seedream_client.generate_scene_master_frames(
+            planning.project_package,
+            force_submit=submit_scenes,
+            scene_ids=selected_scene_ids,
+            force_regenerate=True,
+        )
+        combined_execution = scene_execution
+    else:
+        scene_execution = seedream_client.generate_scene_images(
+            planning.project_package,
+            force_submit=submit_scenes,
+            segment_ids={segment_id} if segment_id else None,
+        )
+        character_execution = read_seedream_execution_report(character_execution_path)
+        combined_execution = merge_seedream_execution_reports(character_execution, scene_execution)
+
     scene_execution_path = output_dir / "seedream_scene_execution.json"
-    character_execution = read_seedream_execution_report(character_execution_path)
-    combined_execution = merge_seedream_execution_reports(character_execution, scene_execution)
 
     write_json(planning.character_images_path, planning.project_package.character_images)
+    write_json(planning.scene_plan_path, {"scenes": planning.project_package.scenes})
     write_json(planning.scene_images_path, planning.project_package.scene_images)
     write_json(planning.manifest_path, planning.manifest)
     write_json(scene_execution_path, scene_execution)
@@ -209,6 +227,7 @@ def run_scene_image_pipeline(
         output_dir=planning.output_dir,
         character_bible_path=planning.character_bible_path,
         character_images_path=planning.character_images_path,
+        scene_plan_path=planning.scene_plan_path,
         segment_plan_path=planning.segment_plan_path,
         scene_images_path=planning.scene_images_path,
         manifest_path=planning.manifest_path,

@@ -5,6 +5,9 @@ import re
 from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.schemas import (
     CharacterVisualBibleSchema,
+    ContinuityLinkSchema,
+    SceneBibleSchema,
+    ShotStateSchema,
     VideoSegmentPlanSchema,
     VideoSegmentSchema,
 )
@@ -142,6 +145,294 @@ class VideoRepairMixin:
 
         return VideoSegmentPlanSchema(segments=repaired_segments)
 
+    def _repair_scene_bibles(
+        self,
+        plan: VideoSegmentPlanSchema,
+        novel_package: NovelPackage,
+    ) -> VideoSegmentPlanSchema:
+        chapter_numbers = {
+            item.number
+            for item in novel_package.outline.chapters
+        }
+        repaired_by_scene: dict[tuple[int, str], SceneBibleSchema] = {}
+        for scene in plan.scenes:
+            if scene.chapter_number not in chapter_numbers:
+                continue
+            repaired_by_scene[(scene.chapter_number, scene.scene_id)] = self._repair_scene_bible(
+                novel_package=novel_package,
+                chapter_number=scene.chapter_number,
+                scene_title=scene.title,
+                scene_summary=scene.summary,
+                scene_anchor=scene.scene_anchor,
+                scene_bible=scene.scene_bible,
+                involved_characters=scene.involved_characters,
+            )
+
+        repaired_segments: list[VideoSegmentSchema] = []
+        for segment in plan.segments:
+            repaired_scene_bible = repaired_by_scene.get((segment.chapter_number, segment.scene_id))
+            if repaired_scene_bible is None:
+                repaired_scene_bible = self._repair_scene_bible(
+                    novel_package=novel_package,
+                    chapter_number=segment.chapter_number,
+                    scene_title=segment.scene_title or segment.title,
+                    scene_summary=segment.scene_summary or segment.summary,
+                    scene_anchor=segment.scene_anchor,
+                    scene_bible=segment.scene_bible,
+                    involved_characters=segment.involved_characters,
+                )
+            repaired_segments.append(
+                segment.model_copy(update={"scene_bible": repaired_scene_bible})
+            )
+
+        return VideoSegmentPlanSchema(segments=repaired_segments)
+
+    def _repair_shot_states(
+        self,
+        plan: VideoSegmentPlanSchema,
+        novel_package: NovelPackage,
+    ) -> VideoSegmentPlanSchema:
+        repaired_segments: list[VideoSegmentSchema] = []
+        for segment in plan.segments:
+            repaired_segments.append(
+                segment.model_copy(
+                    update={
+                        "shot_state": self._repair_shot_state(
+                            novel_package=novel_package,
+                            segment=segment,
+                        )
+                    }
+                )
+            )
+        return VideoSegmentPlanSchema(segments=repaired_segments)
+
+    def _repair_continuity_links(
+        self,
+        plan: VideoSegmentPlanSchema,
+    ) -> VideoSegmentPlanSchema:
+        repaired_segments: list[VideoSegmentSchema] = []
+        previous_segment: VideoSegmentSchema | None = None
+        for segment in plan.segments:
+            repaired_link = self._repair_continuity_link(
+                segment=segment,
+                previous_segment=previous_segment,
+            )
+            should_reuse_previous = (
+                previous_segment is not None
+                and repaired_link.transition_mode == "continue"
+                and repaired_link.previous_segment_id == previous_segment.segment_id
+            )
+            repaired_segment = segment.model_copy(
+                update={
+                    "continuity_link": repaired_link,
+                    "reuse_previous_end_frame": should_reuse_previous,
+                }
+            )
+            repaired_segments.append(repaired_segment)
+            previous_segment = repaired_segment
+        return VideoSegmentPlanSchema(segments=repaired_segments)
+
+    def _repair_scene_bible(
+        self,
+        *,
+        novel_package: NovelPackage,
+        chapter_number: int,
+        scene_title: str,
+        scene_summary: str,
+        scene_anchor: str,
+        scene_bible: SceneBibleSchema,
+        involved_characters: list[str],
+    ) -> SceneBibleSchema:
+        fallback_payload = self._build_fallback_scene_bible(
+            novel_package=novel_package,
+            chapter_number=chapter_number,
+            scene_title=scene_title or "场景",
+            scene_summary=scene_summary or scene_title or "当前场景",
+            scene_anchor=scene_anchor,
+            focus_characters=involved_characters,
+        )
+        payload = scene_bible.model_dump()
+        repaired: dict[str, object] = {}
+        for key, fallback_value in fallback_payload.items():
+            current_value = payload.get(key)
+            repaired[key] = (
+                current_value
+                if self._scene_bible_value_has_signal(current_value)
+                else fallback_value
+        )
+        return SceneBibleSchema.model_validate(repaired)
+
+    def _repair_shot_state(
+        self,
+        *,
+        novel_package: NovelPackage,
+        segment: VideoSegmentSchema,
+    ) -> ShotStateSchema:
+        fallback_payload = self._build_fallback_shot_state(
+            summary=segment.summary,
+            scene_anchor=segment.scene_anchor,
+            scene_bible=segment.scene_bible,
+            focus_characters=segment.involved_characters,
+        )
+        payload = segment.shot_state.model_dump()
+        repaired: dict[str, object] = {}
+        for key, fallback_value in fallback_payload.items():
+            current_value = payload.get(key)
+            repaired[key] = (
+                current_value
+                if self._shot_state_value_has_signal(current_value)
+                else fallback_value
+            )
+
+        if not str(repaired.get("action_progression", "")).strip():
+            repaired["action_progression"] = segment.summary
+        if not str(repaired.get("end_state_lock", "")).strip():
+            repaired["end_state_lock"] = (
+                self._extract_beat_descriptions(segment.timed_beats)[-1]
+                if self._extract_beat_descriptions(segment.timed_beats)
+                else segment.summary
+            )
+        return ShotStateSchema.model_validate(repaired)
+
+    def _repair_continuity_link(
+        self,
+        *,
+        segment: VideoSegmentSchema,
+        previous_segment: VideoSegmentSchema | None,
+    ) -> ContinuityLinkSchema:
+        payload = segment.continuity_link.model_dump()
+        if previous_segment is None:
+            return ContinuityLinkSchema.model_validate(
+                {
+                    "previous_segment_id": "",
+                    "transition_mode": "start",
+                    "opening_match": "",
+                    "carry_over_elements": [],
+                    "allowed_changes": (
+                        str(payload.get("allowed_changes", "") or "")
+                        or "作为当前故事或场景的起始片段建立新的连续性基线。"
+                    ),
+                    "transition_reason": (
+                        str(payload.get("transition_reason", "") or "")
+                        or "首段没有上一片段可承接。"
+                    ),
+                }
+            )
+
+        derived_mode = self._derive_continuity_mode(segment, previous_segment)
+        raw_mode = str(payload.get("transition_mode", "") or "").strip().lower()
+        transition_mode = raw_mode if raw_mode in {"start", "continue", "cut"} else derived_mode
+        if transition_mode == "start":
+            transition_mode = derived_mode
+
+        opening_match = str(payload.get("opening_match", "") or "").strip()
+        if transition_mode == "continue" and not opening_match:
+            opening_match = (
+                "开场先承接上一段尾部："
+                + (
+                    previous_segment.shot_state.end_state_lock
+                    or previous_segment.summary
+                )
+            )
+
+        carry_over_elements = [
+            str(item).strip()
+            for item in payload.get("carry_over_elements", [])
+            if str(item).strip()
+        ]
+        if transition_mode == "continue" and not carry_over_elements:
+            carry_over_elements = self._derive_carry_over_elements(previous_segment)
+
+        allowed_changes = str(payload.get("allowed_changes", "") or "").strip()
+        if not allowed_changes:
+            allowed_changes = (
+                f"承接开场后，允许把动作推进到：{segment.summary}"
+                if transition_mode == "continue"
+                else (
+                    "允许切换到新的时空、景别和动作状态。"
+                    if transition_mode == "cut"
+                    else "作为起始段建立新的连续性基线。"
+                )
+            )
+
+        transition_reason = str(payload.get("transition_reason", "") or "").strip()
+        if not transition_reason:
+            transition_reason = (
+                "同一 scene 内连续推进当前动作链。"
+                if transition_mode == "continue"
+                else (
+                    "发生了明确转场、时空切换或镜头切断。"
+                    if transition_mode == "cut"
+                    else "当前片段为起始段。"
+                )
+            )
+
+        return ContinuityLinkSchema.model_validate(
+            {
+                "previous_segment_id": (
+                    previous_segment.segment_id
+                    if transition_mode == "continue"
+                    else ""
+                ),
+                "transition_mode": transition_mode,
+                "opening_match": opening_match,
+                "carry_over_elements": (
+                    carry_over_elements if transition_mode == "continue" else []
+                ),
+                "allowed_changes": allowed_changes,
+                "transition_reason": transition_reason,
+            }
+        )
+
+    def _derive_continuity_mode(
+        self,
+        segment: VideoSegmentSchema,
+        previous_segment: VideoSegmentSchema,
+    ) -> str:
+        explicit_previous_id = segment.continuity_link.previous_segment_id.strip()
+        explicit_mode = segment.continuity_link.transition_mode.strip().lower()
+        if explicit_mode == "continue" and explicit_previous_id == previous_segment.segment_id:
+            return "continue"
+        if explicit_mode == "cut":
+            return "cut"
+
+        transition_hint = self._normalize_transition_hint(segment.transition_hint)
+        if transition_hint == "continue":
+            return "continue"
+        if transition_hint == "cut":
+            return "cut"
+
+        if segment.scene_id and previous_segment.scene_id and segment.scene_id == previous_segment.scene_id:
+            return "continue"
+        if (
+            segment.source_segment_id
+            and previous_segment.source_segment_id
+            and segment.source_segment_id == previous_segment.source_segment_id
+        ):
+            return "continue"
+        if self._contains_hard_cut_hint(
+            previous_segment.model_copy(update={"narration": previous_segment.narration + " " + segment.narration})
+        ):
+            return "cut"
+        return "cut"
+
+    def _derive_carry_over_elements(
+        self,
+        previous_segment: VideoSegmentSchema,
+    ) -> list[str]:
+        carry_over: list[str] = []
+        if previous_segment.shot_state.blocking:
+            carry_over.append("角色站位")
+        if previous_segment.shot_state.screen_direction:
+            carry_over.append("视线与运动方向")
+        if previous_segment.shot_state.prop_continuity:
+            carry_over.append("关键道具与手部状态")
+        if previous_segment.scene_bible.background_anchors:
+            carry_over.append("背景锚点")
+        if not carry_over:
+            carry_over.extend(["角色站位", "视线方向", "关键道具"])
+        return carry_over
+
     def _group_segments_by_chapter(
         self,
         segments: list[VideoSegmentSchema],
@@ -203,6 +494,21 @@ class VideoRepairMixin:
             normalized_segments.append(
                 segment.model_copy(
                     update={
+                        "scene_title": self._replace_character_aliases(segment.scene_title, alias_map),
+                        "scene_summary": self._replace_character_aliases(segment.scene_summary, alias_map),
+                        "scene_anchor": self._replace_character_aliases(segment.scene_anchor, alias_map),
+                        "scene_bible": self._replace_character_aliases_in_scene_bible(
+                            segment.scene_bible,
+                            alias_map,
+                        ),
+                        "shot_state": self._replace_character_aliases_in_shot_state(
+                            segment.shot_state,
+                            alias_map,
+                        ),
+                        "continuity_link": self._replace_character_aliases_in_continuity_link(
+                            segment.continuity_link,
+                            alias_map,
+                        ),
                         "title": self._replace_character_aliases(segment.title, alias_map),
                         "involved_characters": resolved_names,
                         "start_frame_characters": self._normalize_frame_characters_for_segment(
@@ -382,6 +688,28 @@ class VideoRepairMixin:
                 segment.scene_prompt,
                 segment.start_frame_prompt,
                 segment.end_frame_prompt,
+                segment.scene_bible.location,
+                segment.scene_bible.time_window,
+                segment.scene_bible.weather,
+                segment.scene_bible.lighting,
+                segment.scene_bible.spatial_layout,
+                segment.scene_bible.character_blocking,
+                segment.scene_bible.continuity_notes,
+                " ".join(segment.scene_bible.background_anchors),
+                " ".join(segment.scene_bible.fixed_props),
+                segment.shot_state.framing,
+                segment.shot_state.camera_motion,
+                segment.shot_state.blocking,
+                segment.shot_state.action_progression,
+                segment.shot_state.emotion_progression,
+                segment.shot_state.prop_continuity,
+                segment.shot_state.screen_direction,
+                segment.shot_state.end_state_lock,
+                segment.continuity_link.previous_segment_id,
+                segment.continuity_link.opening_match,
+                " ".join(segment.continuity_link.carry_over_elements),
+                segment.continuity_link.allowed_changes,
+                segment.continuity_link.transition_reason,
                 " ".join(segment.dialogue_lines),
                 " ".join(segment.subtitle_lines),
                 " ".join(segment.timed_beats),
@@ -635,3 +963,77 @@ class VideoRepairMixin:
             if alias and actual_name:
                 updated = updated.replace(alias, actual_name)
         return updated
+
+    def _replace_character_aliases_in_scene_bible(
+        self,
+        scene_bible: SceneBibleSchema,
+        alias_map: dict[str, str],
+    ) -> SceneBibleSchema:
+        payload = scene_bible.model_dump()
+        repaired_payload: dict[str, object] = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                repaired_payload[key] = self._replace_character_aliases(value, alias_map)
+                continue
+            if isinstance(value, list):
+                repaired_payload[key] = [
+                    self._replace_character_aliases(str(item), alias_map)
+                    for item in value
+                ]
+                continue
+            repaired_payload[key] = value
+        return SceneBibleSchema.model_validate(repaired_payload)
+
+    def _replace_character_aliases_in_shot_state(
+        self,
+        shot_state: ShotStateSchema,
+        alias_map: dict[str, str],
+    ) -> ShotStateSchema:
+        payload = shot_state.model_dump()
+        repaired_payload: dict[str, object] = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                repaired_payload[key] = self._replace_character_aliases(value, alias_map)
+                continue
+            if isinstance(value, list):
+                repaired_payload[key] = [
+                    self._replace_character_aliases(str(item), alias_map)
+                    for item in value
+                ]
+                continue
+            repaired_payload[key] = value
+        return ShotStateSchema.model_validate(repaired_payload)
+
+    def _replace_character_aliases_in_continuity_link(
+        self,
+        continuity_link: ContinuityLinkSchema,
+        alias_map: dict[str, str],
+    ) -> ContinuityLinkSchema:
+        payload = continuity_link.model_dump()
+        repaired_payload: dict[str, object] = {}
+        for key, value in payload.items():
+            if isinstance(value, str):
+                repaired_payload[key] = self._replace_character_aliases(value, alias_map)
+                continue
+            if isinstance(value, list):
+                repaired_payload[key] = [
+                    self._replace_character_aliases(str(item), alias_map)
+                    for item in value
+                ]
+                continue
+            repaired_payload[key] = value
+        return ContinuityLinkSchema.model_validate(repaired_payload)
+
+    def _scene_bible_value_has_signal(self, value: object) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, list):
+            return any(str(item).strip() for item in value)
+        return value is not None
+
+    def _shot_state_value_has_signal(self, value: object) -> bool:
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, list):
+            return any(str(item).strip() for item in value)
+        return value is not None

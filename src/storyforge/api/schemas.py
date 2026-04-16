@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class StoryBriefInput(BaseModel):
@@ -41,7 +41,21 @@ class CreateStageTaskRequest(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     segment_id: str | None = None
+    scene_id: str | None = None
+    master_only: bool = False
     merge_only: bool = False
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "CreateStageTaskRequest":
+        segment_id = str(self.segment_id or "").strip()
+        scene_id = str(self.scene_id or "").strip()
+        if segment_id and scene_id:
+            raise ValueError("scene_id 不能与 segment_id 同时提交。")
+        if self.master_only and not scene_id:
+            raise ValueError("master_only=true 时必须提供 scene_id。")
+        if self.master_only and segment_id:
+            raise ValueError("master_only=true 不能与 segment_id 同时提交。")
+        return self
 
 
 class StorySourceChapterInput(BaseModel):
@@ -99,11 +113,15 @@ class ArtifactItem(BaseModel):
 
 class PlannedSegmentArtifactResponse(BaseModel):
     segment_id: str
+    scene_id: str = ""
+    scene_title: str = ""
+    scene_summary: str = ""
     title: str
     summary: str = ""
     chapter_number: int
     duration_seconds: int | None = None
     requires_mid_frame: bool = False
+    scene_master_frame: ArtifactItem | None = None
     start_frame: ArtifactItem | None = None
     mid_frame: ArtifactItem | None = None
     end_frame: ArtifactItem | None = None

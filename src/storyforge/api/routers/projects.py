@@ -259,15 +259,22 @@ def _find_existing_stage_task(
     task_type: str,
     source_task_id: str,
     segment_id: str | None,
+    scene_id: str | None = None,
+    master_only: bool = False,
     merge_only: bool = False,
 ):
     expected_segment_id = segment_id or ""
+    expected_scene_id = scene_id or ""
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != task_type:
             continue
         if str(task.payload.get("source_task_id", "")) != source_task_id:
             continue
         if str(task.payload.get("segment_id", "")) != expected_segment_id:
+            continue
+        if str(task.payload.get("scene_id", "")) != expected_scene_id:
+            continue
+        if bool(task.payload.get("master_only", False)) != master_only:
             continue
         if bool(task.payload.get("merge_only", False)) != merge_only:
             continue
@@ -324,6 +331,8 @@ async def create_scene_job(
         task_type="project.scenes",
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
+        scene_id=payload.scene_id,
+        master_only=payload.master_only,
         merge_only=False,
     )
     if existing_task is not None:
@@ -339,6 +348,10 @@ async def create_scene_job(
     }
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
+    if payload.scene_id:
+        task_payload["scene_id"] = payload.scene_id
+    if payload.master_only:
+        task_payload["master_only"] = True
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
 
     record = await container.task_queue.submit(

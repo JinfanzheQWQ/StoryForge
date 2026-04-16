@@ -15,6 +15,7 @@ from storyforge.application.tasks import TaskRecord
 from storyforge.core.config import AppConfig
 from storyforge.core.io import read_json
 from storyforge.domains.video.contracts import SceneImageTask, SeedanceManifest, VideoSegment
+from storyforge.domains.video.schemas import VideoSegmentPlanSchema
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -25,12 +26,13 @@ DOCUMENT_PRIORITY = {
     "novel_audit.json": 30,
     "character_visual_bible.json": 40,
     "character_image_manifest.json": 50,
-    "segment_plan.json": 60,
-    "scene_image_manifest.json": 70,
-    "seedream_character_execution.json": 80,
-    "seedream_scene_execution.json": 90,
-    "seedance_manifest.json": 100,
-    "seedance_execution.json": 110,
+    "scene_plan.json": 60,
+    "segment_plan.json": 70,
+    "scene_image_manifest.json": 80,
+    "seedream_character_execution.json": 90,
+    "seedream_scene_execution.json": 100,
+    "seedance_manifest.json": 110,
+    "seedance_execution.json": 120,
 }
 LLM_OPTION_LIBRARY = {
     "deepseek": {"provider": "deepseek", "model": "deepseek-chat", "label": "DeepSeek"},
@@ -223,21 +225,28 @@ def _collect_planned_segments(
     scene_frames: list[ArtifactItem],
     rendered_clips: list[ArtifactItem],
 ) -> list[PlannedSegmentArtifactResponse]:
+    scene_plan_path = output_dir / "scene_plan.json"
     segment_plan_path = output_dir / "segment_plan.json"
-    if not segment_plan_path.exists():
+    if not scene_plan_path.exists() and not segment_plan_path.exists():
         return _build_fallback_planned_segments(scene_frames, rendered_clips)
 
-    raw_segments = read_json(segment_plan_path)
-    if not isinstance(raw_segments, list):
-        return _build_fallback_planned_segments(scene_frames, rendered_clips)
     try:
-        segments = [VideoSegment.from_dict(item) for item in raw_segments]
+        plan = _load_segment_plan(scene_plan_path, segment_plan_path)
+        segments = [VideoSegment.from_dict(item.model_dump()) for item in plan.segments]
     except Exception:
         return _build_fallback_planned_segments(scene_frames, rendered_clips)
     scene_task_map = _load_scene_task_map(output_dir)
     clip_map = _load_seedance_clip_map(output_dir)
     scene_frame_map = {item.path: item for item in scene_frames}
     rendered_clip_map = {item.path: item for item in rendered_clips}
+    scene_master_map = {
+        scene.scene_id: _resolve_manifest_artifact(
+            getattr(scene, "scene_master_frame_path", ""),
+            output_root,
+            scene_frame_map,
+        )
+        for scene in getattr(plan, "scenes", [])
+    }
     planned_segments: list[PlannedSegmentArtifactResponse] = []
 
     for segment in segments:
@@ -266,11 +275,15 @@ def _collect_planned_segments(
         planned_segments.append(
             PlannedSegmentArtifactResponse(
                 segment_id=segment.segment_id,
+                scene_id=segment.scene_id,
+                scene_title=segment.scene_title,
+                scene_summary=segment.scene_summary,
                 title=segment.title,
                 summary=segment.summary,
                 chapter_number=segment.chapter_number,
                 duration_seconds=segment.duration_seconds,
                 requires_mid_frame=segment.requires_mid_frame,
+                scene_master_frame=scene_master_map.get(segment.scene_id),
                 start_frame=start_frame,
                 mid_frame=mid_frame,
                 end_frame=end_frame,
@@ -280,6 +293,20 @@ def _collect_planned_segments(
             )
         )
     return planned_segments
+
+
+def _load_segment_plan(
+    scene_plan_path: Path,
+    segment_plan_path: Path,
+) -> VideoSegmentPlanSchema:
+    if scene_plan_path.exists():
+        payload = read_json(scene_plan_path)
+        if isinstance(payload, list):
+            if payload and isinstance(payload[0], dict) and "segments" in payload[0]:
+                return VideoSegmentPlanSchema.model_validate({"scenes": payload})
+            return VideoSegmentPlanSchema.model_validate({"segments": payload})
+        return VideoSegmentPlanSchema.model_validate(payload)
+    return VideoSegmentPlanSchema.model_validate({"segments": read_json(segment_plan_path)})
 
 
 def _load_scene_task_map(output_dir: Path) -> dict[str, SceneImageTask]:
@@ -353,6 +380,8 @@ def _build_fallback_planned_segments(
 ) -> list[PlannedSegmentArtifactResponse]:
     segment_map: dict[str, PlannedSegmentArtifactResponse] = {}
     for item in scene_frames:
+        if item.name.endswith("_master.png") or item.name.endswith("_master.jpg") or item.name.endswith("_master.webp"):
+            continue
         segment_id = _segment_id_from_asset_name(item.name)
         segment = segment_map.setdefault(
             segment_id,

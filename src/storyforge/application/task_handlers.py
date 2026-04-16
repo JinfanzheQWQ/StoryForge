@@ -104,6 +104,7 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
         "novel_audit_path": str(analysis_result.novel_audit_path),
         "character_bible_path": str(analysis_result.character_bible_path),
         "character_images_path": str(analysis_result.character_images_path),
+        "scene_plan_path": str(analysis_result.scene_plan_path),
         "segment_plan_path": str(analysis_result.segment_plan_path),
         "scene_images_path": str(analysis_result.scene_images_path),
         "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
@@ -150,6 +151,7 @@ def run_images_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "output_dir": str(image_result.output_dir),
         "character_bible_path": str(image_result.character_bible_path),
         "character_images_path": str(image_result.character_images_path),
+        "scene_plan_path": str(image_result.scene_plan_path),
         "segment_plan_path": str(image_result.segment_plan_path),
         "scene_images_path": str(image_result.scene_images_path),
         "seedream_execution_path": str(image_result.seedream_execution_path),
@@ -200,6 +202,7 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         "output_dir": str(character_result.output_dir),
         "character_bible_path": str(character_result.character_bible_path),
         "character_images_path": str(character_result.character_images_path),
+        "scene_plan_path": str(character_result.scene_plan_path),
         "segment_plan_path": str(character_result.segment_plan_path),
         "scene_images_path": str(character_result.scene_images_path),
         "seedance_manifest_path": str(character_result.manifest_path),
@@ -226,12 +229,14 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     output_dir = resolve_output_dir(source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
+    scene_id = str(task.payload.get("scene_id", "")).strip() or None
+    master_only = bool(task.payload.get("master_only", False))
     partial_response = _build_stage_response(
         task=task,
         source_task=source_task,
         output_dir=output_dir,
-        task_stage="scenes",
-        pipeline_stage="scene_generation_started",
+        task_stage="scene_master_frames" if master_only else "scenes",
+        pipeline_stage="scene_master_frame_generation_started" if master_only else "scene_generation_started",
         pipeline_root_task_id=pipeline_root_task_id,
     )
     persist_task_progress(context, task, partial_response)
@@ -242,6 +247,8 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         output_root=output_dir,
         submit_scenes=True,
         segment_id=segment_id,
+        scene_id=scene_id,
+        master_only=master_only,
     )
     response = {
         **partial_response,
@@ -249,17 +256,16 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "output_dir": str(scene_result.output_dir),
         "character_bible_path": str(scene_result.character_bible_path),
         "character_images_path": str(scene_result.character_images_path),
+        "scene_plan_path": str(scene_result.scene_plan_path),
         "segment_plan_path": str(scene_result.segment_plan_path),
         "scene_images_path": str(scene_result.scene_images_path),
         "seedance_manifest_path": str(scene_result.manifest_path),
         "character_seedream_execution_path": str(scene_result.character_seedream_execution_path),
         "scene_seedream_execution_path": str(scene_result.scene_seedream_execution_path),
         "seedream_execution_path": str(scene_result.seedream_execution_path),
-        "pipeline_stage": "scenes_completed",
+        "pipeline_stage": "scene_master_frame_completed" if master_only else "scenes_completed",
         "artifact_revision": utc_now(),
     }
-    if segment_id:
-        response["segment_id"] = segment_id
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
     if segment_id:
         refresh_artifact_revision_for_tasks(
@@ -338,8 +344,6 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
             "seedance_submitted": video_result.seedance_execution.submitted,
             "artifact_revision": utc_now(),
         }
-    if segment_id:
-        response["segment_id"] = segment_id
     if merge_only:
         response["merge_only"] = True
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
@@ -410,6 +414,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
             "novel_audit_path": str(analysis_result.novel_audit_path),
             "character_bible_path": str(analysis_result.character_bible_path),
             "character_images_path": str(analysis_result.character_images_path),
+            "scene_plan_path": str(analysis_result.scene_plan_path),
             "segment_plan_path": str(analysis_result.segment_plan_path),
             "scene_images_path": str(analysis_result.scene_images_path),
             "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
@@ -442,6 +447,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         "seedream_execution_path": str(video_result.seedream_execution_path),
         "seedance_manifest_path": str(video_result.manifest_path),
         "seedance_execution_path": str(video_result.seedance_execution_path),
+        "scene_plan_path": str(video_result.scene_plan_path),
         "segment_plan_path": str(video_result.segment_plan_path),
         "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
         "full_story_path": (
@@ -494,6 +500,11 @@ def _build_stage_response(
             if source_task.result and source_task.result.get("novel_audit_path")
             else None
         ),
+        "scene_plan_path": (
+            str(source_task.result["scene_plan_path"])
+            if source_task.result and source_task.result.get("scene_plan_path")
+            else None
+        ),
         "story_source_revision": str(source_task.result.get("story_source_revision", "")),
         "pipeline_stage": pipeline_stage,
         "task_stage": task_stage,
@@ -504,4 +515,9 @@ def _build_stage_response(
     segment_id = str(task.payload.get("segment_id", "")).strip()
     if segment_id:
         response["segment_id"] = segment_id
+    scene_id = str(task.payload.get("scene_id", "")).strip()
+    if scene_id:
+        response["scene_id"] = scene_id
+    if bool(task.payload.get("master_only", False)):
+        response["master_only"] = True
     return response

@@ -197,12 +197,19 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 ### 2. 生成结构化信息
 
-- 这一步会生成 `novel_package.json`、`novel_audit.json`、角色视觉档案、视频规划文件和各类 manifest
+- 这一步会生成 `novel_package.json`、`novel_audit.json`、角色视觉档案、`scene_plan.json`、`segment_plan.json` 和各类 manifest
 - 同一份 `story_source` 已经有 queued / running / completed 的结构化任务时，后端会直接复用已有任务
 - `Cast Analyzer` 要求每个角色槽位都带可在正文中定位的 `source_evidence`
 - `source_evidence` 仍然必须来自正文，但对带修饰语的人名或稳定称呼会做容错匹配
 - `Character Designer` 必须严格覆盖目标 slots，不能重复 `cast_slot_id`，也不能凭空补正文里没有证据的人
 - 视频规划也在这一步完成，后续角色图、场景图和视频阶段都只消费这些规划结果
+- `scene_plan.json` 是当前场景级主规划文件，保存 `chapter -> scene -> segment`，每个 scene 都带 `scene_bible`
+- `scene_bible` 用来锁定地点、时间、天气、光线、背景锚点、固定道具、空间布局和角色调度，后续场景图与视频都会直接消费它
+- 每个 scene 还会带 `scene_master_frame_prompt / path / status / url`，用于同场景母图生成与复用
+- 如果旧 run 或弱规划里的 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，再回填到 `scene_bible` 后生成母图 prompt
+- `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
+- `shot_state` 用来锁定该片段的景别、镜头推进、人物调度、动作推进、道具连续性和尾部承接状态
+- `continuity_link` 用来显式描述当前片段是否承接上一段、开场要对齐什么状态、哪些元素必须延续、哪些变化被允许
 
 ### 3. 生成角色图
 
@@ -212,14 +219,26 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 ### 4. 生成场景图
 
 - 对应执行报告是 `seedream_scene_execution.json`
-- 页面会先按 `segment_plan.json` 展示完整时间线，再允许你按 segment 单独生成
+- 页面会先按 `scene_plan.json` 展示按 scene 分组的时间线，再允许你按 segment 单独生成
+- 同一 scene 会先生成一张 `scene_master_frame`，再基于它继续生成该 scene 下各个 segment 的首帧 / 中段 / 尾帧
+- 时间线里每个 scene 头部都可以单独“重生成场景母图”；这个入口只会重跑该 scene 的 `scene_master_frame`，不会连带重跑其它 scene 或 segment
+- `scene_master_frame` 现在是无角色空场景参考图，只负责锁背景环境、光线、固定道具和空间透视，不负责承载人物
+- 即使上游 `scene_bible` 很弱，`scene_master_frame` 也会优先回填地点、时间、光线、空间布局和背景锚点，避免母图退化成泛化场景
 - 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
+- 同一 scene 下的多个 segment 会共享同一套 `scene_bible` 基线，场景图 prompt 会显式带入这组约束
+- 同时也会显式带入该段自己的 `shot_state`，保证景别、调度和动作推进不只靠自然语言 prompt 碰运气
+- 如果 `continuity_link` 判定当前段应承接上一段，首帧会优先按这份承接关系复用或对齐上一段尾部状态
+- 当前帧生成时还会优先引用 `scene_master_frame + 当前帧角色图`；连续承接段的首帧会再额外带上上一段尾帧
 - 场景生图阶段只负责纯画面关键帧，不允许把对白、字幕、聊天气泡或任何可见文字直接画进图片
 
 ### 5. 生成视频
 
 - 对应执行报告是 `seedance_execution.json`
 - 视频阶段也是按 segment 单独触发
+- 视频 prompt 会复用同一段所属 scene 的 `scene_bible`，把场景连续性约束直接写进 Seedance 请求
+- 视频阶段会把同一 scene 的 `scene_master_frame` 当作额外参考图一起送入 Seedance
+- 视频 prompt 也会复用该段 `shot_state`，把镜头景别、镜头推进、动作承接和尾部状态直接写进 Seedance 请求
+- 视频 prompt 还会复用该段 `continuity_link`，把它与上一段的开场承接要求直接写进 Seedance 请求
 - 只有对应片段场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
 
 ### 6. 手动合并总片
@@ -249,6 +268,7 @@ outputs/<story-slug>/
 ├── novel_audit.json
 ├── character_visual_bible.json
 ├── character_image_manifest.json
+├── scene_plan.json
 ├── segment_plan.json
 ├── scene_image_manifest.json
 ├── seedream_character_execution.json

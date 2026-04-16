@@ -389,6 +389,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("story_source.json", document_names)
             self.assertIn("novel_package.json", document_names)
             self.assertIn("novel_audit.json", document_names)
+            self.assertIn("scene_plan.json", document_names)
+            self.assertIn("scene_id", artifacts["planned_segments"][0])
 
             story_source_item = next(
                 item for item in artifacts["documents"] if item["name"] == "story_source.json"
@@ -447,11 +449,13 @@ class ApiTestCase(unittest.TestCase):
     def test_story_artifacts_are_available_while_task_is_still_running(self, mock_run_video_pipeline) -> None:
         def fake_run_video_pipeline(*args, **kwargs):
             output_dir = kwargs["output_root"]
+            scene_plan_path = output_dir / "scene_plan.json"
             segment_plan_path = output_dir / "segment_plan.json"
             seedream_execution_path = output_dir / "seedream_scene_execution.json"
             manifest_path = output_dir / "seedance_manifest.json"
             seedance_execution_path = output_dir / "seedance_execution.json"
             time.sleep(0.3)
+            scene_plan_path.write_text("{}", encoding="utf-8")
             segment_plan_path.write_text("{}", encoding="utf-8")
             seedream_execution_path.write_text("{}", encoding="utf-8")
             manifest_path.write_text("{}", encoding="utf-8")
@@ -460,6 +464,7 @@ class ApiTestCase(unittest.TestCase):
                 seedream_execution_path=seedream_execution_path,
                 manifest_path=manifest_path,
                 seedance_execution_path=seedance_execution_path,
+                scene_plan_path=scene_plan_path,
                 segment_plan_path=segment_plan_path,
                 rendered_clip_paths=[],
                 full_story_path=None,
@@ -536,6 +541,7 @@ class ApiTestCase(unittest.TestCase):
                 output_dir=output_dir,
                 character_bible_path=output_dir / "character_visual_bible.json",
                 character_images_path=output_dir / "character_image_manifest.json",
+                scene_plan_path=output_dir / "scene_plan.json",
                 segment_plan_path=output_dir / "segment_plan.json",
                 scene_images_path=output_dir / "scene_image_manifest.json",
                 manifest_path=output_dir / "seedance_manifest.json",
@@ -641,6 +647,111 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(video_task["payload"]["segment_id"], segment_id)
             self.assertEqual(video_task["result"]["segment_id"], segment_id)
             self.assertEqual(mock_run_video_render_pipeline.call_args.kwargs["segment_id"], segment_id)
+
+    @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
+    def test_scene_stage_job_accepts_scene_id_master_only(
+        self,
+        mock_run_scene_image_pipeline,
+    ) -> None:
+        def fake_scene_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            return SimpleNamespace(
+                project_package=SimpleNamespace(title="场景母图测试"),
+                output_dir=output_dir,
+                character_bible_path=output_dir / "character_visual_bible.json",
+                character_images_path=output_dir / "character_image_manifest.json",
+                scene_plan_path=output_dir / "scene_plan.json",
+                segment_plan_path=output_dir / "segment_plan.json",
+                scene_images_path=output_dir / "scene_image_manifest.json",
+                manifest_path=output_dir / "seedance_manifest.json",
+                seedream_execution_path=output_dir / "seedream_scene_execution.json",
+                character_seedream_execution_path=output_dir / "seedream_character_execution.json",
+                scene_seedream_execution_path=output_dir / "seedream_scene_execution.json",
+                seedream_execution=SimpleNamespace(
+                    submitted=True,
+                    generated_count=1,
+                    failed_count=0,
+                    note="ok",
+                ),
+            )
+
+        mock_run_scene_image_pipeline.side_effect = fake_scene_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "场景母图测试",
+                        "idea": "雨夜车站里，两人隔着检票口对视。",
+                        "genre": "情感",
+                        "tone": "电影感",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1200,
+                        "must_include": ["车站"],
+                        "style_keywords": ["夜雨", "检票口"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            scene_id = artifacts["planned_segments"][0]["scene_id"]
+
+            response = client.post(
+                "/v1/projects/scenes",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "scene_id": scene_id,
+                    "master_only": True,
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            task_id = response.json()["task_id"]
+            task = self._wait_for_completion(client, task_id)
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["payload"]["scene_id"], scene_id)
+            self.assertTrue(task["payload"]["master_only"])
+            self.assertEqual(task["result"]["scene_id"], scene_id)
+            self.assertTrue(task["result"]["master_only"])
+            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["scene_id"], scene_id)
+            self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["master_only"])
+
+    def test_scene_stage_job_rejects_invalid_master_only_scope(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/scenes",
+                json={
+                    "project_id": "demo-project",
+                    "source_task_id": "demo-task",
+                    "segment_id": "seg-01",
+                    "scene_id": "scene-01",
+                    "master_only": True,
+                },
+            )
+            self.assertEqual(response.status_code, 422)
 
     def test_submit_short_story_word_target_is_accepted(self) -> None:
         config_path = self._create_test_config()
@@ -794,6 +905,7 @@ class ApiTestCase(unittest.TestCase):
 
             character_bible_path = output_dir / "character_visual_bible.json"
             character_images_path = output_dir / "character_image_manifest.json"
+            scene_plan_path = output_dir / "scene_plan.json"
             segment_plan_path = output_dir / "segment_plan.json"
             scene_images_path = output_dir / "scene_image_manifest.json"
             manifest_path = output_dir / "seedance_manifest.json"
@@ -802,6 +914,7 @@ class ApiTestCase(unittest.TestCase):
             for path in (
                 character_bible_path,
                 character_images_path,
+                scene_plan_path,
                 segment_plan_path,
                 scene_images_path,
                 manifest_path,
@@ -814,6 +927,7 @@ class ApiTestCase(unittest.TestCase):
                 output_dir=output_dir,
                 character_bible_path=character_bible_path,
                 character_images_path=character_images_path,
+                scene_plan_path=scene_plan_path,
                 segment_plan_path=segment_plan_path,
                 scene_images_path=scene_images_path,
                 manifest_path=manifest_path,
@@ -832,6 +946,7 @@ class ApiTestCase(unittest.TestCase):
 
             character_bible_path = output_dir / "character_visual_bible.json"
             character_images_path = output_dir / "character_image_manifest.json"
+            scene_plan_path = output_dir / "scene_plan.json"
             segment_plan_path = output_dir / "segment_plan.json"
             scene_images_path = output_dir / "scene_image_manifest.json"
             manifest_path = output_dir / "seedance_manifest.json"
@@ -841,6 +956,7 @@ class ApiTestCase(unittest.TestCase):
             for path in (
                 character_bible_path,
                 character_images_path,
+                scene_plan_path,
                 segment_plan_path,
                 scene_images_path,
                 manifest_path,
@@ -855,6 +971,7 @@ class ApiTestCase(unittest.TestCase):
                 output_dir=output_dir,
                 character_bible_path=character_bible_path,
                 character_images_path=character_images_path,
+                scene_plan_path=scene_plan_path,
                 segment_plan_path=segment_plan_path,
                 scene_images_path=scene_images_path,
                 manifest_path=manifest_path,
@@ -967,6 +1084,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("novel_package_path", analysis_payload["result"])
             self.assertIn("novel_audit_path", analysis_payload["result"])
             self.assertIn("character_bible_path", analysis_payload["result"])
+            self.assertIn("scene_plan_path", analysis_payload["result"])
             self.assertIn("segment_plan_path", analysis_payload["result"])
             self.assertIn("scene_images_path", analysis_payload["result"])
             self.assertIn("seedance_manifest_path", analysis_payload["result"])

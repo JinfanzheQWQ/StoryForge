@@ -230,6 +230,9 @@ export function buildOverviewNote(task, artifacts, run = null) {
   if (run?.latestTask.task_type === "project.characters") {
     return "角色设定已经完成。确认人物稳定后，请在时间线里按片段逐段生成场景图。";
   }
+  if (run?.latestTask.task_type === "project.scenes" && run?.latestTask.payload?.master_only) {
+    return "最近一次场景母图任务已完成。确认环境和空间布局稳定后，再继续逐段生成场景图。";
+  }
   if (sceneStatus === "stale") {
     return "场景图仍然对应旧文本版本。请先重新生成场景图，再继续视频。";
   }
@@ -267,6 +270,9 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
     }
     if (effectiveTask.task_type === "project.characters" && kind === "characters") {
       return "角色图正在生成，页面会自动刷新。";
+    }
+    if (effectiveTask.task_type === "project.scenes" && effectiveTask.payload?.master_only && kind === "scenes") {
+      return "场景母图正在生成，页面会自动刷新。";
     }
     if (effectiveTask.task_type === "project.scenes" && kind === "scenes") {
       return "场景图正在生成，页面会自动刷新。";
@@ -333,6 +339,12 @@ export function buildPipelineStageLabel(task, run = null) {
   if (propagatedStage === "characters_completed") {
     return "角色图已完成";
   }
+  if (propagatedStage === "scene_master_frame_generation_started") {
+    return "场景母图生成中";
+  }
+  if (propagatedStage === "scene_master_frame_completed") {
+    return "场景母图已完成";
+  }
   if (propagatedStage === "scenes_completed") {
     return "场景图已完成";
   }
@@ -361,6 +373,12 @@ export function buildPipelineStageLabel(task, run = null) {
     if (effectiveTask.status === "failed") return "角色图生成失败";
   }
   if (effectiveTask.task_type === "project.scenes") {
+    if (effectiveTask.payload?.master_only) {
+      if (effectiveTask.status === "queued") return "等待场景母图";
+      if (effectiveTask.status === "running") return "场景母图生成中";
+      if (effectiveTask.status === "completed") return "场景母图已完成";
+      if (effectiveTask.status === "failed") return "场景母图生成失败";
+    }
     if (effectiveTask.status === "queued") return "等待场景镜头图";
     if (effectiveTask.status === "running") return "场景图生成中";
     if (effectiveTask.status === "completed") return "场景图已完成";
@@ -420,6 +438,9 @@ export function runModeLabel(task) {
     return "Seedream / 角色设定";
   }
   if (task.task_type === "project.scenes") {
+    if (task.payload?.master_only) {
+      return "Seedream / 场景母图";
+    }
     return "Seedream / 场景镜头";
   }
   if (task.task_type === "project.images") {
@@ -441,6 +462,7 @@ export function taskTypeLabel(task) {
   if (task.task_type === "project.story") return "故事文本";
   if (task.task_type === "project.story_analysis") return "结构化信息";
   if (task.task_type === "project.characters") return "角色设定图";
+  if (task.task_type === "project.scenes" && task.payload?.master_only) return "场景母图";
   if (task.task_type === "project.scenes") return "场景镜头图";
   if (task.task_type === "project.images") return "图片";
   if (task.task_type === "project.videos" && task.payload?.merge_only) return "视频合并";

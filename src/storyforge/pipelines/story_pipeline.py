@@ -31,6 +31,7 @@ class StoryAnalysisResult:
     novel_audit_path: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     seedance_manifest_path: Path
@@ -46,6 +47,7 @@ class StoryPipelineResult:
     novel_audit_path: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     seedance_manifest_path: Path
@@ -129,6 +131,7 @@ def run_story_analysis_pipeline(
         novel_audit_path=analysis_files.novel_audit_path,
         character_bible_path=video_planning.character_bible_path,
         character_images_path=video_planning.character_images_path,
+        scene_plan_path=video_planning.scene_plan_path,
         segment_plan_path=video_planning.segment_plan_path,
         scene_images_path=video_planning.scene_images_path,
         seedance_manifest_path=video_planning.manifest_path,
@@ -172,6 +175,7 @@ def run_story_pipeline(
         novel_audit_path=analysis.novel_audit_path,
         character_bible_path=analysis.character_bible_path,
         character_images_path=analysis.character_images_path,
+        scene_plan_path=analysis.scene_plan_path,
         segment_plan_path=analysis.segment_plan_path,
         scene_images_path=analysis.scene_images_path,
         seedance_manifest_path=analysis.seedance_manifest_path,

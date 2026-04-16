@@ -48,15 +48,20 @@ const DOCUMENT_META = {
     category: "视频规划",
     summary: "记录每个角色图要怎么生成、输出到哪里，以及当前状态。",
   },
-  "segment_plan.json": {
-    title: "视频分段规划",
+  "scene_plan.json": {
+    title: "场景规划主文件",
     category: "视频规划",
-    summary: "定义每个片段的参与角色、对白、字幕、时长，以及首帧 / 中段锚点帧 / 尾帧提示词。",
+    summary: "定义章节下的 scene 层，以及每个 scene 内部的多个视频片段，并记录 scene_master_frame 的 prompt、路径和状态。",
+  },
+  "segment_plan.json": {
+    title: "片段执行索引",
+    category: "视频规划",
+    summary: "保留给图片与视频执行阶段使用的 flat segment 索引，便于逐段生成和重试。",
   },
   "scene_image_manifest.json": {
     title: "场景帧任务清单",
     category: "视频规划",
-    summary: "记录每个片段的首帧、中段锚点帧、尾帧、角色参考图和输出位置。",
+    summary: "记录每个场景母图，以及每个片段的首帧、中段锚点帧、尾帧、角色参考图和输出位置。",
   },
   "seedream_character_execution.json": {
     title: "角色图执行报告",
@@ -278,6 +283,8 @@ function segmentLabel(segmentId, index) {
     return `片段 ${index + 1}`;
   }
   return text
+    .replace(/^ch(\d+)-sc(\d+)-seg(\d+)$/i, "第 $1 章 / 场景 $2 / 片段 $3")
+    .replace(/^ch(\d+)-sc(\d+)-seg(\d+)_(\d+)$/i, "第 $1 章 / 场景 $2 / 片段 $3-$4")
     .replace(/^ch(\d+)_seg(\d+)$/i, "第 $1 章 / 片段 $2")
     .replaceAll("_", " ");
 }
@@ -286,11 +293,15 @@ function buildTimelineSegments(artifacts) {
   if (artifacts?.planned_segments?.length) {
     return artifacts.planned_segments.map((segment, index) => ({
       segmentId: segment.segment_id,
+      sceneId: segment.scene_id || "",
+      sceneTitle: segment.scene_title || "",
+      sceneSummary: segment.scene_summary || "",
       title: segment.title || segmentLabel(segment.segment_id, index),
       summary: segment.summary || "",
       chapterNumber: segment.chapter_number,
       durationSeconds: segment.duration_seconds || 0,
       requiresMidFrame: Boolean(segment.requires_mid_frame),
+      sceneMasterFrame: segment.scene_master_frame ? { ...segment.scene_master_frame, kind: "image" } : null,
       startFrame: segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
       midFrame: segment.mid_frame ? { ...segment.mid_frame, kind: "image" } : null,
       endFrame: segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
@@ -303,11 +314,15 @@ function buildTimelineSegments(artifacts) {
   const segmentMap = new Map();
   const ensureSegment = (segmentId) => {
     if (!segmentMap.has(segmentId)) {
-      segmentMap.set(segmentId, {
-        segmentId,
+        segmentMap.set(segmentId, {
+          segmentId,
+          sceneId: "",
+          sceneTitle: "",
+          sceneSummary: "",
         title: segmentId,
         summary: "",
         chapterNumber: 0,
+        sceneMasterFrame: null,
         durationSeconds: 0,
         requiresMidFrame: false,
         startFrame: null,
@@ -352,11 +367,54 @@ function buildTimelineSegments(artifacts) {
     }));
 }
 
+function buildSceneGroups(segments) {
+  const sceneMap = new Map();
+  segments.forEach((segment, index) => {
+    const sceneId = String(segment.sceneId || "").trim() || `scene-${String(index + 1).padStart(2, "0")}`;
+    if (!sceneMap.has(sceneId)) {
+      sceneMap.set(sceneId, {
+        sceneId,
+        sceneTitle: segment.sceneTitle || `场景 ${sceneMap.size + 1}`,
+        sceneSummary: segment.sceneSummary || "",
+        chapterNumber: segment.chapterNumber || 0,
+        sceneMasterFrame: segment.sceneMasterFrame || null,
+        segments: [],
+      });
+    }
+    if (!sceneMap.get(sceneId).sceneMasterFrame && segment.sceneMasterFrame) {
+      sceneMap.get(sceneId).sceneMasterFrame = segment.sceneMasterFrame;
+    }
+    sceneMap.get(sceneId).segments.push(segment);
+  });
+  return Array.from(sceneMap.values());
+}
+
 function getLatestSegmentStageTask(run, taskType, segmentId) {
   return run?.tasks?.find((task) => (
     task.task_type === taskType
     && String(task.payload?.segment_id || task.result?.segment_id || "") === String(segmentId || "")
   )) || null;
+}
+
+function getLatestSceneMasterTask(run, sceneId) {
+  return run?.tasks?.find((task) => (
+    task.task_type === "project.scenes"
+    && Boolean(task.payload?.master_only || task.result?.master_only)
+    && String(task.payload?.scene_id || task.result?.scene_id || "") === String(sceneId || "")
+  )) || null;
+}
+
+function buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus) {
+  if (sceneMasterTaskStatus === "queued" || sceneMasterTaskStatus === "running") {
+    return "场景母图生成中";
+  }
+  if (sceneGroup.sceneMasterFrame) {
+    return "重生成场景母图";
+  }
+  if (sceneMasterTaskStatus === "failed") {
+    return "重试场景母图";
+  }
+  return "生成场景母图";
 }
 
 function buildSegmentSceneButtonLabel(segment, sceneTaskStatus) {
@@ -408,22 +466,35 @@ function renderSegmentTaskError(task, label) {
 
 function buildTimelineGalleryItems(artifacts) {
   const plannedItems = (artifacts?.planned_segments || []).flatMap((segment) => ([
+    segment.scene_master_frame ? { ...segment.scene_master_frame, kind: "image" } : null,
     segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
     segment.mid_frame ? { ...segment.mid_frame, kind: "image" } : null,
     segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
     segment.rendered_clip ? { ...segment.rendered_clip, kind: "video" } : null,
   ])).filter(Boolean);
   if (plannedItems.length) {
-    return [
+    return dedupeTimelineGalleryItems([
       ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
       ...plannedItems,
-    ];
+    ]);
   }
-  return [
+  return dedupeTimelineGalleryItems([
     ...artifacts.scene_frames.map((item) => ({ ...item, kind: "image" })),
     ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
     ...artifacts.rendered_clips.map((item) => ({ ...item, kind: "video" })),
-  ];
+  ]);
+}
+
+function dedupeTimelineGalleryItems(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = String(item?.path || item?.url || item?.name || "");
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function renderTimelinePreview(item, label, galleryId) {
@@ -461,8 +532,10 @@ function renderTimelineTab(task, artifacts, context, run = null) {
   const galleryId = `${context}:timeline:${task.task_id}`;
   registerGallery(galleryId, timelineItems);
   const segments = buildTimelineSegments(artifacts);
+  const sceneGroups = buildSceneGroups(segments);
   const rootTask = run?.rootTask || task;
   const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
+  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
   const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
   const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
   const readySceneCount = segments.filter((segment) => segment.sceneReady).length;
@@ -479,6 +552,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
           <p class="asset-note">首帧、中段锚点帧、尾帧和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
         </div>
         <div class="detail-chip-row">
+          ${chip(`场景 ${sceneGroups.length}`)}
           ${chip(`片段 ${segments.length}`)}
           ${chip(`场景就绪 ${readySceneCount}/${segments.length || 0}`)}
           ${chip(`视频就绪 ${readyVideoCount}/${segments.length || 0}`)}
@@ -502,8 +576,49 @@ function renderTimelineTab(task, artifacts, context, run = null) {
       ${
         segments.length
           ? `
-            <div class="timeline-list">
-              ${segments
+            <div class="timeline-scene-list">
+              ${sceneGroups
+                .map(
+                  (sceneGroup) => {
+                    const sceneMasterTask = getLatestSceneMasterTask(run, sceneGroup.sceneId);
+                    const sceneMasterTaskStatus = run ? getRunStageStatus(sceneMasterTask, storySourceRevision) : "idle";
+                    const canGenerateSceneMaster =
+                      analysisStatus === "completed"
+                      && !["queued", "running"].includes(sceneMasterTaskStatus);
+                    return `
+                    <section class="timeline-scene-group">
+                      <div class="timeline-scene-head">
+                        <div>
+                          <p class="section-kicker">Scene</p>
+                          <h4>${escapeHtml(sceneGroup.sceneTitle || sceneGroup.sceneId)}</h4>
+                          <p class="asset-note">
+                            ${escapeHtml(`${sceneGroup.chapterNumber ? `第 ${sceneGroup.chapterNumber} 章 · ` : ""}${sceneGroup.sceneId}`)}
+                          </p>
+                          ${sceneGroup.sceneSummary ? `<p class="timeline-scene-summary">${escapeHtml(sceneGroup.sceneSummary)}</p>` : ""}
+                        </div>
+                        <div class="timeline-scene-actions">
+                          <div class="detail-chip-row">
+                            ${chip(`片段 ${sceneGroup.segments.length}`)}
+                            ${chip(`母图 ${sceneGroup.sceneMasterFrame ? "已生成" : "未生成"}`)}
+                          </div>
+                          <button
+                            type="button"
+                            class="secondary small"
+                            data-generate-scene-master="${escapeAttr(sceneGroup.sceneId)}"
+                            data-project-id="${escapeAttr(rootTask.project_id)}"
+                            data-source-task="${escapeAttr(rootTask.task_id)}"
+                            ${canGenerateSceneMaster ? "" : "disabled"}
+                          >
+                            ${escapeHtml(buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus))}
+                          </button>
+                        </div>
+                      </div>
+                      <div class="timeline-scene-master">
+                        ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
+                      </div>
+                      ${renderSegmentTaskError(sceneMasterTask, "场景母图失败")}
+                      <div class="timeline-list">
+                        ${sceneGroup.segments
                 .map(
                   (segment, index) => {
                     const sceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
@@ -523,7 +638,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                         <div>
                           <h4>${escapeHtml(segment.title || segmentLabel(segment.segmentId, index))}</h4>
                           <p class="asset-note">
-                            ${escapeHtml(`${segment.chapterNumber ? `第 ${segment.chapterNumber} 章 · ` : ""}${segment.segmentId}${segment.durationSeconds ? ` · ${segment.durationSeconds}s` : ""}`)}
+                            ${escapeHtml(`${segment.chapterNumber ? `第 ${segment.chapterNumber} 章 · ` : ""}${segment.sceneId ? `${segment.sceneId} · ` : ""}${segment.segmentId}${segment.durationSeconds ? ` · ${segment.durationSeconds}s` : ""}`)}
                           </p>
                         </div>
                       </div>
@@ -566,6 +681,12 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                         ${renderSegmentTaskError(videoTask, "视频失败")}
                       </div>
                     </article>
+                  `;
+                  },
+                )
+                .join("")}
+                      </div>
+                    </section>
                   `;
                   },
                 )

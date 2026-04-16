@@ -13,6 +13,7 @@ class VideoPipelineResult:
     output_dir: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path
@@ -31,6 +32,7 @@ class CharacterImagePipelineResult:
     output_dir: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path
@@ -46,6 +48,7 @@ class SceneImagePipelineResult:
     output_dir: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path
@@ -62,6 +65,7 @@ class ImagePipelineResult:
     output_dir: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path
@@ -100,6 +104,7 @@ class VideoPlanningArtifacts:
     output_dir: Path
     character_bible_path: Path
     character_images_path: Path
+    scene_plan_path: Path
     segment_plan_path: Path
     scene_images_path: Path
     manifest_path: Path

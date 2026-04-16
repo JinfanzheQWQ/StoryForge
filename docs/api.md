@@ -173,11 +173,16 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - `novel_package.json`
 - `novel_audit.json`
+- `scene_plan.json`
+- `segment_plan.json`
 
 其中：
 
 - `novel_package.json` 是运行态最小包
 - `novel_audit.json` 保存 `review`、`workflow_trace` 和分析上下文
+- `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
+- 每个 scene 还会携带 `scene_master_frame_prompt / path / status / url`
+- `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
 
 请求示例：
 
@@ -203,12 +208,29 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+重生成单个 scene 的场景母图：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "scene_id": "ch01-sc01",
+  "master_only": true
+}
+```
+
 说明：
 
 - `segment_id` 可选
+- `scene_id` 可选
+- `master_only` 可选
 - 不传时表示沿用旧的整批执行方式
 - 传入后表示只生成单个 segment 的首帧 / 中段锚点帧 / 尾帧
+- 传入 `scene_id + master_only = true` 时，只会重生成该 scene 的 `scene_master_frame`
+- `master_only = true` 不能与 `segment_id` 同时提交，也必须配合 `scene_id`
+- 该模式会强制跳过旧的“母图已完成则直接复用”逻辑，重新调用 Seedream 并把结果回写到 `scene_plan.json` 与 `scene_image_manifest.json`
 - 对同一 `source_task_id + segment_id`，如果已经有 queued / running 任务，后端会直接返回已有任务
+- 对同一 `source_task_id + scene_id + master_only`，如果已经有 queued / running 任务，后端也会直接返回已有任务
 
 #### `POST /v1/projects/videos`
 
@@ -299,6 +321,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `error` 为失败时的可展示原因，前端会直接展示它。
 - 阶段任务会通过 `result.pipeline_root_task_id` 指向同一条 story run。
 - `result.story_source_revision` 用于判断结构化信息、图片和视频是否仍对应当前正文。
+- `project.scenes` 的单段任务会带 `segment_id`；场景母图重生成任务会带 `scene_id` 和 `master_only = true`
 
 #### `GET /v1/tasks/{task_id}/artifacts`
 
@@ -311,8 +334,12 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 总片
 - `planned_segments`
 
-其中 `planned_segments` 会直接来自 `segment_plan.json`，并带上每个 segment 当前对应的：
+其中 `planned_segments` 会优先来自 `scene_plan.json`，并回落到 `segment_plan.json`。接口会带上每个 segment 当前对应的：
 
+- `scene_id`
+- `scene_title`
+- `scene_summary`
+- `scene_master_frame`
 - `start_frame`
 - `mid_frame`
 - `end_frame`

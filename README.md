@@ -26,6 +26,10 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 
 - 基于 `LangChain >= 1.2` 的结构化多 Agent 小说生成
 - 基于 `DeepSeek` 与 `ChatGPT 5.4` 的双 LLM 接入，页面可切换
+- 视频结构化规划已接入 `chapter -> scene -> segment` 三层结构
+- 同一 `scene` 现在会生成并复用 `scene_bible`，用于锁定地点、时间、光线、背景锚点与角色调度
+- 同一 `scene` 现在会先生成并复用 `scene_master_frame`，作为后续关键帧与视频的场景母图
+- 每个 `segment` 现在会生成并复用 `shot_state`，用于锁定景别、镜头推进、动作推进、道具连续性与尾部承接状态
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
 - `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
@@ -55,8 +59,14 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - 结构化阶段具备后端幂等保护：同一故事正文修订已有 queued / running / completed 结构化任务时，不会重复创建任务
 - 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
+- 视频规划已拆成场景主规划与执行索引两层：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 保留给逐段执行和重试
 - Seedance manifest 标题继承真实小说标题，旧产物重载时会优先从 `novel_package.json` / `story_source.json` 恢复标题
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
+- 场景一致性链路：`scene_bible` -> 场景图 prompt -> Seedance 视频 prompt
+- 场景母图链路：`scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
+- 镜头连续性链路：`shot_state` -> 场景图 prompt -> Seedance 视频 prompt
+- 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 场景图 prompt -> Seedance 视频 prompt
+- 项目详情时间线按 `scene` 分组展示多个 `segment`，同场景连续片段会优先按 `scene_id` 复用前一段尾帧
 - 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
 - 项目级管理：支持同一项目下多次运行结果追踪
@@ -177,9 +187,9 @@ uv run storyforge api serve
 1. 在页面创建故事并生成小说
 2. 在“小说”标签页审阅并按需修改正文
 3. 手动触发结构化信息生成
-4. 在同一条 story run 上生成角色图
-5. 基于同一条 story run 生成场景图
-6. 生成视频片段，并在需要时手动合并总片
+4. 查看 `scene` 分组后的时间线规划
+5. 在同一条 story run 上生成角色图
+6. 基于同一条 story run 逐段生成场景图与视频，并在需要时手动合并总片
 
 ## CLI 用法
 

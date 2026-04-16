@@ -48,6 +48,15 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 - 角色视觉档案生成
 - 视频规划文件已前移到 `project.story_analysis` 阶段生成，不再等到角色图阶段才拆分视频
+- 视频结构已经从纯 `chapter -> segment` 升级为 `chapter -> scene -> segment`
+- 已新增 `scene_plan.json` 作为场景级主规划文件
+- `scene_bible` 已接入结构化规划主链路，并真实进入场景图 / 视频 prompt
+- `scene_master_frame` 已接入结构化规划、运行时合同、场景图执行链路、Seedance 参考图链路和前端时间线索引
+- `scene_master_frame` 现在是严格的无角色空场景参考图，只锁环境与空间，不再允许人物、背影或角色调度进入母图 prompt
+- 当 `scene_bible` 太弱时，`scene_master_frame` 现在会自动从同一 `scene` 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 中提炼无角色环境锚点，回填地点、时间、光线、空间布局和背景锚点，再生成母图 prompt
+- `shot_state` 已接入结构化规划主链路，并真实进入场景图 / 视频 prompt
+- `continuity_link` 已接入结构化规划主链路，并真实进入首帧承接判断、场景图 prompt 与 Seedance prompt
+- `segment_plan.json` 现在保留为执行层 flat 索引，便于逐段生成与重试
 - 角色定妆卡任务生成与真实调用
 - 章节到视频段的拆分规划
 - 视频分段 prompt 已加入中文口播字数预算，要求对白、旁白、硬字幕和 `duration_seconds` 匹配
@@ -56,11 +65,18 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 视频分段现在会显式输出 `start_frame_characters` / `mid_frame_characters` / `end_frame_characters`
 - 对多人同框、长时长、动作推进明显的片段，会额外生成中段锚点帧
 - 场景关键帧任务生成与真实调用
+- 同一 scene 现在会先生成一张 `scene_master_frame`，再派生该 scene 下所有 segment 的首帧 / 中段 / 尾帧
+- segment 关键帧现在会优先基于 `scene_master_frame + 当前帧角色图 + 条件承接帧` 派生，而不是每段都从零起图
+- `project.scenes` 现在支持 `scene_id + master_only`，可以只重生成单个 scene 的 `scene_master_frame`
+- 同一 scene 下的片段现在共享 `scene_bible`，repair 会在字段缺失时自动补齐地点、时间、天气、光线、背景锚点和连续性说明
+- 每个 segment 现在共享正式 `shot_state`，repair 会在字段缺失时自动补齐景别、镜头推进、调度、动作推进、道具连续性和尾部承接状态
+- 每个 segment 现在共享正式 `continuity_link`，repair 会在字段缺失时自动补齐上一段承接关系、开场匹配要求、延续元素与允许变化
 - 场景图阶段改为按帧选择角色参考图，不再按整段 `involved_characters` 把所有角色图都塞进首帧、尾帧和中段
 - 帧级角色归一化会优先参考对应时间节拍：如果中段节拍只是“男主等待女主”，中段帧只绑定男主参考图，不会因为整段涉及两人就把女主塞进画面
 - 场景生图 prompt 现在显式禁止任何字幕、对白字卡、聊天气泡、旁白框和其它可见文字；对白与硬字幕只留到视频阶段烧录
 - 即使上游分镜 prompt 混入“林远说：……”或“字幕：……”这类文本，场景生图阶段也会先清洗成纯视觉动作描述，再发给 Seedream
 - 场景图与视频阶段现在支持 `segment_id` 单段执行，不再只能整批跑完
+- 同一 scene 内的连续 segment 现在优先按 `scene_id` 判定是否复用上一段尾帧
 - Seedance manifest 生成
 - Seedance 提交层现在会优先尝试“角色参考图 + 中段锚点图（如有）+ 首尾帧”的完整上下文；若接口返回 400，会自动降级重试为“中段锚点图 + 首尾帧”，最后再退到“仅首尾帧”
 - Seedance 任务创建、轮询、下载
@@ -79,6 +95,8 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 前端已展示任务和阶段级失败原因，不再只显示“异常”
 - Seedance 提交失败时会把真实 HTTP 响应体、所用 payload 变体和 segment 级错误摘要写入 `seedance_execution.json`，任务页也会直接显示具体失败原因
 - 任务产物接口已输出 `planned_segments`，前端时间线会先展示完整片段列表，再允许逐段生成场景图和视频
+- 任务产物接口现在会把 `scene_id` / `scene_title` / `scene_summary` / `scene_master_frame` 一起下发，前端时间线按 scene 分组展示 segment
+- 前端时间线现在可在 scene 头部单独触发“重生成场景母图”，并直接展示该任务的状态与失败原因
 - 前端已提供手动合并总片入口，不再在视频任务完成后自动生成 `full_story.mp4`
 - 资产页视频预览轮询稳定性修复
 - 故事正文保存后自动清理旧的结构化和媒体派生产物
@@ -122,6 +140,10 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 媒体质量
 
 - 角色一致性仍以“参考图 + prompt 锁定”为主
+- 已有 `scene_bible`、`scene_master_frame`、`shot_state` 与 `continuity_link`，但还没有真正的连续性审校器
+- `scene_master_frame` 的环境回填目前仍是规则型 fallback，不是独立的环境一致性评估器；输入文本特别弱时，仍可能拿不到足够细的固定道具与空间布局
+- Seedream 场景帧默认参考图策略已显式固定：优先 `时间承接帧 -> scene anchor / scene_master_frame -> 当前帧实际出镜角色图`，单帧总参考图最多 4 张，角色参考图最多 2 张，不再把未出镜角色硬塞进单人帧
+- 最近一次 4 样本真实批量对比也支持这条默认策略：单人帧以 `3 refs` 最稳，额外塞入未出镜角色会直接污染画面；双人帧则明显更适合 `4 refs`
 - 角色定妆图已简化为 `SF-TURN-01` 横版 16:9 白底三视图 prompt，只保留角色姓名和人物描述，输出正面、左侧面、背面；不再要求信息格、色卡、材质块或灰底设计板
 - 声音一致性仍是 prompt 级，不是声纹级
 - 硬字幕主要依赖模型生成，缺少稳定的后处理兜底
@@ -138,7 +160,9 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 ### 生产可用性
 
-- Seedream / Seedance 的字段兼容性仍可能因账户环境不同而需要微调
+- Seedream 已补 `image` / `reference_images` 多 payload 兼容回退，以及多参考图失败时的保守降级策略；当前 `ark` 网关已实测通过 1-4 张参考图和 `reference_images` 的 `string / list / objects` 形式，但不同账户环境下的最佳字段和顺序仍可能需要联调微调
+- 已补真实质量探针对比脚本，可基于现有 run 直接生成单人帧 / 双人帧的 2/3/4 refs 对比样例
+- 批量对比脚本现在也支持从已有批次目录直接重建 `summary.json / summary.md`，不必为补汇总重新消耗外部接口
 - 缺少生产级重试、幂等和失败恢复闭环
 - 缺少配额、审计和多用户治理
 
@@ -152,9 +176,11 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 ### 第二优先级
 
-1. 增加硬字幕 ffmpeg 兜底
-2. 增加失败任务重放与手动重试
-3. 增加更强的角色一致性检查
+1. 做真正的连续性审校器
+2. 在已打通的 1-4 图兼容基础上，继续用更大样本校准 `Seedream 4.5` 的最佳参考图顺序、图数上限与画质稳定性
+3. 增加硬字幕 ffmpeg 兜底
+4. 增加失败任务重放与手动重试
+5. 增加更强的角色一致性检查
 
 ### 第三优先级
 

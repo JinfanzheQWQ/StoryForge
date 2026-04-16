@@ -11,8 +11,10 @@ from storyforge.domains.video.contracts import (
     SceneImageTask,
     SeedanceManifest,
     VideoProjectPackage,
+    VideoScene,
     VideoSegment,
 )
+from storyforge.domains.video.schemas import VideoSegmentPlanSchema
 from storyforge.domains.video.service import NovelToVideoService
 from storyforge.integrations.llm import build_agent_backend
 from storyforge.pipelines.video_models import VideoPlanningArtifacts
@@ -49,12 +51,14 @@ def build_video_planning_artifacts(
 
     character_bible_path = output_dir / "character_visual_bible.json"
     character_images_path = output_dir / "character_image_manifest.json"
+    scene_plan_path = output_dir / "scene_plan.json"
     segment_plan_path = output_dir / "segment_plan.json"
     scene_images_path = output_dir / "scene_image_manifest.json"
     manifest_path = output_dir / "seedance_manifest.json"
 
     write_json(character_bible_path, project_package.character_profiles)
     write_json(character_images_path, project_package.character_images)
+    write_json(scene_plan_path, {"scenes": project_package.scenes})
     write_json(segment_plan_path, project_package.segments)
     write_json(scene_images_path, project_package.scene_images)
     write_json(manifest_path, manifest)
@@ -63,6 +67,7 @@ def build_video_planning_artifacts(
         output_dir=output_dir,
         character_bible_path=character_bible_path,
         character_images_path=character_images_path,
+        scene_plan_path=scene_plan_path,
         segment_plan_path=segment_plan_path,
         scene_images_path=scene_images_path,
         manifest_path=manifest_path,
@@ -74,6 +79,7 @@ def build_video_planning_artifacts(
 def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
     character_bible_path = output_dir / "character_visual_bible.json"
     character_images_path = output_dir / "character_image_manifest.json"
+    scene_plan_path = output_dir / "scene_plan.json"
     segment_plan_path = output_dir / "segment_plan.json"
     scene_images_path = output_dir / "scene_image_manifest.json"
     manifest_path = output_dir / "seedance_manifest.json"
@@ -93,6 +99,7 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
         )
 
     manifest = SeedanceManifest.from_dict(read_json(manifest_path))
+    scene_plan = _load_scene_plan(scene_plan_path, segment_plan_path)
 
     project_package = VideoProjectPackage(
         title=_resolve_video_project_title(output_dir, manifest),
@@ -104,10 +111,11 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
             CharacterImageTask.from_dict(item)
             for item in read_json(character_images_path)
         ],
-        segments=[
-            VideoSegment.from_dict(item)
-            for item in read_json(segment_plan_path)
+        scenes=[
+            VideoScene.from_dict(item.model_dump())
+            for item in scene_plan.scenes
         ],
+        segments=[VideoSegment.from_dict(item.model_dump()) for item in scene_plan.segments],
         scene_images=[
             SceneImageTask.from_dict(item)
             for item in read_json(scene_images_path)
@@ -120,6 +128,7 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
         output_dir=output_dir,
         character_bible_path=character_bible_path,
         character_images_path=character_images_path,
+        scene_plan_path=scene_plan_path,
         segment_plan_path=segment_plan_path,
         scene_images_path=scene_images_path,
         manifest_path=manifest_path,
@@ -151,3 +160,16 @@ def _resolve_video_project_title(output_dir: Path, manifest: SeedanceManifest) -
     if manifest_title and manifest_title not in {"segment_video_manifest", "seedance_manifest"}:
         return manifest_title
     return output_dir.name
+
+
+def _load_scene_plan(scene_plan_path: Path, segment_plan_path: Path) -> VideoSegmentPlanSchema:
+    if scene_plan_path.exists():
+        payload = read_json(scene_plan_path)
+        if isinstance(payload, list):
+            if payload and isinstance(payload[0], dict) and "segments" in payload[0]:
+                return VideoSegmentPlanSchema.model_validate({"scenes": payload})
+            return VideoSegmentPlanSchema.model_validate({"segments": payload})
+        return VideoSegmentPlanSchema.model_validate(payload)
+
+    segment_payload = read_json(segment_plan_path)
+    return VideoSegmentPlanSchema.model_validate({"segments": segment_payload})

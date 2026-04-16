@@ -636,6 +636,56 @@
   margin-left: auto;
 }
 
+.timeline-scene-list {
+  display: grid;
+  gap: 14px;
+}
+
+.timeline-scene-group {
+  display: grid;
+  gap: 12px;
+}
+
+.timeline-scene-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border: 1px solid rgba(19, 35, 28, 0.08);
+  border-radius: var(--radius-xl);
+  background:
+    radial-gradient(circle at 0 0, rgba(142, 182, 171, 0.12), transparent 34%),
+    rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-sm);
+}
+
+.timeline-scene-head h4 {
+  margin: 2px 0 4px;
+  font-family: var(--title);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.timeline-scene-actions {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+}
+
+.timeline-scene-summary {
+  margin: 8px 0 0;
+  max-width: 820px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--muted-strong);
+}
+
+.timeline-scene-master {
+  max-width: 280px;
+}
+
 .timeline-list {
   display: grid;
   gap: 12px;

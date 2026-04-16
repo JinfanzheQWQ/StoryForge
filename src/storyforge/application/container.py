@@ -8,7 +8,7 @@ from storyforge.application.persistence.mysql_backend import MySQLBackend
 from storyforge.application.persistence.mysql_projects import MySQLProjectStore
 from storyforge.application.persistence.mysql_tasks import MySQLTaskStore
 from storyforge.application.task_runtime import TaskExecutionContext, build_task_handler
-from storyforge.application.tasks import AsyncTaskQueue, TaskStore
+from storyforge.application.tasks import AsyncTaskQueue
 from storyforge.core.config import AppConfig
 
 

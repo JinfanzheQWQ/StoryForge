@@ -300,6 +300,23 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const sceneMasterButton = event.target.closest("[data-generate-scene-master]");
+  if (sceneMasterButton) {
+    await submitStageFromButton(
+      sceneMasterButton,
+      "/v1/projects/scenes",
+      {
+        project_id: sceneMasterButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: sceneMasterButton.dataset.sourceTask,
+        scene_id: sceneMasterButton.dataset.generateSceneMaster,
+        master_only: true,
+      },
+      "场景母图任务已创建",
+      "场景母图任务提交失败。",
+    );
+    return;
+  }
+
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
     await submitStageFromButton(

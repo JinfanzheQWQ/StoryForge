@@ -13,7 +13,15 @@ from storyforge.agents.base import (
 )
 from storyforge.core.config import SeedanceConfig
 from storyforge.domains.novel.contracts import NovelPackage
-from storyforge.domains.video.contracts import CharacterVisualProfile, VideoProjectPackage, VideoSegment
+from storyforge.domains.video.contracts import (
+    CharacterVisualProfile,
+    ContinuityLink,
+    SceneBible,
+    ShotState,
+    VideoProjectPackage,
+    VideoScene,
+    VideoSegment,
+)
 from storyforge.domains.video.planning import VideoPlanningMixin
 from storyforge.domains.video.prompting import VideoPromptingMixin
 from storyforge.domains.video.repair import VideoRepairMixin
@@ -76,8 +84,9 @@ class NovelToVideoService(
             schema=VideoSegmentPlanSchema,
             request=PromptRequest(
                 system_prompt=(
-                    "你是短视频分段导演 Agent。"
-                    "请把小说章节拆成多个能独立成片的视频片段，每个片段都要有首尾帧；必要时补充中段锚点帧。"
+                    "你是短视频分镜导演 Agent。"
+                    "请先按场景拆分，再把每个场景拆成多个能独立成片的视频片段。"
+                    "每个片段都要有首尾帧；必要时补充中段锚点帧。"
                     "输出偏镜头分镜和环境调度，避免真人特写描述。"
                 ),
                 user_prompt=self._build_segment_planner_user_prompt(novel_package),
@@ -85,10 +94,14 @@ class NovelToVideoService(
             ),
             fallback=self._fallback_segment_plan(novel_package, visual_bible),
         )
-        segments_plan = self._normalize_segment_characters(segments_plan, novel_package, visual_bible)
         segments_plan = self._repair_segment_plan(segments_plan, novel_package, visual_bible)
         segments_plan = self._normalize_segment_characters(segments_plan, novel_package, visual_bible)
+        segments_plan = self._repair_scene_bibles(segments_plan, novel_package)
+        segments_plan = self._repair_shot_states(segments_plan, novel_package)
         segments_plan = self._normalize_segments_for_seedance(segments_plan)
+        segments_plan = self._repair_scene_bibles(segments_plan, novel_package)
+        segments_plan = self._repair_shot_states(segments_plan, novel_package)
+        segments_plan = self._repair_continuity_links(segments_plan)
 
         character_profiles = [
             CharacterVisualProfile(
@@ -116,10 +129,19 @@ class NovelToVideoService(
             for item in novel_package.outline.characters
         }
         character_images = self._build_character_image_tasks(character_profiles, output_dir)
+        scenes = [
+            VideoScene.from_dict(item.model_dump())
+            for item in segments_plan.scenes
+        ]
+        scenes = self._prepare_scene_master_frames(scenes, output_dir)
         segments = [
             VideoSegment(
                 segment_id=item.segment_id,
                 chapter_number=item.chapter_number,
+                scene_id=item.scene_id,
+                scene_title=item.scene_title,
+                scene_summary=item.scene_summary,
+                scene_anchor=item.scene_anchor,
                 title=item.title,
                 summary=item.summary,
                 involved_characters=item.involved_characters,
@@ -152,10 +174,14 @@ class NovelToVideoService(
                 subsegment_index=item.subsegment_index,
                 subsegment_count=item.subsegment_count,
                 reuse_previous_end_frame=item.reuse_previous_end_frame,
+                scene_bible=SceneBible.from_dict(item.scene_bible.model_dump()),
+                shot_state=ShotState.from_dict(item.shot_state.model_dump()),
+                continuity_link=ContinuityLink.from_dict(item.continuity_link.model_dump()),
             )
             for item in segments_plan.segments
         ]
         scene_images = self._build_scene_image_tasks(
+            scenes,
             segments,
             character_images,
             profile_map,
@@ -172,12 +198,17 @@ class NovelToVideoService(
             title=novel_package.outline.title,
             character_profiles=character_profiles,
             character_images=character_images,
+            scenes=scenes,
             segments=segments,
             scene_images=scene_images,
             seedance_manifest=manifest,
             workflow_trace={
                 "character_visual_bible": visual_bible.model_dump(),
-                "segment_plan": segments_plan.model_dump(),
+                "scene_plan": segments_plan.model_dump(),
+                "segment_plan": [
+                    item.model_dump()
+                    for item in segments_plan.segments
+                ],
             },
         )
 

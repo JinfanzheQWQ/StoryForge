@@ -24,7 +24,7 @@ class StoryForgeOrchestrator:
     def build_from_brief(
         self,
         brief: StoryBrief,
-        use_llm: bool = False,
+        use_llm: bool = True,
         output_root: Path | None = None,
         submit_seedance: bool = False,
     ) -> EndToEndResult:
@@ -49,7 +49,7 @@ class StoryForgeOrchestrator:
         self,
         novel_package: NovelPackage,
         output_root: Path | None = None,
-        use_llm: bool = False,
+        use_llm: bool = True,
         submit_seedance: bool = False,
     ) -> VideoPipelineResult:
         planning = build_video_planning_artifacts(

@@ -10,6 +10,7 @@ import {
   buildOverviewNote,
   buildTaskErrorMessage,
   chip,
+  continuityReviewModeLabel,
   escapeAttr,
   escapeHtml,
   formatShortTime,
@@ -17,6 +18,7 @@ import {
   getStorySourceRevision,
   kindLabel,
   metricCard,
+  resolveRunContinuityReviewMode,
   singleAssetMessage,
   stageStatusLabel,
   statusLabel,
@@ -83,7 +85,43 @@ const DOCUMENT_META = {
     category: "执行报告",
     summary: "记录视频提交状态、完成数量、失败数量和下载结果。",
   },
+  "continuity_report.json": {
+    title: "连续性校验报告",
+    category: "执行报告",
+    summary: "连续性审校结果，包含 V1 规则校验与可选的 V2 LLM 软审校，汇总场景母图、关键帧承接、对白预算和视频执行风险。",
+  },
 };
+
+const CONTINUITY_SEVERITY_LABEL = {
+  high: "高风险",
+  medium: "中风险",
+  low: "低风险",
+};
+
+const CONTINUITY_STATUS_LABEL = {
+  healthy: "稳定",
+  warning: "需留意",
+  critical: "高风险",
+  unknown: "未校验",
+};
+
+const CONTINUITY_V2_STATUS_LABEL = {
+  disabled: "已关闭",
+  skipped: "自动跳过",
+  completed: "已完成",
+  failed: "失败",
+};
+
+function renderContinuityModeOptions(selectedMode) {
+  const current = String(selectedMode || "auto").trim().toLowerCase() || "auto";
+  return [
+    ["auto", "自动"],
+    ["on", "强制开启"],
+    ["off", "关闭"],
+  ].map(
+    ([value, label]) => `<option value="${escapeAttr(value)}" ${value === current ? "selected" : ""}>${escapeHtml(label)}</option>`,
+  ).join("");
+}
 
 function renderStageFailureList(run, storySourceRevision) {
   const failedStages = [
@@ -443,6 +481,19 @@ function buildSegmentVideoButtonLabel(segment, videoTaskStatus) {
   return "生成视频";
 }
 
+function buildSegmentRepairButtonLabel(segment, repairTaskStatus) {
+  if (repairTaskStatus === "queued" || repairTaskStatus === "running") {
+    return "智能修复中";
+  }
+  if (segment.videoReady || segment.sceneReady) {
+    return "重新智能修复";
+  }
+  if (repairTaskStatus === "failed") {
+    return "重试智能修复";
+  }
+  return "智能修复该段";
+}
+
 function buildMergeButtonLabel(artifacts, mergeTaskStatus) {
   if (mergeTaskStatus === "queued" || mergeTaskStatus === "running") {
     return "合并中";
@@ -462,6 +513,93 @@ function renderSegmentTaskError(task, label) {
     return "";
   }
   return `<p class="timeline-task-error">${escapeHtml(`${label}：${error}`)}</p>`;
+}
+
+function buildContinuityLookup(groups, keyField) {
+  return new Map(
+    (groups || [])
+      .filter((group) => group && group[keyField])
+      .map((group) => [String(group[keyField]), group]),
+  );
+}
+
+function hasRecommendedContinuityAction(group, action) {
+  return Boolean(group?.recommended_actions?.includes(action));
+}
+
+function renderContinuityRiskChips(group) {
+  if (!group || !group.issue_count) {
+    return chip("连续性稳定");
+  }
+  const parts = [chip(`风险 ${group.issue_count}`)];
+  if (group.high_risk_count) {
+    parts.push(`<span class="continuity-chip continuity-chip-high">高 ${group.high_risk_count}</span>`);
+  }
+  if (group.medium_risk_count) {
+    parts.push(`<span class="continuity-chip continuity-chip-medium">中 ${group.medium_risk_count}</span>`);
+  }
+  if (group.low_risk_count) {
+    parts.push(`<span class="continuity-chip continuity-chip-low">低 ${group.low_risk_count}</span>`);
+  }
+  return parts.join("");
+}
+
+function renderContinuityIssueList(group, emptyMessage = "") {
+  if (!group?.issues?.length) {
+    return emptyMessage ? `<p class="continuity-empty">${escapeHtml(emptyMessage)}</p>` : "";
+  }
+  return `
+    <div class="continuity-issue-list">
+      ${group.issues.map((issue) => `
+        <article class="continuity-issue continuity-issue-${escapeAttr(issue.severity || "low")}">
+          <div class="continuity-issue-head">
+            <span class="continuity-pill continuity-pill-${escapeAttr(issue.severity || "low")}">
+              ${escapeHtml(CONTINUITY_SEVERITY_LABEL[issue.severity] || "风险")}
+            </span>
+            ${issue.recommended_action_label ? `<span class="continuity-action-label">${escapeHtml(issue.recommended_action_label)}</span>` : ""}
+          </div>
+          <p>${escapeHtml(issue.message || "")}</p>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderContinuityOverview(summary) {
+  if (!summary) {
+    return `<p class="timeline-continuity-note">当前还没有连续性校验结果。</p>`;
+  }
+  const generatedAt = summary.generated_at ? formatShortTime(summary.generated_at) : "未记录";
+  const modeLabel = continuityReviewModeLabel(summary.review_mode_requested);
+  const v2StatusLabel = CONTINUITY_V2_STATUS_LABEL[summary.v2_review_status] || summary.v2_review_status || "未执行";
+  const topIssues = summary.top_issues?.length
+    ? `
+      <div class="continuity-hero-list">
+        ${summary.top_issues.map((issue) => `
+          <article class="continuity-inline-item">
+            <span class="continuity-pill continuity-pill-${escapeAttr(issue.severity || "low")}">
+              ${escapeHtml(CONTINUITY_SEVERITY_LABEL[issue.severity] || "风险")}
+            </span>
+            <p>${escapeHtml(issue.message || "")}</p>
+          </article>
+        `).join("")}
+      </div>
+    `
+    : `<p class="timeline-continuity-note">当前没有检测到需要人工处理的连续性问题。</p>`;
+  return `
+    <div class="timeline-continuity-summary">
+      <p class="timeline-continuity-note">
+        ${escapeHtml(`最近校验：${generatedAt} · 状态：${CONTINUITY_STATUS_LABEL[summary.status] || summary.status || "未校验"}`)}
+      </p>
+      <div class="detail-chip-row">
+        ${chip(`V2 模式 ${modeLabel}`)}
+        ${chip(`V2 状态 ${v2StatusLabel}`)}
+        ${summary.v2_issue_count ? `<span class="continuity-chip continuity-chip-medium">V2 问题 ${summary.v2_issue_count}</span>` : ""}
+      </div>
+      ${summary.v2_note ? `<p class="timeline-continuity-note">${escapeHtml(summary.v2_note)}</p>` : ""}
+      ${topIssues}
+    </div>
+  `;
 }
 
 function buildTimelineGalleryItems(artifacts) {
@@ -533,6 +671,8 @@ function renderTimelineTab(task, artifacts, context, run = null) {
   registerGallery(galleryId, timelineItems);
   const segments = buildTimelineSegments(artifacts);
   const sceneGroups = buildSceneGroups(segments);
+  const continuitySceneLookup = buildContinuityLookup(artifacts?.continuity_scene_groups, "scene_id");
+  const continuitySegmentLookup = buildContinuityLookup(artifacts?.continuity_segment_groups, "segment_id");
   const rootTask = run?.rootTask || task;
   const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
   const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
@@ -557,6 +697,16 @@ function renderTimelineTab(task, artifacts, context, run = null) {
           ${chip(`场景就绪 ${readySceneCount}/${segments.length || 0}`)}
           ${chip(`视频就绪 ${readyVideoCount}/${segments.length || 0}`)}
           ${chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`)}
+          ${
+            artifacts?.continuity_summary
+              ? chip(`连续性 ${CONTINUITY_STATUS_LABEL[artifacts.continuity_summary.status] || artifacts.continuity_summary.status}`)
+              : chip("连续性 未校验")
+          }
+          ${
+            artifacts?.continuity_summary?.high_risk_count
+              ? `<span class="continuity-chip continuity-chip-high">高 ${artifacts.continuity_summary.high_risk_count}</span>`
+              : ""
+          }
         </div>
         <div class="timeline-hero-actions">
           <button
@@ -569,6 +719,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
             ${escapeHtml(buildMergeButtonLabel(artifacts, mergeTaskStatus))}
           </button>
         </div>
+        ${renderContinuityOverview(artifacts?.continuity_summary)}
       </article>
 
       ${artifacts.full_story ? renderFullStoryBlock(artifacts.full_story, context, galleryId) : ""}
@@ -580,11 +731,16 @@ function renderTimelineTab(task, artifacts, context, run = null) {
               ${sceneGroups
                 .map(
                   (sceneGroup) => {
+                    const sceneContinuity = continuitySceneLookup.get(sceneGroup.sceneId) || null;
                     const sceneMasterTask = getLatestSceneMasterTask(run, sceneGroup.sceneId);
                     const sceneMasterTaskStatus = run ? getRunStageStatus(sceneMasterTask, storySourceRevision) : "idle";
                     const canGenerateSceneMaster =
                       analysisStatus === "completed"
                       && !["queued", "running"].includes(sceneMasterTaskStatus);
+                    const sceneMasterRecommended = hasRecommendedContinuityAction(
+                      sceneContinuity,
+                      "regenerate_scene_master_frame",
+                    );
                     return `
                     <section class="timeline-scene-group">
                       <div class="timeline-scene-head">
@@ -600,10 +756,11 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           <div class="detail-chip-row">
                             ${chip(`片段 ${sceneGroup.segments.length}`)}
                             ${chip(`母图 ${sceneGroup.sceneMasterFrame ? "已生成" : "未生成"}`)}
+                            ${renderContinuityRiskChips(sceneContinuity)}
                           </div>
                           <button
                             type="button"
-                            class="secondary small"
+                            class="secondary small${sceneMasterRecommended ? " recommended-action" : ""}"
                             data-generate-scene-master="${escapeAttr(sceneGroup.sceneId)}"
                             data-project-id="${escapeAttr(rootTask.project_id)}"
                             data-source-task="${escapeAttr(rootTask.task_id)}"
@@ -613,6 +770,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           </button>
                         </div>
                       </div>
+                      ${renderContinuityIssueList(sceneContinuity)}
                       <div class="timeline-scene-master">
                         ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
                       </div>
@@ -621,16 +779,33 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                         ${sceneGroup.segments
                 .map(
                   (segment, index) => {
+                    const segmentContinuity = continuitySegmentLookup.get(segment.segmentId) || null;
                     const sceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
                     const videoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
+                    const repairTask = getLatestSegmentStageTask(run, "project.continuity_repair", segment.segmentId);
                     const sceneTaskStatus = run ? getRunStageStatus(sceneTask, storySourceRevision) : "idle";
                     const videoTaskStatus = run ? getRunStageStatus(videoTask, storySourceRevision) : "idle";
+                    const repairTaskStatus = run ? getRunStageStatus(repairTask, storySourceRevision) : "idle";
                     const canGenerateScene =
                       characterStatus === "completed"
                       && !["queued", "running"].includes(sceneTaskStatus);
                     const canGenerateVideo =
                       segment.sceneReady
                       && !["queued", "running"].includes(videoTaskStatus);
+                    const canRunRepair =
+                      characterStatus === "completed"
+                      && Boolean(segmentContinuity?.issue_count)
+                      && !["queued", "running"].includes(repairTaskStatus)
+                      && !["queued", "running"].includes(sceneTaskStatus)
+                      && !["queued", "running"].includes(videoTaskStatus);
+                    const sceneRecommended = hasRecommendedContinuityAction(
+                      segmentContinuity,
+                      "regenerate_scene_images",
+                    );
+                    const videoRecommended = hasRecommendedContinuityAction(
+                      segmentContinuity,
+                      "regenerate_video",
+                    );
                     return `
                     <article class="timeline-card">
                       <div class="timeline-card-head">
@@ -654,11 +829,23 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
                           ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
                           ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+                          ${renderContinuityRiskChips(segmentContinuity)}
                         </div>
+                        ${renderContinuityIssueList(segmentContinuity)}
                         <div class="timeline-actions">
                           <button
                             type="button"
                             class="secondary small"
+                            data-auto-repair-segment="${escapeAttr(segment.segmentId)}"
+                            data-project-id="${escapeAttr(rootTask.project_id)}"
+                            data-source-task="${escapeAttr(rootTask.task_id)}"
+                            ${canRunRepair ? "" : "disabled"}
+                          >
+                            ${escapeHtml(buildSegmentRepairButtonLabel(segment, repairTaskStatus))}
+                          </button>
+                          <button
+                            type="button"
+                            class="secondary small${sceneRecommended ? " recommended-action" : ""}"
                             data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
                             data-project-id="${escapeAttr(rootTask.project_id)}"
                             data-source-task="${escapeAttr(rootTask.task_id)}"
@@ -668,7 +855,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           </button>
                           <button
                             type="button"
-                            class="secondary small"
+                            class="secondary small${videoRecommended ? " recommended-action" : ""}"
                             data-generate-video-segment="${escapeAttr(segment.segmentId)}"
                             data-project-id="${escapeAttr(rootTask.project_id)}"
                             data-source-task="${escapeAttr(rootTask.task_id)}"
@@ -677,6 +864,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                             ${escapeHtml(buildSegmentVideoButtonLabel(segment, videoTaskStatus))}
                           </button>
                         </div>
+                        ${renderSegmentTaskError(repairTask, "智能修复失败")}
                         ${renderSegmentTaskError(sceneTask, "场景图失败")}
                         ${renderSegmentTaskError(videoTask, "视频失败")}
                       </div>
@@ -1041,6 +1229,7 @@ export function renderRunStageActions(run) {
   const readySceneCount = plannedSegments.filter((segment) => segment.scene_ready).length;
   const readyVideoCount = plannedSegments.filter((segment) => segment.video_ready).length;
   const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeStatus);
+  const continuityReviewMode = resolveRunContinuityReviewMode(run);
 
   const analysisButtonLabel =
     analysisStatus === "failed" || analysisStatus === "stale"
@@ -1080,33 +1269,44 @@ export function renderRunStageActions(run) {
         <strong>当前版本制作入口</strong>
         <p>这里只保留全局阶段入口。场景图和视频请在下方时间线里按片段逐段生成，总片合并也改成手动触发。</p>
       </div>
-      <div class="action-row">
-      <button
-        type="button"
-        class="secondary"
-        data-story-source-project="${escapeAttr(rootTask.project_id)}"
-        data-generate-story-analysis="${escapeAttr(rootTask.task_id)}"
-        ${canGenerateAnalysis ? "" : "disabled"}
-      >
-        ${escapeHtml(analysisButtonLabel)}
-      </button>
-      <button
-        type="button"
-        class="secondary"
-        data-merge-videos="${escapeAttr(rootTask.task_id)}"
-        data-project-id="${escapeAttr(rootTask.project_id)}"
-        ${canMergeVideos ? "" : "disabled"}
-      >
-        ${escapeHtml(buildMergeButtonLabel(run.latestArtifacts, mergeStatus))}
-      </button>
-      <button
-        type="button"
-        class="secondary"
-        data-generate-characters="${escapeAttr(rootTask.task_id)}"
-        ${canGenerateCharacters ? "" : "disabled"}
-      >
-        ${escapeHtml(characterButtonLabel)}
-      </button>
+      <div class="stage-action-panel">
+        <label class="continuity-mode-field">
+          <span>V2 连续性软审校</span>
+          <select
+            data-run-continuity-review-mode="${escapeAttr(rootTask.task_id)}"
+          >
+            ${renderContinuityModeOptions(continuityReviewMode)}
+          </select>
+          <p class="field-help">V1 规则审校始终开启。自动模式会在复杂场景、跨段承接或 V1 中高风险时触发 LLM 软审校。</p>
+        </label>
+        <div class="action-row">
+          <button
+            type="button"
+            class="secondary"
+            data-story-source-project="${escapeAttr(rootTask.project_id)}"
+            data-generate-story-analysis="${escapeAttr(rootTask.task_id)}"
+            ${canGenerateAnalysis ? "" : "disabled"}
+          >
+            ${escapeHtml(analysisButtonLabel)}
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            data-merge-videos="${escapeAttr(rootTask.task_id)}"
+            data-project-id="${escapeAttr(rootTask.project_id)}"
+            ${canMergeVideos ? "" : "disabled"}
+          >
+            ${escapeHtml(buildMergeButtonLabel(run.latestArtifacts, mergeStatus))}
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            data-generate-characters="${escapeAttr(rootTask.task_id)}"
+            ${canGenerateCharacters ? "" : "disabled"}
+          >
+            ${escapeHtml(characterButtonLabel)}
+          </button>
+        </div>
       </div>
     </div>
     ${renderStageFailureList(run, storySourceRevision)}

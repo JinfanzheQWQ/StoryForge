@@ -9,12 +9,15 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+TESTS = ROOT / "tests"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+if str(TESTS) not in sys.path:
+    sys.path.insert(0, str(TESTS))
 
 from storyforge.core.config import AppConfig  # noqa: E402
 from storyforge.core.io import read_json  # noqa: E402
-from storyforge.agents.base import DryRunAgentBackend, PromptRequest  # noqa: E402
+from storyforge.agents.base import PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
 from storyforge.domains.novel.errors import (  # noqa: E402
     NovelStructuredGenerationError,
@@ -29,18 +32,27 @@ from storyforge.domains.novel.schemas import (  # noqa: E402
     CastRelationshipSchema,
     CastSlotSchema,
     ChapterDraftSchema,
+    ChapterPlanSetSchema,
     CharacterRosterSchema,
     StoryArchitectureSchema,
     StoryDraftSetSchema,
 )
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
 from storyforge.domains.video.contracts import CharacterVisualProfile, ContinuityLink, SceneBible, ShotState, VideoScene, VideoSegment  # noqa: E402
+from storyforge.domains.video.errors import VideoStructuredGenerationError  # noqa: E402
 from storyforge.domains.video.schemas import CharacterVisualBibleSchema, VideoSegmentPlanSchema  # noqa: E402
 from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
 from storyforge.integrations.seedance import SeedanceExecutionReport  # noqa: E402
 from storyforge.integrations.seedream import SeedreamExecutionReport  # noqa: E402
+from storyforge.pipelines.continuity import (  # noqa: E402
+    ContinuitySoftIssueSchema,
+    ContinuitySoftReviewSchema,
+    write_continuity_report,
+)
 from storyforge.pipelines.story_pipeline import run_story_pipeline  # noqa: E402
+from storyforge.pipelines.story_files import clear_story_derived_artifacts  # noqa: E402
 from storyforge.pipelines.video_pipeline import (  # noqa: E402
+    run_segment_continuity_repair_pipeline,
     run_scene_image_pipeline,
     run_video_merge_pipeline,
     run_video_pipeline,
@@ -50,22 +62,42 @@ from storyforge.pipelines.video_planning import (  # noqa: E402
     build_video_planning_artifacts,
     load_video_planning_artifacts,
 )
+from _deterministic_backends import (  # noqa: E402
+    DeterministicStoryBackend,
+    DeterministicVideoBackend,
+)
+from _deterministic_novel_builders import DeterministicNovelBuilder  # noqa: E402
+from _video_test_artifacts import (  # noqa: E402
+    ensure_secondary_segment_execution_contract,
+    mark_first_scene_and_video_failed,
+    mark_rendered_manifest_clips,
+    mark_runtime_character_images_completed,
+    mark_runtime_manifest_clips_completed,
+    mark_runtime_scene_images_completed,
+    mark_runtime_scene_master_frames_completed,
+    mark_scene_images_completed,
+    mark_seedance_clips_completed,
+)
 
 
 class PipelineTestCase(unittest.TestCase):
     def setUp(self) -> None:
-        self._story_backend_patcher = patch(
-            "storyforge.pipelines.story_pipeline.build_agent_backend",
-            return_value=DryRunAgentBackend(),
+        class ContinuityBackend:
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                return schema()
+
+        self.story_backend = DeterministicStoryBackend()
+        self.video_backend = DeterministicVideoBackend()
+        self.novel_builder = DeterministicNovelBuilder()
+        self._continuity_backend_patcher = patch(
+            "storyforge.pipelines.continuity.build_agent_backend",
+            return_value=ContinuityBackend(),
         )
-        self._video_backend_patcher = patch(
-            "storyforge.pipelines.video_planning.build_agent_backend",
-            return_value=DryRunAgentBackend(),
-        )
-        self._story_backend_patcher.start()
-        self._video_backend_patcher.start()
-        self.addCleanup(self._story_backend_patcher.stop)
-        self.addCleanup(self._video_backend_patcher.stop)
+        self._continuity_backend_patcher.start()
+        self.addCleanup(self._continuity_backend_patcher.stop)
         self.temp_root = ROOT / "tests/.tmp"
         if self.temp_root.exists():
             shutil.rmtree(self.temp_root)
@@ -74,6 +106,25 @@ class PipelineTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         if self.temp_root.exists():
             shutil.rmtree(self.temp_root)
+
+    def _run_story_pipeline(self, **kwargs):
+        return run_story_pipeline(
+            config=kwargs.pop("config"),
+            project_root=kwargs.pop("project_root", ROOT),
+            output_root=kwargs.pop("output_root", self.temp_root),
+            backend=kwargs.pop("backend", self.story_backend),
+            video_backend=kwargs.pop("video_backend", self.video_backend),
+            **kwargs,
+        )
+
+    def _build_video_planning_artifacts(self, **kwargs):
+        return build_video_planning_artifacts(
+            config=kwargs.pop("config"),
+            project_root=kwargs.pop("project_root", ROOT),
+            output_root=kwargs.pop("output_root", self.temp_root),
+            backend=kwargs.pop("backend", self.video_backend),
+            **kwargs,
+        )
 
     def test_live_structured_generation_retries_before_success(self) -> None:
         class RetryBackend:
@@ -100,15 +151,6 @@ class PipelineTestCase(unittest.TestCase):
                 )
 
         service = NovelGeneratorService(backend=RetryBackend())
-        brief = StoryBrief(
-            title_hint="站台告白",
-            idea="一个女生在列车离站前向喜欢多年的男生告白。",
-            genre="都市情感",
-            tone="克制、电影感",
-            chapter_count=1,
-            total_word_target=1200,
-        )
-
         result = service._run_structured_agent(
             schema=StoryArchitectureSchema,
             request=PromptRequest(
@@ -116,13 +158,109 @@ class PipelineTestCase(unittest.TestCase):
                 user_prompt="user",
                 metadata={"task": "story-architect"},
             ),
-            fallback=service._fallback_architecture(brief),
         )
 
         self.assertEqual(result.title, "站台告白")
         self.assertEqual(service.backend.calls, 3)
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 3)
         self.assertIn("上一次输出未通过结构化校验", service.backend.requests[-1].user_prompt)
+
+    def test_live_story_drafter_invalid_content_retries_without_runtime_fallback(self) -> None:
+        class RetryBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "chapters": [
+                            {
+                                "number": 1,
+                                "title": "花架下",
+                                "summary": "他决定在这里开口。",
+                                "markdown": "   ",
+                                "visual_hooks": [],
+                                "continuity_refs": [],
+                            }
+                        ]
+                    }
+                return {
+                    "chapters": [
+                        {
+                            "number": 1,
+                            "title": "花架下",
+                            "summary": "他决定在这里开口。",
+                            "markdown": "# 花架下\n\n他在紫藤花架下等待她赴约。",
+                            "visual_hooks": ["紫藤花架"],
+                            "continuity_refs": ["等待赴约"],
+                        }
+                    ]
+                }
+
+        service = NovelGeneratorService(backend=RetryBackend())
+        brief = StoryBrief(
+            title_hint="花架下",
+            idea="一个男生准备在花架下告白。",
+            genre="校园情感",
+            tone="克制、青春",
+            chapter_count=1,
+            total_word_target=1000,
+        )
+
+        result = service._run_structured_agent(
+            schema=StoryDraftSetSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "story-drafter"},
+            ),
+            validator=lambda value: service._validate_story_draft_set_output(
+                value,
+                brief=brief,
+            ),
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertIn("story_drafter 第 1 章缺少必要字段", service.backend.requests[-1].user_prompt)
+        self.assertEqual(result.chapters[0].title, "花架下")
+
+    def test_video_structured_agent_live_success_does_not_resolve_fallback(self) -> None:
+        class SuccessBackend:
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                return {
+                    "characters": [
+                        {
+                            "name": "林辰",
+                            "role": "主角",
+                            "gender": "男",
+                            "appearance": "青年男性，体型稳定。",
+                            "outfit": "白衬衫和牛仔裤。",
+                            "color_palette": ["白色", "深蓝"],
+                            "portrait_prompt": "林辰，男，青年，白衬衫，角色定妆。",
+                        }
+                    ]
+                }
+
+        service = NovelToVideoService(backend=SuccessBackend())
+        result = service._run_structured_agent(
+            schema=CharacterVisualBibleSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "video-character-bible"},
+            ),
+        )
+
+        self.assertEqual(result.characters[0].name, "林辰")
 
     def test_video_planning_manifest_title_uses_story_title(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -134,22 +272,325 @@ class PipelineTestCase(unittest.TestCase):
             chapter_count=1,
             total_word_target=1200,
         )
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
             output_root=self.temp_root,
         )
 
-        planning = build_video_planning_artifacts(
+        planning = self._build_video_planning_artifacts(
             novel_package=story_result.novel_package,
             config=config,
             project_root=ROOT,
             output_root=story_result.output_dir,
-            use_llm=False,
         )
 
         self.assertEqual(planning.manifest.title, story_result.novel_package.outline.title)
+
+    def test_video_strict_structured_repair_retries_before_success(self) -> None:
+        class RetryBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    raise RuntimeError("segment repair schema invalid")
+                return {
+                    "characters": [
+                        {
+                            "name": "林辰",
+                            "role": "主角",
+                            "gender": "男",
+                            "appearance": "青年男性，体型稳定。",
+                            "outfit": "白衬衫和牛仔裤。",
+                            "color_palette": ["白色", "深蓝"],
+                            "portrait_prompt": "林辰，男，青年，白衬衫，角色定妆。",
+                        }
+                    ]
+                }
+
+        service = NovelToVideoService(backend=RetryBackend())
+        result = service._run_strict_structured_agent(
+            schema=CharacterVisualBibleSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "segment-continuity-repair"},
+            ),
+            validator=lambda value: value,
+            attempts=2,
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertEqual(result.characters[0].name, "林辰")
+        self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
+        self.assertIn("上一次修复输出未通过结构化校验", service.backend.requests[-1].user_prompt)
+
+    def test_story_pipeline_writes_continuity_report(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一场在末班列车前发生的告白。",
+            genre="都市情感",
+            tone="克制、电影感",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        continuity_report_path = story_result.output_dir / "continuity_report.json"
+        self.assertTrue(continuity_report_path.exists())
+        continuity_report = read_json(continuity_report_path)
+        self.assertEqual(continuity_report["report_version"], "v2")
+        self.assertIn("summary", continuity_report)
+        self.assertIn("scene_issues", continuity_report)
+        self.assertIn("segment_issues", continuity_report)
+        self.assertIn("v1_rules", continuity_report)
+        self.assertIn("v2_llm_review", continuity_report)
+        self.assertIn("review_mode_requested", continuity_report)
+
+    def test_write_continuity_report_can_disable_v2_soft_review(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="短场景",
+            idea="一个人安静地坐在窗边读信。",
+            genre="情感",
+            tone="克制、安静",
+            chapter_count=1,
+            total_word_target=800,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        _, report = write_continuity_report(
+            story_result.output_dir,
+            config=config,
+            review_mode="off",
+        )
+
+        self.assertEqual(report.review_mode_requested, "off")
+        self.assertEqual(report.review_mode_effective, "off")
+        self.assertEqual(report.v2_llm_review.status, "disabled")
+
+    def test_clear_story_derived_artifacts_removes_continuity_repair_reports(self) -> None:
+        output_dir = self.temp_root / "cleanup-test"
+        output_dir.mkdir(parents=True)
+        repair_report_path = output_dir / "continuity_repair_ch1-sc1-seg1.json"
+        repair_report_path.write_text("{}", encoding="utf-8")
+
+        clear_story_derived_artifacts(output_dir)
+
+        self.assertFalse(repair_report_path.exists())
+
+    @patch(
+        "storyforge.pipelines.video_pipeline.build_agent_backend",
+        return_value=DeterministicVideoBackend(),
+    )
+    @patch("storyforge.pipelines.video_pipeline.NovelToVideoService.repair_segment_continuity")
+    def test_run_segment_continuity_repair_pipeline_updates_target_segment_only(
+        self,
+        mock_repair_segment_continuity,
+        mock_build_agent_backend,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="花园等待",
+            idea="一个男生在花园等待喜欢的人赴约。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        ensure_secondary_segment_execution_contract(story_result)
+
+        segment_payload = read_json(story_result.segment_plan_path)
+        self.assertGreaterEqual(len(segment_payload), 2)
+        target_segment = dict(segment_payload[0])
+        other_segment = dict(segment_payload[1])
+        target_segment_id = str(target_segment["segment_id"])
+        original_other_summary = str(other_segment["summary"])
+
+        continuity_report_path = story_result.output_dir / "continuity_report.json"
+        continuity_payload = read_json(continuity_report_path)
+        continuity_payload["segment_issues"] = [
+            {
+                "scope": "segment",
+                "severity": "high",
+                "code": "action_bridge_weak",
+                "message": "动作承接偏弱，需要重新规划该片段。",
+                "scene_id": target_segment["scene_id"],
+                "segment_id": target_segment_id,
+                "recommended_action": "auto_repair_segment",
+                "recommended_action_label": "智能修复该段",
+                "details": {"field": "timed_beats"},
+            }
+        ]
+        continuity_report_path.write_text(
+            json.dumps(continuity_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        scene_images_path = story_result.output_dir / "scene_image_manifest.json"
+        mark_scene_images_completed(story_result)
+
+        manifest_path = story_result.output_dir / "seedance_manifest.json"
+        mark_seedance_clips_completed(story_result)
+
+        repaired_segment_payload = {
+            **target_segment,
+            "summary": "修复后的片段摘要",
+            "timed_beats": ["0-3秒：补足承接动作", "3-8秒：完成核心对白"],
+            "start_frame_prompt": "修复后的首帧提示词",
+            "mid_frame_prompt": "修复后的中段提示词",
+            "end_frame_prompt": "修复后的尾帧提示词",
+        }
+        mock_repair_segment_continuity.return_value = (
+            VideoSegment.from_dict(repaired_segment_payload),
+            {
+                "segment_id": target_segment_id,
+                "repair_summary": "已根据连续性问题重写该片段规划。",
+                "changed_fields": ["summary", "timed_beats", "start_frame_prompt"],
+            },
+        )
+
+        result = run_segment_continuity_repair_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            segment_id=target_segment_id,
+            use_llm=True,
+            continuity_review_mode="on",
+        )
+
+        self.assertEqual(result.segment_id, target_segment_id)
+        self.assertTrue(result.repair_report_path.exists())
+        self.assertTrue(mock_build_agent_backend.called)
+
+        updated_segments = read_json(story_result.segment_plan_path)
+        updated_target = next(
+            item for item in updated_segments if item["segment_id"] == target_segment_id
+        )
+        updated_other = next(
+            item for item in updated_segments if item["segment_id"] == other_segment["segment_id"]
+        )
+        self.assertEqual(updated_target["summary"], "修复后的片段摘要")
+        self.assertEqual(updated_other["summary"], original_other_summary)
+
+        updated_scene_images = read_json(scene_images_path)
+        target_scene_task = next(
+            item for item in updated_scene_images if item["segment_id"] == target_segment_id
+        )
+        other_scene_task = next(
+            item for item in updated_scene_images if item["segment_id"] == other_segment["segment_id"]
+        )
+        self.assertEqual(target_scene_task["status"], "planned")
+        self.assertEqual(target_scene_task["start_frame_url"], "")
+        self.assertEqual(target_scene_task["end_frame_url"], "")
+        self.assertEqual(other_scene_task["status"], "completed")
+        self.assertNotEqual(other_scene_task["start_frame_url"], "")
+
+        updated_manifest = read_json(manifest_path)
+        target_clip = next(
+            item for item in updated_manifest["clips"] if item["segment_id"] == target_segment_id
+        )
+        other_clip = next(
+            item for item in updated_manifest["clips"] if item["segment_id"] == other_segment["segment_id"]
+        )
+        self.assertEqual(target_clip["submit_status"], "planned")
+        self.assertEqual(target_clip["remote_status"], "planned")
+        self.assertEqual(target_clip["video_url"], "")
+        self.assertEqual(target_clip["reference_image_urls"], [])
+        self.assertEqual(other_clip["submit_status"], "completed")
+        self.assertNotEqual(other_clip["video_url"], "")
+
+    @patch("storyforge.pipelines.continuity.build_agent_backend")
+    def test_write_continuity_report_can_force_v2_soft_review(self, mock_build_backend) -> None:
+        class InitialBackend:
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                return ContinuitySoftReviewSchema()
+
+        mock_build_backend.return_value = InitialBackend()
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="花园等待",
+            idea="一个男生在花园等待喜欢的人赴约。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        segment_payload = read_json(story_result.segment_plan_path)
+        first_segment_id = segment_payload[0]["segment_id"]
+        first_scene_id = segment_payload[0]["scene_id"]
+
+        class ReviewBackend:
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                return ContinuitySoftReviewSchema(
+                    summary="发现一处动作承接偏弱。",
+                    segment_issues=[
+                        ContinuitySoftIssueSchema(
+                            scope="segment",
+                            severity="medium",
+                            issue_type="action_bridge_weak",
+                            scene_id=first_scene_id,
+                            segment_id=first_segment_id,
+                            message="当前段从等待直接跳到转身，动作桥接偏弱，观感上像少了一拍。",
+                            recommended_action="regenerate_scene_images",
+                            evidence="start_frame_prompt 与 end_frame_prompt 动作跨度较大，timed_beats 没有补中间动作。",
+                        )
+                    ],
+                )
+
+        mock_build_backend.return_value = ReviewBackend()
+
+        _, report = write_continuity_report(
+            story_result.output_dir,
+            config=config,
+            review_mode="on",
+            llm_provider="deepseek",
+            llm_model="deepseek-chat",
+        )
+
+        self.assertEqual(report.review_mode_requested, "on")
+        self.assertEqual(report.review_mode_effective, "on")
+        self.assertEqual(report.v2_llm_review.status, "completed")
+        self.assertTrue(
+            any(issue.code == "llm_action_bridge_weak" for issue in report.segment_issues)
+        )
 
     def test_load_video_planning_artifacts_restores_story_title_from_novel_package(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -161,19 +602,18 @@ class PipelineTestCase(unittest.TestCase):
             chapter_count=1,
             total_word_target=1200,
         )
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
             output_root=self.temp_root,
         )
 
-        planning = build_video_planning_artifacts(
+        planning = self._build_video_planning_artifacts(
             novel_package=story_result.novel_package,
             config=config,
             project_root=ROOT,
             output_root=story_result.output_dir,
-            use_llm=False,
         )
         manifest_payload = read_json(planning.manifest_path)
         manifest_payload["title"] = "segment_video_manifest"
@@ -200,15 +640,6 @@ class PipelineTestCase(unittest.TestCase):
                 raise RuntimeError("structured_response missing")
 
         service = NovelGeneratorService(backend=AlwaysFailBackend())
-        brief = StoryBrief(
-            title_hint="站台告白",
-            idea="一个女生在列车离站前向喜欢多年的男生告白。",
-            genre="都市情感",
-            tone="克制、电影感",
-            chapter_count=1,
-            total_word_target=1200,
-        )
-
         with self.assertRaises(NovelStructuredGenerationError) as ctx:
             service._run_structured_agent(
                 schema=StoryArchitectureSchema,
@@ -217,7 +648,6 @@ class PipelineTestCase(unittest.TestCase):
                     user_prompt="user",
                     metadata={"task": "story-architect"},
                 ),
-                fallback=service._fallback_architecture(brief),
             )
 
         self.assertEqual(service.backend.calls, 3)
@@ -236,15 +666,6 @@ class PipelineTestCase(unittest.TestCase):
                 return None
 
         service = NovelGeneratorService(backend=EmptyStructuredBackend())
-        brief = StoryBrief(
-            title_hint="站台告白",
-            idea="一个女生在列车离站前向喜欢多年的男生告白。",
-            genre="都市情感",
-            tone="克制、电影感",
-            chapter_count=1,
-            total_word_target=1200,
-        )
-
         with self.assertRaises(NovelStructuredGenerationError) as ctx:
             service._run_structured_agent(
                 schema=StoryArchitectureSchema,
@@ -253,7 +674,6 @@ class PipelineTestCase(unittest.TestCase):
                     user_prompt="user",
                     metadata={"task": "story-architect"},
                 ),
-                fallback=service._fallback_architecture(brief),
             )
 
         self.assertEqual(service.backend.calls, 3)
@@ -367,33 +787,6 @@ class PipelineTestCase(unittest.TestCase):
                 }
 
         service = NovelGeneratorService(backend=DuplicateNameBackend())
-        fallback = CharacterRosterSchema.model_validate(
-            {
-                "characters": [
-                    {
-                        "cast_slot_id": "lead_1",
-                        "name": "林雾",
-                        "role": "主角",
-                        "gender": "男",
-                        "desire": "推进故事",
-                        "conflict": "面对阻力",
-                        "arc": "学会回应",
-                        "visual_signature": ["站台"],
-                        "voice_style": "克制",
-                        "voice_profile": {
-                            "voice_style": "克制",
-                            "timbre": "清亮",
-                            "speaking_rate": "中速",
-                            "emotional_baseline": "紧张",
-                            "accent_or_texture": "",
-                            "dialogue_delivery": "",
-                            "forbidden_voice_changes": ["不要突然变老"],
-                        },
-                        "image_prompt": "林雾，男，站台上的人。",
-                    }
-                ]
-            }
-        )
 
         result = service._run_structured_agent(
             schema=CharacterRosterSchema,
@@ -402,7 +795,6 @@ class PipelineTestCase(unittest.TestCase):
                 user_prompt="user",
                 metadata={"task": "character-designer"},
             ),
-            fallback=fallback,
         )
 
         self.assertEqual(service.backend.calls, 2)
@@ -517,33 +909,6 @@ class PipelineTestCase(unittest.TestCase):
                 }
 
         service = NovelGeneratorService(backend=DuplicateSlotBackend())
-        fallback = CharacterRosterSchema.model_validate(
-            {
-                "characters": [
-                    {
-                        "cast_slot_id": "lead_1",
-                        "name": "林雾",
-                        "role": "主角",
-                        "gender": "男",
-                        "desire": "推进故事",
-                        "conflict": "面对阻力",
-                        "arc": "学会回应",
-                        "visual_signature": ["站台"],
-                        "voice_style": "克制",
-                        "voice_profile": {
-                            "voice_style": "克制",
-                            "timbre": "清亮",
-                            "speaking_rate": "中速",
-                            "emotional_baseline": "紧张",
-                            "accent_or_texture": "",
-                            "dialogue_delivery": "",
-                            "forbidden_voice_changes": ["不要突然变老"],
-                        },
-                        "image_prompt": "林雾，男，站台上的人。",
-                    }
-                ]
-            }
-        )
 
         result = service._run_structured_agent(
             schema=CharacterRosterSchema,
@@ -552,7 +917,6 @@ class PipelineTestCase(unittest.TestCase):
                 user_prompt="user",
                 metadata={"task": "character-designer"},
             ),
-            fallback=fallback,
         )
 
         self.assertEqual(service.backend.calls, 2)
@@ -663,38 +1027,10 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
         expected_slots = cast_analysis.primary_slots(
             max(1, cast_analysis.recommended_core_cast_count)
         )
-        fallback = CharacterRosterSchema.model_validate(
-            {
-                "characters": [
-                    {
-                        "cast_slot_id": "lead_1",
-                        "name": "林雾",
-                        "role": "主角",
-                        "gender": "男",
-                        "desire": "推进故事",
-                        "conflict": "面对阻力",
-                        "arc": "学会回应",
-                        "visual_signature": ["站台"],
-                        "voice_style": "克制",
-                        "voice_profile": {
-                            "voice_style": "克制",
-                            "timbre": "清亮",
-                            "speaking_rate": "中速",
-                            "emotional_baseline": "紧张",
-                            "accent_or_texture": "",
-                            "dialogue_delivery": "",
-                            "forbidden_voice_changes": ["不要突然变老"],
-                        },
-                        "image_prompt": "林雾，男，站台上的人。",
-                    }
-                ]
-            }
-        )
-
         result = service._run_structured_agent(
             schema=CharacterRosterSchema,
             request=PromptRequest(
@@ -712,7 +1048,6 @@ class PipelineTestCase(unittest.TestCase):
                     ),
                 },
             ),
-            fallback=fallback,
             validator=lambda value: service._validate_character_roster_output(
                 value,
                 cast_analysis=cast_analysis,
@@ -726,11 +1061,217 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("缺失 slots：lead_2", service.backend.requests[-1].user_prompt)
         self.assertIn("characters[1].cast_slot_id 必须是 \"lead_2\"", service.backend.requests[-1].user_prompt)
 
+    def test_video_segment_planner_live_failure_raises_clear_error(self) -> None:
+        class AlwaysFailBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                raise RuntimeError("structured_response missing")
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="花园等待",
+            idea="一个男生在花园等待喜欢的人赴约。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        service = NovelToVideoService(backend=AlwaysFailBackend())
+
+        with self.assertRaises(VideoStructuredGenerationError) as ctx:
+            service._run_structured_agent(
+                schema=VideoSegmentPlanSchema,
+                request=PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "video-segment-planner"},
+                ),
+                validator=lambda value: service._validate_segment_plan_output(
+                    value,
+                    novel_package=story_result.novel_package,
+                ),
+            )
+
+        self.assertEqual(service.backend.calls, 3)
+        self.assertIn("task=video-segment-planner", str(ctx.exception))
+
+    def test_video_segment_plan_meta_template_phrases_trigger_retry(self) -> None:
+        class MetaTemplateBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "scenes": [
+                            {
+                                "scene_id": "ch01-sc01",
+                                "chapter_number": 1,
+                                "title": "场景 1",
+                                "summary": "等待",
+                                "scene_anchor": "花园傍晚",
+                                "scene_bible": {},
+                                "involved_characters": ["林辰", "苏雨"],
+                                "segments": [
+                                    {
+                                        "segment_id": "ch01-sc01-seg01",
+                                        "chapter_number": 1,
+                                        "scene_id": "ch01-sc01",
+                                        "scene_title": "场景 1",
+                                        "scene_summary": "等待",
+                                        "scene_anchor": "花园傍晚",
+                                        "scene_bible": {},
+                                        "shot_state": {},
+                                        "continuity_link": {},
+                                        "title": "片段 1",
+                                        "summary": "当前片段聚焦：林辰等待苏雨",
+                                        "involved_characters": ["林辰", "苏雨"],
+                                        "start_frame_characters": ["林辰"],
+                                        "mid_frame_characters": [],
+                                        "end_frame_characters": ["林辰"],
+                                        "narration": "结尾要保留初吻的余波。",
+                                        "dialogue_lines": [],
+                                        "subtitle_lines": [],
+                                        "sound_effects": ["晚风"],
+                                        "music_direction": "温柔",
+                                        "timed_beats": ["0-6秒：林辰等待苏雨"],
+                                        "scene_prompt": "紫藤花架下的等待",
+                                        "start_frame_prompt": "林辰站在花架下",
+                                        "mid_frame_prompt": "",
+                                        "end_frame_prompt": "林辰望向路口",
+                                        "duration_seconds": 6,
+                                        "requires_mid_frame": False,
+                                        "transition_hint": "auto",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                return {
+                    "scenes": [
+                        {
+                            "scene_id": "ch01-sc01",
+                            "chapter_number": 1,
+                            "title": "场景 1",
+                            "summary": "林辰在花园等待苏雨赴约",
+                            "scene_anchor": "紫藤花架与图书馆灯光",
+                            "scene_bible": {},
+                            "involved_characters": ["林辰", "苏雨"],
+                            "segments": [
+                                {
+                                    "segment_id": "ch01-sc01-seg01",
+                                    "chapter_number": 1,
+                                    "scene_id": "ch01-sc01",
+                                    "scene_title": "场景 1",
+                                    "scene_summary": "林辰在花园等待苏雨赴约",
+                                    "scene_anchor": "紫藤花架与图书馆灯光",
+                                    "scene_bible": {},
+                                    "shot_state": {},
+                                    "continuity_link": {},
+                                    "title": "片段 1",
+                                    "summary": "林辰独自在紫藤花架下等待苏雨",
+                                    "involved_characters": ["林辰", "苏雨"],
+                                    "start_frame_characters": ["林辰"],
+                                    "mid_frame_characters": [],
+                                    "end_frame_characters": ["林辰"],
+                                    "narration": "林辰提前来到花园，在紫藤花下反复整理衣角。",
+                                    "dialogue_lines": [],
+                                    "subtitle_lines": ["林辰提前来到花园，在紫藤花下反复整理衣角。"],
+                                    "sound_effects": ["晚风", "树叶轻响"],
+                                    "music_direction": "克制温柔",
+                                    "timed_beats": ["0-6秒：林辰独自在花架下等待，视线不断望向路口"],
+                                    "scene_prompt": "傍晚校园花园，紫藤花架下，林辰独自等待",
+                                    "start_frame_prompt": "林辰站在紫藤花架下望向路口",
+                                    "mid_frame_prompt": "",
+                                    "end_frame_prompt": "林辰低头整理衣角后再次抬头",
+                                    "duration_seconds": 6,
+                                    "requires_mid_frame": False,
+                                    "transition_hint": "auto",
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="花园等待",
+            idea="一个男生在花园等待喜欢的人赴约。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        service = NovelToVideoService(backend=MetaTemplateBackend())
+
+        result = service._run_structured_agent(
+            schema=VideoSegmentPlanSchema,
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "video-segment-planner"},
+            ),
+            validator=lambda value: service._validate_segment_plan_output(
+                value,
+                novel_package=story_result.novel_package,
+            ),
+        )
+
+        self.assertEqual(service.backend.calls, 2)
+        self.assertEqual(result.segments[0].summary, "林辰独自在紫藤花架下等待苏雨")
+        self.assertIn("未通过结构化校验", service.backend.requests[-1].user_prompt)
+        self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
+
+    def test_video_build_default_segment_plan_stays_scene_local(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        service = NovelToVideoService()
+        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
+        plan = service._build_default_segment_plan(story_result.novel_package, visual_bible)
+        first_segment = plan.segments[0]
+        first_chapter = story_result.novel_package.outline.chapters[0]
+
+        self.assertNotIn("当前片段聚焦", first_segment.narration)
+        self.assertNotIn("结尾要保留", first_segment.narration)
+        self.assertEqual(first_segment.dialogue_lines, [])
+        self.assertEqual(first_segment.narration, f"{first_segment.summary}。")
+        self.assertNotIn(first_chapter.cliffhanger, first_segment.narration)
+
     def test_story_and_video_pipeline(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
 
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -822,7 +1363,10 @@ class PipelineTestCase(unittest.TestCase):
             {item.number for item in story_result.novel_package.outline.chapters},
         )
         self.assertTrue(
-            any(item.dialogue_lines for item in video_result.project_package.segments)
+            all(
+                (item.narration and item.narration.strip()) or item.dialogue_lines
+                for item in video_result.project_package.segments
+            )
         )
         self.assertTrue(
             all(item.subtitle_lines for item in video_result.project_package.segments)
@@ -1082,8 +1626,7 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual(len(validated.slots), 2)
 
-    def test_fallback_character_roster_only_covers_requested_slots(self) -> None:
-        service = NovelGeneratorService()
+    def test_deterministic_character_roster_only_covers_requested_slots(self) -> None:
         brief = StoryBrief(
             title_hint="站台告白",
             idea="一个女生在列车离站前向喜欢多年的男生告白。",
@@ -1159,7 +1702,7 @@ class PipelineTestCase(unittest.TestCase):
             ],
         )
 
-        roster = service._fallback_character_roster(
+        roster = self.novel_builder.build_character_roster(
             brief,
             architecture,
             cast_analysis=cast_analysis,
@@ -1179,7 +1722,7 @@ class PipelineTestCase(unittest.TestCase):
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
 
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1188,9 +1731,7 @@ class PipelineTestCase(unittest.TestCase):
 
         def fake_generate_character_images(project_package, force_submit=False):
             self.assertTrue(force_submit)
-            for item in project_package.character_images:
-                item.generated_url = f"https://example.com/{Path(item.output_path).name}"
-                item.status = "completed"
+            mark_runtime_character_images_completed(project_package)
             return SeedreamExecutionReport(
                 submitted=True,
                 generated_count=3,
@@ -1201,13 +1742,7 @@ class PipelineTestCase(unittest.TestCase):
         def fake_generate_scene_images(project_package, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
             self.assertIsNone(segment_ids)
-            for item in project_package.scene_images:
-                item.start_frame_url = f"https://example.com/{Path(item.start_frame_path).name}"
-                item.end_frame_url = f"https://example.com/{Path(item.end_frame_path).name}"
-                item.status = "completed"
-            for clip in project_package.seedance_manifest.clips:
-                clip.start_frame_url = f"https://example.com/{Path(clip.start_frame_path).name}"
-                clip.end_frame_url = f"https://example.com/{Path(clip.end_frame_path).name}"
+            mark_runtime_scene_images_completed(project_package)
             return SeedreamExecutionReport(
                 submitted=True,
                 generated_count=3,
@@ -1221,13 +1756,7 @@ class PipelineTestCase(unittest.TestCase):
         def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
             self.assertIsNone(segment_ids)
-            for clip in manifest.clips:
-                clip_path = Path(clip.output_path)
-                clip_path.parent.mkdir(parents=True, exist_ok=True)
-                clip_path.write_bytes(b"fake mp4 bytes")
-                clip.downloaded_path = clip.output_path
-                clip.submit_status = "completed"
-                clip.remote_status = "succeeded"
+            mark_runtime_manifest_clips_completed(manifest)
             return SeedanceExecutionReport(
                 submitted=True,
                 manifest_title=manifest.title,
@@ -1257,24 +1786,18 @@ class PipelineTestCase(unittest.TestCase):
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
             output_root=self.temp_root,
         )
-        manifest_payload = read_json(story_result.seedance_manifest_path)
         rendered_dir = story_result.output_dir / "rendered"
-        rendered_dir.mkdir(parents=True, exist_ok=True)
-        for index, clip in enumerate(manifest_payload["clips"][:2], start=1):
-            clip_path = rendered_dir / f"clip-{index}.mp4"
-            clip_path.write_bytes(b"clip")
-            clip["downloaded_path"] = str(clip_path)
-            clip["submit_status"] = "completed"
-            clip["remote_status"] = "succeeded"
-        story_result.seedance_manifest_path.write_text(
-            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        mark_rendered_manifest_clips(
+            story_result,
+            clip_count=2,
+            remote_status="succeeded",
+            rendered_dir=rendered_dir,
         )
 
         expected_full_story_path = story_result.output_dir / "rendered" / "full_story.mp4"
@@ -1309,7 +1832,7 @@ class PipelineTestCase(unittest.TestCase):
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1347,7 +1870,7 @@ class PipelineTestCase(unittest.TestCase):
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1358,17 +1881,10 @@ class PipelineTestCase(unittest.TestCase):
         def fake_generate_scene_images(project_package, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
             self.assertEqual(segment_ids, {selected_segment_id})
-            for task in project_package.scene_images:
-                if task.segment_id != selected_segment_id:
-                    continue
-                task.start_frame_url = f"https://example.com/{Path(task.start_frame_path).name}"
-                task.end_frame_url = f"https://example.com/{Path(task.end_frame_path).name}"
-                task.status = "completed"
-            for clip in project_package.seedance_manifest.clips:
-                if clip.segment_id != selected_segment_id:
-                    continue
-                clip.start_frame_url = f"https://example.com/{Path(clip.start_frame_path).name}"
-                clip.end_frame_url = f"https://example.com/{Path(clip.end_frame_path).name}"
+            mark_runtime_scene_images_completed(
+                project_package,
+                segment_ids={selected_segment_id},
+            )
             return SeedreamExecutionReport(
                 submitted=True,
                 generated_count=2,
@@ -1393,6 +1909,38 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(selected_task["end_frame_url"])
         self.assertTrue(all(not item.get("start_frame_url") for item in untouched_tasks))
 
+    def test_write_continuity_report_flags_failed_scene_and_video_tasks(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        first_scene_id, first_segment_id = mark_first_scene_and_video_failed(story_result)
+
+        report_path, report = write_continuity_report(story_result.output_dir)
+
+        self.assertEqual(report_path.name, "continuity_report.json")
+        self.assertEqual(report.status, "critical")
+        scene_codes = {item.code for item in report.scene_issues if item.scene_id == first_scene_id}
+        segment_codes = {
+            item.code
+            for item in report.segment_issues
+            if item.segment_id == first_segment_id
+        }
+        self.assertIn("scene_master_frame_failed", scene_codes)
+        self.assertIn("scene_generation_failed", segment_codes)
+        self.assertIn("video_generation_failed", segment_codes)
+        self.assertTrue(
+            any(item.action == "regenerate_scene_master_frame" for item in report.recommended_actions)
+        )
+        self.assertTrue(
+            any(item.action == "regenerate_video" for item in report.recommended_actions)
+        )
+
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_master_frames")
     def test_run_scene_image_pipeline_only_updates_selected_scene_master_frame(
         self,
@@ -1400,7 +1948,7 @@ class PipelineTestCase(unittest.TestCase):
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1418,20 +1966,10 @@ class PipelineTestCase(unittest.TestCase):
             self.assertTrue(force_submit)
             self.assertEqual(scene_ids, {selected_scene_id})
             self.assertTrue(force_regenerate)
-            for scene in project_package.scenes:
-                if scene.scene_id != selected_scene_id:
-                    continue
-                scene.scene_master_frame_url = (
-                    f"https://example.com/{Path(scene.scene_master_frame_path).name}"
-                )
-                scene.scene_master_frame_status = "completed"
-            for task in project_package.scene_images:
-                if task.scene_id != selected_scene_id:
-                    continue
-                task.scene_master_frame_url = (
-                    f"https://example.com/{Path(task.scene_master_frame_path).name}"
-                )
-                task.scene_master_frame_status = "completed"
+            mark_runtime_scene_master_frames_completed(
+                project_package,
+                scene_ids={selected_scene_id},
+            )
             return SeedreamExecutionReport(
                 submitted=True,
                 generated_count=1,
@@ -1473,7 +2011,7 @@ class PipelineTestCase(unittest.TestCase):
     ) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1492,12 +2030,12 @@ class PipelineTestCase(unittest.TestCase):
         def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
             self.assertTrue(force_submit)
             self.assertEqual(segment_ids, {selected_segment_id})
-            selected_output_path.parent.mkdir(parents=True, exist_ok=True)
-            selected_output_path.write_bytes(b"selected clip")
-            clip = next(item for item in manifest.clips if item.segment_id == selected_segment_id)
-            clip.downloaded_path = str(selected_output_path)
-            clip.submit_status = "completed"
-            clip.remote_status = "succeeded"
+            mark_runtime_manifest_clips_completed(
+                manifest,
+                segment_ids={selected_segment_id},
+                remote_status="succeeded",
+                write_bytes=b"selected clip",
+            )
             return SeedanceExecutionReport(
                 submitted=True,
                 manifest_title=manifest.title,
@@ -1524,7 +2062,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_generic_character_aliases_are_normalized_to_real_names(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1610,7 +2148,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_visual_bible_names_are_repaired_to_outline_characters(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1653,7 +2191,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_confession_segment_is_upgraded_to_two_involved_characters(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1734,7 +2272,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_frame_character_lists_are_inferred_and_preserved_separately(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1823,7 +2361,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_mid_frame_characters_follow_mid_timed_beat_not_full_segment_cast(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -1930,22 +2468,22 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
-        roster = service._fallback_character_roster(
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
+        roster = self.novel_builder.build_character_roster(
             brief,
             architecture,
             cast_analysis=cast_analysis,
         ).model_copy(
             update={
                 "characters": [
-                    service._fallback_character_roster(
+                    self.novel_builder.build_character_roster(
                         brief,
                         architecture,
                         cast_analysis=cast_analysis,
                     ).characters[0].model_copy(
                         update={"name": "程野", "gender": "男", "image_prompt": "程野，男，高中生。"}
                     ),
-                    service._fallback_character_roster(
+                    self.novel_builder.build_character_roster(
                         brief,
                         architecture,
                         cast_analysis=cast_analysis,
@@ -1985,7 +2523,7 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        cast_analysis = NovelGeneratorService()._fallback_cast_analysis(
+        cast_analysis = self.novel_builder.build_cast_analysis(
             brief,
             architecture,
         )
@@ -2007,7 +2545,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("characters[0].cast_slot_id", prompt)
         self.assertIn("characters[1].cast_slot_id", prompt)
 
-    def test_dual_lead_repair_preserves_gender_order_from_brief(self) -> None:
+    def test_dual_lead_repair_does_not_synthesize_missing_second_character(self) -> None:
         service = NovelGeneratorService()
         brief = StoryBrief(
             title_hint="雨夜告白",
@@ -2026,15 +2564,15 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
-        roster = service._fallback_character_roster(
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
+        roster = self.novel_builder.build_character_roster(
             brief,
             architecture,
             cast_analysis=cast_analysis,
         ).model_copy(
             update={
                 "characters": [
-                    service._fallback_character_roster(
+                    self.novel_builder.build_character_roster(
                         brief,
                         architecture,
                         cast_analysis=cast_analysis,
@@ -2052,11 +2590,9 @@ class PipelineTestCase(unittest.TestCase):
             cast_analysis=cast_analysis,
         )
 
-        self.assertGreaterEqual(len(repaired.characters), 2)
-        self.assertEqual(repaired.characters[0].gender, "女")
-        self.assertEqual(repaired.characters[1].gender, "男")
-        self.assertIn("关系定位", repaired.characters[0].image_prompt)
-        self.assertIn("关系定位", repaired.characters[1].image_prompt)
+        self.assertEqual(len(repaired.characters), 1)
+        self.assertEqual(repaired.characters[0].name, "程野")
+        self.assertEqual(repaired.characters[0].gender, "男")
 
     def test_dual_lead_chapter_prompt_requires_both_sides(self) -> None:
         brief = StoryBrief(
@@ -2076,7 +2612,7 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["站台", "列车"],
             tone_notes=["克制"],
         )
-        cast_analysis = NovelGeneratorService()._fallback_cast_analysis(
+        cast_analysis = self.novel_builder.build_cast_analysis(
             brief,
             architecture,
         )
@@ -2094,7 +2630,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("已生成小说草稿", prompt)
         self.assertIn("必须以上游 Cast Analysis 结果为准", prompt)
 
-    def test_dual_lead_chapter_repair_adds_counterpart_from_brief(self) -> None:
+    def test_dual_lead_chapter_repair_does_not_append_missing_counterpart(self) -> None:
         service = NovelGeneratorService()
         brief = StoryBrief(
             title_hint="雨夜告白",
@@ -2113,20 +2649,20 @@ class PipelineTestCase(unittest.TestCase):
             visual_motifs=["雨", "路灯"],
             tone_notes=["青春"],
         )
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
-        roster = service._fallback_character_roster(
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
+        roster = self.novel_builder.build_character_roster(
             brief,
             architecture,
             cast_analysis=cast_analysis,
         )
-        chapter_plan_set = service._fallback_chapter_plan_set(
+        chapter_plan_set = self.novel_builder.build_chapter_plan_set(
             brief,
             roster,
             cast_analysis=cast_analysis,
         ).model_copy(
             update={
                 "chapters": [
-                    service._fallback_chapter_plan_set(
+                    self.novel_builder.build_chapter_plan_set(
                         brief,
                         roster,
                         cast_analysis=cast_analysis,
@@ -2151,9 +2687,53 @@ class PipelineTestCase(unittest.TestCase):
         )
 
         self.assertEqual(
-            repaired.chapters[0].featured_characters[:2],
-            [roster.characters[0].name, roster.characters[1].name],
+            repaired.chapters[0].featured_characters,
+            [roster.characters[0].name],
         )
+
+    def test_repair_chapter_plan_set_no_longer_appends_missing_chapters(self) -> None:
+        service = NovelGeneratorService()
+        brief = StoryBrief(
+            title_hint="雨夜告白",
+            idea="一个女生终于在雨夜向喜欢的男生告白。",
+            genre="校园恋爱",
+            tone="青春、克制",
+            chapter_count=2,
+            total_word_target=2400,
+        )
+        architecture = StoryArchitectureSchema(
+            title="雨夜告白",
+            premise="雨夜里迟到的告白。",
+            theme="勇气与回应",
+            setting="高中校园",
+            story_engine="双人关系推进",
+            visual_motifs=["雨", "路灯"],
+            tone_notes=["青春"],
+        )
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
+        roster = self.novel_builder.build_character_roster(
+            brief,
+            architecture,
+            cast_analysis=cast_analysis,
+        )
+        chapter_plan_set = ChapterPlanSetSchema(
+            chapters=[
+                self.novel_builder.build_chapter_plan_set(
+                    brief,
+                    roster,
+                    cast_analysis=cast_analysis,
+                ).chapters[0]
+            ]
+        )
+
+        repaired = service._repair_chapter_plan_set(
+            chapter_plan_set,
+            brief,
+            roster,
+            cast_analysis=cast_analysis,
+        )
+
+        self.assertEqual(len(repaired.chapters), 1)
 
     def test_cast_analysis_is_primary_cast_contract(self) -> None:
         service = NovelGeneratorService()
@@ -2175,7 +2755,7 @@ class PipelineTestCase(unittest.TestCase):
             tone_notes=["克制"],
         )
         cast_analysis = service._repair_cast_analysis(
-            service._fallback_cast_analysis(brief, architecture).model_copy(
+            self.novel_builder.build_cast_analysis(brief, architecture).model_copy(
                 update={
                     "story_shape": "dual_relationship_with_supporting_cast",
                     "requires_dual_leads": True,
@@ -2197,7 +2777,6 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("不得只输出单主角", prompt)
 
     def test_cast_analysis_supports_multi_role_story_structure(self) -> None:
-        service = NovelGeneratorService()
         brief = StoryBrief(
             title_hint="旧城回响",
             idea="一名记者回到旧城调查父亲失踪真相，昔日恋人、线人和地方势力相继卷入。",
@@ -2216,7 +2795,7 @@ class PipelineTestCase(unittest.TestCase):
             tone_notes=["压迫"],
         )
 
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
 
         self.assertGreaterEqual(cast_analysis.recommended_core_cast_count, 3)
         self.assertLessEqual(cast_analysis.recommended_core_cast_count, len(cast_analysis.slots))
@@ -2241,8 +2820,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("地方势力继承人", labels)
         self.assertIn("掌握档案的退休警察", labels)
 
-    def test_fallback_cast_analysis_uses_grounded_role_labels(self) -> None:
-        service = NovelGeneratorService()
+    def test_deterministic_cast_analysis_uses_grounded_role_labels(self) -> None:
         brief = StoryBrief(
             title_hint="旧城回响",
             idea="一名记者回到旧城调查父亲失踪真相，昔日恋人、地下线人、地方势力继承人和掌握档案的退休警察相继卷入。",
@@ -2261,7 +2839,7 @@ class PipelineTestCase(unittest.TestCase):
             tone_notes=["压迫"],
         )
 
-        cast_analysis = service._fallback_cast_analysis(brief, architecture)
+        cast_analysis = self.novel_builder.build_cast_analysis(brief, architecture)
         slot_labels = [item.brief_label for item in cast_analysis.slots[:4]]
 
         self.assertEqual(slot_labels[0], "记者")
@@ -2279,10 +2857,10 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual(resolved, "沈砚")
 
-    def test_missing_chapters_are_repaired_back_into_segment_plan(self) -> None:
+    def test_missing_chapters_are_not_silently_backfilled_into_segment_plan(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -2296,7 +2874,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        visual_bible = service._fallback_character_visual_bible(story_result.novel_package)
+        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
         raw_plan = VideoSegmentPlanSchema.model_validate(
             {
                 "segments": [
@@ -2328,14 +2906,14 @@ class PipelineTestCase(unittest.TestCase):
         )
 
         self.assertEqual(
-            {item.chapter_number for item in repaired.segments},
-            {item.number for item in story_result.novel_package.outline.chapters},
+            [item.chapter_number for item in repaired.segments],
+            [1],
         )
 
     def test_segment_planner_prompt_leaves_segments_per_chapter_to_llm(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -2366,7 +2944,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_repair_segment_plan_preserves_all_llm_segments_within_same_chapter(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -2380,7 +2958,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        visual_bible = service._fallback_character_visual_bible(story_result.novel_package)
+        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
         lead_name = story_result.novel_package.outline.characters[0].name
         raw_plan = VideoSegmentPlanSchema.model_validate(
             {
@@ -2948,7 +3526,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_repair_scene_bible_backfills_missing_fields_from_scene_context(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
@@ -3016,7 +3594,7 @@ class PipelineTestCase(unittest.TestCase):
     def test_repair_shot_state_backfills_missing_fields_from_segment_context(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = run_story_pipeline(
+        story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,

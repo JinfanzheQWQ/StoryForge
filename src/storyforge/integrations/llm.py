@@ -13,7 +13,7 @@ OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL"
 
 def build_agent_backend(
     config: AppConfig,
-    use_llm: bool = False,
+    use_llm: bool = True,
     provider: str | None = None,
     model: str | None = None,
 ) -> AgentBackend:

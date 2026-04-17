@@ -266,7 +266,8 @@ def extract_role_labels_from_brief(brief: StoryBrief, limit: int = 6) -> list[st
     """
     Best-effort role phrase extraction from the brief text.
 
-    This is intentionally heuristic and only serves fallback / repair paths.
+    This is intentionally heuristic and only serves deterministic test builders
+    and repair-oriented normalization.
     The primary cast structure still comes from the LLM Cast Analyzer prompt.
     """
     text = "，".join(

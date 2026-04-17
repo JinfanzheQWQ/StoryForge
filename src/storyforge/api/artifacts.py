@@ -6,6 +6,10 @@ from urllib.parse import quote
 
 from storyforge.api.schemas import (
     ArtifactItem,
+    ContinuityIssueDetailResponse,
+    ContinuityIssueGroupResponse,
+    ContinuityIssueSummaryResponse,
+    ContinuitySummaryResponse,
     PlannedSegmentArtifactResponse,
     StoryBriefInput,
     TaskArtifactsResponse,
@@ -14,8 +18,12 @@ from storyforge.api.schemas import (
 from storyforge.application.tasks import TaskRecord
 from storyforge.core.config import AppConfig
 from storyforge.core.io import read_json
-from storyforge.domains.video.contracts import SceneImageTask, SeedanceManifest, VideoSegment
-from storyforge.domains.video.schemas import VideoSegmentPlanSchema
+from storyforge.domains.video.contracts import VideoSegment
+from storyforge.pipelines.video_planning import (
+    load_scene_image_task_map,
+    load_seedance_clip_map,
+    load_video_segment_plan,
+)
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -33,6 +41,7 @@ DOCUMENT_PRIORITY = {
     "seedream_scene_execution.json": 100,
     "seedance_manifest.json": 110,
     "seedance_execution.json": 120,
+    "continuity_report.json": 130,
 }
 LLM_OPTION_LIBRARY = {
     "deepseek": {"provider": "deepseek", "model": "deepseek-chat", "label": "DeepSeek"},
@@ -57,6 +66,7 @@ def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
         submit_seedance=config.video.submit_seedance or config.seedance.auto_submit,
         llm_provider=config.llm.provider,
         llm_model=config.llm.model,
+        continuity_review_mode="auto",
         available_llm_options=_build_available_llm_options(config),
         seedream_model=config.seedream.model,
         seedance_model=config.seedance.model,
@@ -137,6 +147,10 @@ def build_task_artifacts(
         scene_frames=scene_frames,
         rendered_clips=rendered_clips,
     )
+    continuity_report, continuity_summary, continuity_scene_groups, continuity_segment_groups = _collect_continuity_report(
+        output_dir=output_dir,
+        output_root=resolved_output_root,
+    )
 
     return TaskArtifactsResponse(
         task_id=task.task_id,
@@ -150,6 +164,10 @@ def build_task_artifacts(
         rendered_clips=rendered_clips,
         full_story=full_story,
         planned_segments=planned_segments,
+        continuity_report=continuity_report,
+        continuity_summary=continuity_summary,
+        continuity_scene_groups=continuity_scene_groups,
+        continuity_segment_groups=continuity_segment_groups,
     )
 
 
@@ -228,15 +246,15 @@ def _collect_planned_segments(
     scene_plan_path = output_dir / "scene_plan.json"
     segment_plan_path = output_dir / "segment_plan.json"
     if not scene_plan_path.exists() and not segment_plan_path.exists():
-        return _build_fallback_planned_segments(scene_frames, rendered_clips)
+        return _build_inferred_planned_segments(scene_frames, rendered_clips)
 
     try:
-        plan = _load_segment_plan(scene_plan_path, segment_plan_path)
+        plan = load_video_segment_plan(output_dir)
         segments = [VideoSegment.from_dict(item.model_dump()) for item in plan.segments]
     except Exception:
-        return _build_fallback_planned_segments(scene_frames, rendered_clips)
-    scene_task_map = _load_scene_task_map(output_dir)
-    clip_map = _load_seedance_clip_map(output_dir)
+        return _build_inferred_planned_segments(scene_frames, rendered_clips)
+    scene_task_map = load_scene_image_task_map(output_dir)
+    clip_map = load_seedance_clip_map(output_dir)
     scene_frame_map = {item.path: item for item in scene_frames}
     rendered_clip_map = {item.path: item for item in rendered_clips}
     scene_master_map = {
@@ -293,57 +311,6 @@ def _collect_planned_segments(
             )
         )
     return planned_segments
-
-
-def _load_segment_plan(
-    scene_plan_path: Path,
-    segment_plan_path: Path,
-) -> VideoSegmentPlanSchema:
-    if scene_plan_path.exists():
-        payload = read_json(scene_plan_path)
-        if isinstance(payload, list):
-            if payload and isinstance(payload[0], dict) and "segments" in payload[0]:
-                return VideoSegmentPlanSchema.model_validate({"scenes": payload})
-            return VideoSegmentPlanSchema.model_validate({"segments": payload})
-        return VideoSegmentPlanSchema.model_validate(payload)
-    return VideoSegmentPlanSchema.model_validate({"segments": read_json(segment_plan_path)})
-
-
-def _load_scene_task_map(output_dir: Path) -> dict[str, SceneImageTask]:
-    scene_images_path = output_dir / "scene_image_manifest.json"
-    if not scene_images_path.exists():
-        return {}
-    raw_scene_tasks = read_json(scene_images_path)
-    if not isinstance(raw_scene_tasks, list):
-        return {}
-    try:
-        return {
-            item.segment_id: item
-            for item in (
-                SceneImageTask.from_dict(raw)
-                for raw in raw_scene_tasks
-            )
-        }
-    except Exception:
-        return {}
-
-
-def _load_seedance_clip_map(output_dir: Path):
-    manifest_path = output_dir / "seedance_manifest.json"
-    if not manifest_path.exists():
-        return {}
-    raw_manifest = read_json(manifest_path)
-    if not isinstance(raw_manifest, dict):
-        return {}
-    if "title" not in raw_manifest or "model" not in raw_manifest:
-        return {}
-    try:
-        manifest = SeedanceManifest.from_dict(raw_manifest)
-    except Exception:
-        return {}
-    return {clip.segment_id: clip for clip in manifest.clips}
-
-
 def _resolve_manifest_artifact(
     relative_path: str,
     output_root: Path,
@@ -374,7 +341,164 @@ def _resolve_rendered_clip_artifact(
     return _resolve_manifest_artifact(clip_path, output_root, artifact_map)
 
 
-def _build_fallback_planned_segments(
+def _collect_continuity_report(
+    *,
+    output_dir: Path,
+    output_root: Path,
+) -> tuple[
+    ArtifactItem | None,
+    ContinuitySummaryResponse | None,
+    list[ContinuityIssueGroupResponse],
+    list[ContinuityIssueGroupResponse],
+]:
+    report_path = output_dir / "continuity_report.json"
+    if not report_path.exists():
+        return None, None, [], []
+    artifact_item = _to_artifact_item(report_path, output_root)
+    try:
+        payload = read_json(report_path)
+    except Exception:
+        return artifact_item, None, [], []
+    if not isinstance(payload, dict):
+        return artifact_item, None, [], []
+
+    summary_payload = payload.get("summary")
+    if not isinstance(summary_payload, dict):
+        return artifact_item, None, [], []
+
+    scene_issues = _collect_continuity_issue_details(payload.get("scene_issues"))
+    segment_issues = _collect_continuity_issue_details(payload.get("segment_issues"))
+    issues = [*scene_issues, *segment_issues]
+    sorted_issues = sorted(
+        issues,
+        key=lambda item: (
+            {"high": 0, "medium": 1, "low": 2}.get(item.severity, 99),
+            item.scene_id,
+            item.segment_id,
+            item.code,
+        ),
+    )
+    top_issues = [
+        ContinuityIssueSummaryResponse(
+            severity=item.severity,
+            scope=item.scope,
+            code=item.code,
+            message=item.message,
+            scene_id=item.scene_id,
+            segment_id=item.segment_id,
+            recommended_action=item.recommended_action,
+            recommended_action_label=item.recommended_action_label,
+        )
+        for item in sorted_issues[:5]
+    ]
+    action_labels = [
+        str(item.get("label", "") or "")
+        for item in payload.get("recommended_actions", [])
+        if isinstance(item, dict) and str(item.get("label", "") or "")
+    ]
+    v2_payload = payload.get("v2_llm_review") if isinstance(payload.get("v2_llm_review"), dict) else {}
+    v2_summary_payload = v2_payload.get("summary") if isinstance(v2_payload.get("summary"), dict) else {}
+    return (
+        artifact_item,
+        ContinuitySummaryResponse(
+            status=str(payload.get("status", "") or "unknown"),
+            report_version=str(payload.get("report_version", "") or ""),
+            generated_at=str(payload.get("generated_at", "") or "") or None,
+            review_mode_requested=str(payload.get("review_mode_requested", "") or "auto"),
+            review_mode_effective=str(payload.get("review_mode_effective", "") or "off"),
+            v2_review_status=str(v2_payload.get("status", "") or "disabled"),
+            v2_issue_count=int(v2_summary_payload.get("issue_count", 0) or 0),
+            v2_note=str(v2_payload.get("note", "") or ""),
+            issue_count=int(summary_payload.get("issue_count", 0) or 0),
+            high_risk_count=int(summary_payload.get("high_risk_count", 0) or 0),
+            medium_risk_count=int(summary_payload.get("medium_risk_count", 0) or 0),
+            low_risk_count=int(summary_payload.get("low_risk_count", 0) or 0),
+            scene_issue_count=int(summary_payload.get("scene_issue_count", 0) or 0),
+            segment_issue_count=int(summary_payload.get("segment_issue_count", 0) or 0),
+            recommended_actions=action_labels,
+            top_issues=top_issues,
+        ),
+        _group_continuity_issues(scene_issues, scope="scene"),
+        _group_continuity_issues(segment_issues, scope="segment"),
+    )
+
+
+def _collect_continuity_issue_details(raw_items) -> list[ContinuityIssueDetailResponse]:
+    if not isinstance(raw_items, list):
+        return []
+    issues: list[ContinuityIssueDetailResponse] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        issues.append(
+            ContinuityIssueDetailResponse(
+                severity=str(item.get("severity", "") or ""),
+                scope=str(item.get("scope", "") or ""),
+                code=str(item.get("code", "") or ""),
+                message=str(item.get("message", "") or ""),
+                scene_id=str(item.get("scene_id", "") or ""),
+                segment_id=str(item.get("segment_id", "") or ""),
+                recommended_action=str(item.get("recommended_action", "") or ""),
+                recommended_action_label=str(item.get("recommended_action_label", "") or ""),
+                details=item.get("details", {}) if isinstance(item.get("details"), dict) else {},
+            )
+        )
+    return issues
+
+
+def _group_continuity_issues(
+    issues: list[ContinuityIssueDetailResponse],
+    *,
+    scope: str,
+) -> list[ContinuityIssueGroupResponse]:
+    grouped: dict[tuple[str, str], list[ContinuityIssueDetailResponse]] = {}
+    for issue in issues:
+        key = (issue.scene_id, issue.segment_id if scope == "segment" else "")
+        grouped.setdefault(key, []).append(issue)
+
+    groups: list[ContinuityIssueGroupResponse] = []
+    for (scene_id, segment_id), grouped_issues in grouped.items():
+        sorted_grouped_issues = sorted(
+            grouped_issues,
+            key=lambda item: (
+                {"high": 0, "medium": 1, "low": 2}.get(item.severity, 99),
+                item.code,
+            ),
+        )
+        recommended_actions = list(
+            dict.fromkeys(
+                action
+                for action in (item.recommended_action for item in sorted_grouped_issues)
+                if action
+            )
+        )
+        groups.append(
+            ContinuityIssueGroupResponse(
+                scope=scope,
+                scene_id=scene_id,
+                segment_id=segment_id,
+                issue_count=len(sorted_grouped_issues),
+                high_risk_count=sum(1 for item in sorted_grouped_issues if item.severity == "high"),
+                medium_risk_count=sum(1 for item in sorted_grouped_issues if item.severity == "medium"),
+                low_risk_count=sum(1 for item in sorted_grouped_issues if item.severity == "low"),
+                recommended_actions=recommended_actions,
+                issues=sorted_grouped_issues,
+            )
+        )
+
+    return sorted(
+        groups,
+        key=lambda item: (
+            -(item.high_risk_count),
+            -(item.medium_risk_count),
+            -(item.low_risk_count),
+            item.scene_id,
+            item.segment_id,
+        ),
+    )
+
+
+def _build_inferred_planned_segments(
     scene_frames: list[ArtifactItem],
     rendered_clips: list[ArtifactItem],
 ) -> list[PlannedSegmentArtifactResponse]:

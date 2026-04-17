@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -24,6 +24,7 @@ class BuildProjectRequest(BaseModel):
     submit_seedance: bool = False
     llm_provider: str | None = None
     llm_model: str | None = None
+    continuity_review_mode: Literal["off", "auto", "on"] = "auto"
 
 
 class CreateStoryTaskRequest(BaseModel):
@@ -32,6 +33,7 @@ class CreateStoryTaskRequest(BaseModel):
     use_llm: bool = True
     llm_provider: str | None = None
     llm_model: str | None = None
+    continuity_review_mode: Literal["off", "auto", "on"] = "auto"
 
 
 class CreateStageTaskRequest(BaseModel):
@@ -40,6 +42,7 @@ class CreateStageTaskRequest(BaseModel):
     use_llm: bool | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    continuity_review_mode: Literal["off", "auto", "on"] | None = None
     segment_id: str | None = None
     scene_id: str | None = None
     master_only: bool = False
@@ -55,6 +58,22 @@ class CreateStageTaskRequest(BaseModel):
             raise ValueError("master_only=true 时必须提供 scene_id。")
         if self.master_only and segment_id:
             raise ValueError("master_only=true 不能与 segment_id 同时提交。")
+        return self
+
+
+class CreateContinuityRepairTaskRequest(BaseModel):
+    project_id: str
+    source_task_id: str
+    segment_id: str
+    use_llm: bool | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    continuity_review_mode: Literal["off", "auto", "on"] | None = None
+
+    @model_validator(mode="after")
+    def validate_segment_id(self) -> "CreateContinuityRepairTaskRequest":
+        if not str(self.segment_id or "").strip():
+            raise ValueError("segment_id 不能为空。")
         return self
 
 
@@ -99,6 +118,7 @@ class UiBootstrapResponse(BaseModel):
     submit_seedance: bool
     llm_provider: str
     llm_model: str
+    continuity_review_mode: Literal["off", "auto", "on"] = "auto"
     available_llm_options: list[dict[str, str]] = Field(default_factory=list)
     seedream_model: str
     seedance_model: str
@@ -130,6 +150,52 @@ class PlannedSegmentArtifactResponse(BaseModel):
     video_ready: bool = False
 
 
+class ContinuityIssueSummaryResponse(BaseModel):
+    severity: str
+    scope: str
+    code: str
+    message: str
+    scene_id: str = ""
+    segment_id: str = ""
+    recommended_action: str = ""
+    recommended_action_label: str = ""
+
+
+class ContinuityIssueDetailResponse(ContinuityIssueSummaryResponse):
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContinuityIssueGroupResponse(BaseModel):
+    scope: str
+    scene_id: str = ""
+    segment_id: str = ""
+    issue_count: int = 0
+    high_risk_count: int = 0
+    medium_risk_count: int = 0
+    low_risk_count: int = 0
+    recommended_actions: list[str] = Field(default_factory=list)
+    issues: list[ContinuityIssueDetailResponse] = Field(default_factory=list)
+
+
+class ContinuitySummaryResponse(BaseModel):
+    status: str
+    report_version: str = ""
+    generated_at: str | None = None
+    review_mode_requested: str = "auto"
+    review_mode_effective: str = "off"
+    v2_review_status: str = "disabled"
+    v2_issue_count: int = 0
+    v2_note: str = ""
+    issue_count: int = 0
+    high_risk_count: int = 0
+    medium_risk_count: int = 0
+    low_risk_count: int = 0
+    scene_issue_count: int = 0
+    segment_issue_count: int = 0
+    recommended_actions: list[str] = Field(default_factory=list)
+    top_issues: list[ContinuityIssueSummaryResponse] = Field(default_factory=list)
+
+
 class TaskArtifactsResponse(BaseModel):
     task_id: str
     available: bool
@@ -142,6 +208,10 @@ class TaskArtifactsResponse(BaseModel):
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)
     full_story: ArtifactItem | None = None
     planned_segments: list[PlannedSegmentArtifactResponse] = Field(default_factory=list)
+    continuity_report: ArtifactItem | None = None
+    continuity_summary: ContinuitySummaryResponse | None = None
+    continuity_scene_groups: list[ContinuityIssueGroupResponse] = Field(default_factory=list)
+    continuity_segment_groups: list[ContinuityIssueGroupResponse] = Field(default_factory=list)
 
 
 class TaskResponse(BaseModel):

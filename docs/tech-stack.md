@@ -34,6 +34,7 @@
 - `LangChain[openai] >= 1.2`
 - `ChatModel.with_structured_output(...)`
 - `DeepSeek`
+- `OpenAI / ChatGPT 5.4`
 
 ### 媒体与集成层
 
@@ -122,7 +123,7 @@
 
 - 角色化分工
 - 结构化输出
-- deterministic fallback / repair
+- deterministic test fixtures / repair
 - 可回放中间产物
 - 可插拔模型接入
 
@@ -146,7 +147,7 @@
 
 推荐说法：
 
-> StoryForge 是一个基于 LangChain + DeepSeek 的结构化多 Agent 小说生成与小说转视频工作流系统，外层通过 FastAPI 和异步任务队列提供服务，图像与视频阶段分别接入 Seedream 4.5 和 Seedance 2.0。
+> StoryForge 是一个基于 LangChain 的结构化多 Agent 小说生成与小说转视频工作流系统，当前支持 DeepSeek 与 ChatGPT 5.4，外层通过 FastAPI 和异步任务队列提供服务，图像与视频阶段分别接入 Seedream 4.5 和 Seedance 2.0。
 
 不建议说法：
 

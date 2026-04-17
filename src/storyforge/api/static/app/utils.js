@@ -1,5 +1,20 @@
 import { state } from "./state.js";
 
+export function normalizeContinuityReviewMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "off" || normalized === "on") {
+    return normalized;
+  }
+  return "auto";
+}
+
+export function continuityReviewModeLabel(mode) {
+  const normalized = normalizeContinuityReviewMode(mode);
+  if (normalized === "off") return "关闭";
+  if (normalized === "on") return "强制开启";
+  return "自动";
+}
+
 export function getPipelineRootTaskId(task) {
   return task.result?.pipeline_root_task_id || task.payload?.pipeline_root_task_id || task.task_id;
 }
@@ -55,6 +70,9 @@ function buildRunGroup(rootTaskId, tasks) {
   const videoTasks = sortedTasks.filter(
     (task) => task.task_type === "project.videos" && !task.payload?.merge_only,
   );
+  const repairTasks = sortedTasks.filter(
+    (task) => task.task_type === "project.continuity_repair",
+  );
   const mergeTasks = sortedTasks.filter(
     (task) => task.task_type === "project.videos" && task.payload?.merge_only,
   );
@@ -68,6 +86,7 @@ function buildRunGroup(rootTaskId, tasks) {
     latestCharacterTask: characterTasks[0] || null,
     latestSceneTask: sceneTasks[0] || null,
     latestVideoTask: videoTasks[0] || null,
+    latestRepairTask: repairTasks[0] || null,
     latestMergeTask: mergeTasks[0] || null,
     latestArtifacts: state.artifactsByTaskId.get(rootTask.task_id) || null,
   };
@@ -108,6 +127,23 @@ export function getTaskRun(taskId, tasks = state.tasks) {
 
 export function getProjectRuns(detail) {
   return getProjectRunsFromTasks(detail.project_id, detail.tasks);
+}
+
+export function resolveRunContinuityReviewMode(run) {
+  const runId = run?.rootTask?.task_id || "";
+  if (runId && state.runContinuityReviewModes.has(runId)) {
+    return normalizeContinuityReviewMode(state.runContinuityReviewModes.get(runId));
+  }
+  const candidates = [
+    run?.latestTask?.payload?.continuity_review_mode,
+    run?.latestTask?.result?.continuity_review_mode,
+    run?.latestAnalysisTask?.payload?.continuity_review_mode,
+    run?.latestAnalysisTask?.result?.continuity_review_mode,
+    run?.rootTask?.result?.continuity_review_mode,
+    run?.rootTask?.payload?.continuity_review_mode,
+    state.bootstrap?.continuity_review_mode,
+  ];
+  return normalizeContinuityReviewMode(candidates.find((item) => String(item || "").trim()));
 }
 
 export function findPreviewAsset(artifacts) {
@@ -239,6 +275,9 @@ export function buildOverviewNote(task, artifacts, run = null) {
   if (run?.latestTask.task_type === "project.scenes") {
     return "最近一次片段场景图任务已完成。确认该片段满意后，再继续生成对应视频。";
   }
+  if (run?.latestTask.task_type === "project.continuity_repair") {
+    return "最近一次智能修复已完成。系统已经按新分镜合同重跑该片段场景图和视频，请重点复查这一段的连续性。";
+  }
   if (run?.latestTask.task_type === "project.images") {
     return "图片阶段已经完成。确认角色和场景一致后，再继续生成视频。";
   }
@@ -348,6 +387,18 @@ export function buildPipelineStageLabel(task, run = null) {
   if (propagatedStage === "scenes_completed") {
     return "场景图已完成";
   }
+  if (propagatedStage === "continuity_repair_started") {
+    return "智能修复启动中";
+  }
+  if (propagatedStage === "continuity_repair_plan_completed") {
+    return "智能修复已更新规划";
+  }
+  if (propagatedStage === "continuity_repair_scene_completed") {
+    return "智能修复已重跑场景图";
+  }
+  if (propagatedStage === "continuity_repair_completed") {
+    return "智能修复已完成";
+  }
   if (propagatedStage === "video_completed") {
     return "视频已完成";
   }
@@ -402,6 +453,12 @@ export function buildPipelineStageLabel(task, run = null) {
     if (effectiveTask.status === "completed") return "视频已完成";
     if (effectiveTask.status === "failed") return "视频生成失败";
   }
+  if (effectiveTask.task_type === "project.continuity_repair") {
+    if (effectiveTask.status === "queued") return "等待智能修复";
+    if (effectiveTask.status === "running") return "智能修复中";
+    if (effectiveTask.status === "completed") return "智能修复已完成";
+    if (effectiveTask.status === "failed") return "智能修复失败";
+  }
   if (effectiveTask.task_type === "project.build") {
     const stage = effectiveTask.result?.pipeline_stage;
     if (effectiveTask.status === "running" && stage === "story_source_completed") {
@@ -452,6 +509,9 @@ export function runModeLabel(task) {
     }
     return "Seedance / 视频阶段";
   }
+  if (task.task_type === "project.continuity_repair") {
+    return `${llmLabel} / 智能修复`;
+  }
   if (task.task_type === "project.build") {
     return `${llmLabel} / 全流程`;
   }
@@ -467,6 +527,7 @@ export function taskTypeLabel(task) {
   if (task.task_type === "project.images") return "图片";
   if (task.task_type === "project.videos" && task.payload?.merge_only) return "视频合并";
   if (task.task_type === "project.videos") return "视频成片";
+  if (task.task_type === "project.continuity_repair") return "智能修复";
   if (task.task_type === "project.build") return "全流程";
   return "";
 }

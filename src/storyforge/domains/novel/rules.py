@@ -14,10 +14,21 @@ from storyforge.domains.novel.heuristics import (
     text_requires_explicit_counterpart,
     text_requires_multiple_core_characters,
 )
-from storyforge.domains.novel.schemas import CastAnalysisSchema
+from storyforge.domains.novel.schemas import CastAnalysisSchema, StoryDraftSetSchema
 
 
 class NovelRuleMixin:
+    def _story_draft_text(
+        self,
+        story_draft_set: StoryDraftSetSchema | None,
+    ) -> str:
+        if story_draft_set is None:
+            return ""
+        return "\n".join(
+            f"{item.title}\n{item.summary}\n{item.markdown}"
+            for item in story_draft_set.chapters
+        ).strip()
+
     def _minimum_core_character_count(
         self,
         brief: StoryBrief,

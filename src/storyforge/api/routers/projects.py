@@ -10,6 +10,7 @@ from storyforge.api.serializers import (
 )
 from storyforge.api.schemas import (
     BuildProjectRequest,
+    CreateContinuityRepairTaskRequest,
     CreateStageTaskRequest,
     CreateStoryTaskRequest,
     JobAcceptedResponse,
@@ -47,6 +48,12 @@ def _apply_llm_selection(task_payload: dict[str, object], provider: str | None, 
         task_payload["llm_provider"] = provider
     if model:
         task_payload["llm_model"] = model
+
+
+def _apply_continuity_review_mode(task_payload: dict[str, object], mode: str | None) -> None:
+    normalized = str(mode or "").strip().lower()
+    if normalized in {"off", "auto", "on"}:
+        task_payload["continuity_review_mode"] = normalized
 
 
 @router.get("", response_model=list[ProjectSummaryResponse])
@@ -135,6 +142,7 @@ async def create_story_job(
         "use_llm": payload.use_llm,
     }
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(
         project_id=project_id,
         task_type="project.story",
@@ -162,6 +170,7 @@ async def create_image_job(
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -199,6 +208,7 @@ async def create_story_analysis_job(
         source_task_id=payload.source_task_id,
         pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
         story_source_revision=str(source_task.result.get("story_source_revision", "")),
+        continuity_review_mode=payload.continuity_review_mode,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -213,9 +223,57 @@ async def create_story_analysis_job(
         "use_llm": True if payload.use_llm is None else payload.use_llm,
     }
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.story_analysis",
+        payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/continuity-repair", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_continuity_repair_job(
+    payload: CreateContinuityRepairTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    existing_task = _find_existing_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.continuity_repair",
+        source_task_id=payload.source_task_id,
+        segment_id=payload.segment_id,
+        continuity_review_mode=payload.continuity_review_mode,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "segment_id": payload.segment_id,
+        "use_llm": True if payload.use_llm is None else payload.use_llm,
+    }
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.continuity_repair",
         payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
@@ -233,11 +291,16 @@ def _find_existing_story_analysis_task(
     source_task_id: str,
     pipeline_root_task_id: str,
     story_source_revision: str,
+    continuity_review_mode: str | None = None,
 ):
+    expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != "project.story_analysis":
             continue
         if str(task.payload.get("source_task_id", "")) != source_task_id:
+            continue
+        task_mode = str(task.payload.get("continuity_review_mode", "auto") or "auto").strip().lower() or "auto"
+        if task_mode != expected_mode:
             continue
         if task.status in {"queued", "running"}:
             return task
@@ -262,9 +325,11 @@ def _find_existing_stage_task(
     scene_id: str | None = None,
     master_only: bool = False,
     merge_only: bool = False,
+    continuity_review_mode: str | None = None,
 ):
     expected_segment_id = segment_id or ""
     expected_scene_id = scene_id or ""
+    expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != task_type:
             continue
@@ -277,6 +342,9 @@ def _find_existing_stage_task(
         if bool(task.payload.get("master_only", False)) != master_only:
             continue
         if bool(task.payload.get("merge_only", False)) != merge_only:
+            continue
+        task_mode = str(task.payload.get("continuity_review_mode", "auto") or "auto").strip().lower() or "auto"
+        if task_mode != expected_mode:
             continue
         if task.status in {"queued", "running"}:
             return task
@@ -301,6 +369,7 @@ async def create_character_job(
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -334,6 +403,7 @@ async def create_scene_job(
         scene_id=payload.scene_id,
         master_only=payload.master_only,
         merge_only=False,
+        continuity_review_mode=payload.continuity_review_mode,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -353,6 +423,7 @@ async def create_scene_job(
     if payload.master_only:
         task_payload["master_only"] = True
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -384,6 +455,7 @@ async def create_video_job(
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
         merge_only=payload.merge_only,
+        continuity_review_mode=payload.continuity_review_mode,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -401,6 +473,7 @@ async def create_video_job(
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.videos",
@@ -439,6 +512,7 @@ async def create_project_job(
         "submit_seedance": payload.submit_seedance,
     }
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
 
     record = await queue.submit(
         project_id=project_id,

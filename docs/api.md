@@ -56,6 +56,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 前端创建页只允许选择 `llm_provider`
 - `llm_model` 仍会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
+- 同时会返回默认的 `continuity_review_mode`，当前默认值为 `auto`
 
 ### 项目
 
@@ -123,7 +124,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   },
   "use_llm": true,
   "llm_provider": "deepseek",
-  "llm_model": "deepseek-chat"
+  "llm_model": "deepseek-chat",
+  "continuity_review_mode": "auto"
 }
 ```
 
@@ -132,6 +134,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `project_id = null` 时会自动新建项目
 - 传入已有 `project_id` 时，会把本次运行挂到已有项目下
 - Web 页面的 `llm_model` 为只读默认值；如通过 API 直调，仍可显式传入
+- `continuity_review_mode` 可选 `off / auto / on`，用于控制后续 `continuity_report.json` 是否执行 `V2` LLM 软审校
 
 返回示例：
 
@@ -175,6 +178,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `novel_audit.json`
 - `scene_plan.json`
 - `segment_plan.json`
+- `continuity_report.json`
 
 其中：
 
@@ -183,6 +187,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
 - 每个 scene 还会携带 `scene_master_frame_prompt / path / status / url`
 - `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
+- `continuity_report.json` 当前包含两层结果：
+  - `V1` 规则校验
+  - 可选的 `V2` LLM 软审校
 
 请求示例：
 
@@ -190,9 +197,17 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 {
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_task_id": "story-task-id",
-  "use_llm": true
+  "use_llm": true,
+  "continuity_review_mode": "auto"
 }
 ```
+
+说明：
+
+- `continuity_review_mode` 可选 `off / auto / on`
+- `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
+- 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
+- 幂等去重会把 `continuity_review_mode` 计入判定；同一正文修订下，切换模式后会创建新的结构化任务
 
 #### `POST /v1/projects/scenes`
 
@@ -264,6 +279,34 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+#### `POST /v1/projects/continuity-repair`
+
+创建“连续性智能修复”任务。
+
+当前是首版 `segment` 级闭环，只会修复并重跑目标片段，不会批量改其它片段或自动重生成整场 scene 母图。
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "segment_id": "ch01-sc01-seg01_01",
+  "use_llm": true,
+  "continuity_review_mode": "on"
+}
+```
+
+说明：
+
+- `segment_id` 必填
+- 这一步要求输出目录里已经存在 `continuity_report.json`，且目标 `segment_id` 在报告里至少有一条 `segment` 级问题
+- 当前任务会先让 LLM 重写该段执行合同，再只回写目标片段对应的 `segment_plan.json / scene_image_manifest.json / seedance_manifest.json`
+- 随后会自动串行重跑该段场景图和视频
+- 非目标 segment 的 manifest 状态和已生成产物不会被重置
+- 会额外落盘 `continuity_repair_{segment_id}.json`
+- 对同一 `source_task_id + segment_id`，如果已经有 queued / running 的修复任务，后端会直接返回已有任务
+
 #### `POST /v1/projects/images`
 
 兼容接口。会连续执行“角色图 + 场景图”两步。
@@ -280,6 +323,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 重写 `story_source.json`
 - 清除旧的 `novel_package.json`、`novel_audit.json`、角色图、场景图、视频等派生产物
+- 清除旧的 `continuity_repair_*.json`
 - 让前端把结构化信息与媒体阶段视为“待重新生成”
 
 #### `POST /v1/projects/novel-to-video`
@@ -322,6 +366,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 阶段任务会通过 `result.pipeline_root_task_id` 指向同一条 story run。
 - `result.story_source_revision` 用于判断结构化信息、图片和视频是否仍对应当前正文。
 - `project.scenes` 的单段任务会带 `segment_id`；场景母图重生成任务会带 `scene_id` 和 `master_only = true`
+- `project.continuity_repair` 会带 `segment_id`，并按 `continuity_repair_started -> continuity_repair_plan_completed -> continuity_repair_scene_completed -> continuity_repair_completed` 逐步更新
+- 如果任务或其根 run 开启了 `V2` 软审校，`payload` / `result` 里会带 `continuity_review_mode`
 
 #### `GET /v1/tasks/{task_id}/artifacts`
 
@@ -333,6 +379,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 视频片段
 - 总片
 - `planned_segments`
+- `continuity_report`
+- `continuity_summary`
+- `continuity_scene_groups`
+- `continuity_segment_groups`
 
 其中 `planned_segments` 会优先来自 `scene_plan.json`，并回落到 `segment_plan.json`。接口会带上每个 segment 当前对应的：
 
@@ -348,6 +398,53 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `video_ready`
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
+
+如果某个片段执行过智能修复，`documents` 里还可能出现：
+
+- `continuity_repair_{segment_id}.json`
+
+`continuity_summary` 当前会返回：
+
+- `status`
+- `report_version`
+- `generated_at`
+- `review_mode_requested`
+- `review_mode_effective`
+- `v2_review_status`
+- `v2_issue_count`
+- `v2_note`
+- `issue_count`
+- `high_risk_count`
+- `medium_risk_count`
+- `low_risk_count`
+- `scene_issue_count`
+- `segment_issue_count`
+- `recommended_actions`
+- `top_issues`
+
+`continuity_scene_groups` 与 `continuity_segment_groups` 会把 `continuity_report.json` 里的问题明细按 `scene` / `segment` 聚合后返回。每组当前包含：
+
+- `scope`
+- `scene_id`
+- `segment_id`
+- `issue_count`
+- `high_risk_count`
+- `medium_risk_count`
+- `low_risk_count`
+- `recommended_actions`
+- `issues`
+
+其中 `issues` 里的每一项会带：
+
+- `severity`
+- `scope`
+- `code`
+- `message`
+- `scene_id`
+- `segment_id`
+- `recommended_action`
+- `recommended_action_label`
+- `details`
 
 ## 任务状态
 

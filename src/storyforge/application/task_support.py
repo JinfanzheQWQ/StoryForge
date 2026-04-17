@@ -91,6 +91,35 @@ def resolve_llm_selection(task: QueuedTask | TaskRecord, source_task: TaskRecord
     return (None, None)
 
 
+def resolve_continuity_review_mode(
+    task: QueuedTask | TaskRecord,
+    source_task: TaskRecord | None = None,
+    default: str = "auto",
+) -> str:
+    payload = task.payload or {}
+    mode = str(payload.get("continuity_review_mode") or "").strip().lower()
+    if mode in {"off", "auto", "on"}:
+        return mode
+
+    task_result = getattr(task, "result", None)
+    if task_result:
+        mode = str(task_result.get("continuity_review_mode") or "").strip().lower()
+        if mode in {"off", "auto", "on"}:
+            return mode
+
+    if source_task is not None:
+        source_payload = source_task.payload or {}
+        mode = str(source_payload.get("continuity_review_mode") or "").strip().lower()
+        if mode in {"off", "auto", "on"}:
+            return mode
+        if source_task.result:
+            mode = str(source_task.result.get("continuity_review_mode") or "").strip().lower()
+            if mode in {"off", "auto", "on"}:
+                return mode
+
+    return default
+
+
 def propagate_shared_result(
     context: TaskExecutionContext,
     task_ids: set[str],

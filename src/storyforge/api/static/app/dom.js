@@ -11,6 +11,7 @@ export const elements = {
   clearProjectBindingButton: document.querySelector("#clear-project-binding"),
   llmProviderSelect: document.querySelector("#llm-provider-select"),
   llmModelInput: document.querySelector("#llm-model-input"),
+  continuityReviewModeSelect: document.querySelector("#continuity-review-mode-select"),
   llmModel: document.querySelector("#llm-model"),
   seedreamModel: document.querySelector("#seedream-model"),
   seedanceModel: document.querySelector("#seedance-model"),

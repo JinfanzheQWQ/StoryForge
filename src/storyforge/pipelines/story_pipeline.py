@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from storyforge.agents.base import AgentBackend
 from storyforge.core.config import AppConfig
 from storyforge.core.io import slugify
 from storyforge.domains.novel.contracts import NovelPackage, StoryBrief, StorySourcePackage
@@ -60,19 +61,20 @@ def run_story_generation_pipeline(
     brief: StoryBrief,
     config: AppConfig,
     project_root: Path,
-    use_llm: bool = False,
+    use_llm: bool = True,
     llm_provider: str | None = None,
     llm_model: str | None = None,
     output_root: Path | None = None,
+    backend: AgentBackend | None = None,
 ) -> StoryGenerationResult:
-    backend = build_agent_backend(
+    resolved_backend = backend or build_agent_backend(
         config,
         use_llm=use_llm,
         provider=llm_provider,
         model=llm_model,
     )
     service = NovelGeneratorService(
-        backend=backend,
+        backend=resolved_backend,
         chapter_scene_count=config.novel.chapter_scene_count,
     )
     story_source = service.build_story_source(brief)
@@ -93,19 +95,22 @@ def run_story_analysis_pipeline(
     story_source: StorySourcePackage,
     config: AppConfig,
     project_root: Path,
-    use_llm: bool = False,
+    use_llm: bool = True,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    continuity_review_mode: str = "auto",
     output_root: Path | None = None,
+    backend: AgentBackend | None = None,
+    video_backend: AgentBackend | None = None,
 ) -> StoryAnalysisResult:
-    backend = build_agent_backend(
+    resolved_backend = backend or build_agent_backend(
         config,
         use_llm=use_llm,
         provider=llm_provider,
         model=llm_model,
     )
     service = NovelGeneratorService(
-        backend=backend,
+        backend=resolved_backend,
         chapter_scene_count=config.novel.chapter_scene_count,
     )
     package = service.build_novel_package_from_story_source(story_source)
@@ -123,6 +128,8 @@ def run_story_analysis_pipeline(
         use_llm=use_llm,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        continuity_review_mode=continuity_review_mode,
+        backend=video_backend,
     )
 
     return StoryAnalysisResult(
@@ -144,10 +151,13 @@ def run_story_pipeline(
     brief: StoryBrief,
     config: AppConfig,
     project_root: Path,
-    use_llm: bool = False,
+    use_llm: bool = True,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    continuity_review_mode: str = "auto",
     output_root: Path | None = None,
+    backend: AgentBackend | None = None,
+    video_backend: AgentBackend | None = None,
 ) -> StoryPipelineResult:
     generation = run_story_generation_pipeline(
         brief=brief,
@@ -157,6 +167,7 @@ def run_story_pipeline(
         llm_provider=llm_provider,
         llm_model=llm_model,
         output_root=output_root,
+        backend=backend,
     )
     analysis = run_story_analysis_pipeline(
         story_source=generation.story_source,
@@ -165,7 +176,10 @@ def run_story_pipeline(
         use_llm=use_llm,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        continuity_review_mode=continuity_review_mode,
         output_root=generation.output_dir,
+        backend=backend,
+        video_backend=video_backend,
     )
 
     return StoryPipelineResult(

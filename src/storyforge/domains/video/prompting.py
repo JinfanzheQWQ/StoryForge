@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 
 from storyforge.domains.novel.contracts import CharacterVoiceProfile, NovelPackage
@@ -111,6 +112,8 @@ class VideoPromptingMixin:
 - 每个片段都必须单独输出 `start_frame_characters`、`mid_frame_characters`、`end_frame_characters`
 - 每个片段都必须输出 `shot_state`
 - 每个片段都必须输出 `continuity_link`
+- 单个 segment 只能写这个 segment 当下真正发生的事件，不得把后续 scene、后续高潮、章节结尾或初吻结果提前塞进当前 segment 的 `summary`、`narration`、`subtitle_lines`、`timed_beats`
+- 不要输出“当前片段聚焦”“结尾要保留”“本段重点”“第1段/第2段说明”这类分析备注或制作说明；返回内容必须是可直接执行的正式分镜文本
 - `shot_state` 至少包含：`framing`、`camera_motion`、`blocking`、`action_progression`、`emotion_progression`、`prop_continuity`、`screen_direction`、`end_state_lock`
 - `shot_state` 只写镜头、调度、动作、道具和承接状态，不要写成剧情摘要，也不要写对白台词
 - `continuity_link` 至少包含：`previous_segment_id`、`transition_mode`、`opening_match`、`carry_over_elements`、`allowed_changes`、`transition_reason`
@@ -129,6 +132,79 @@ class VideoPromptingMixin:
 
 章节拆分依据：
 {chapter_blocks}
+""".strip()
+
+    def _build_segment_continuity_repair_user_prompt(
+        self,
+        *,
+        story_title: str,
+        character_profiles: list[CharacterVisualProfile],
+        scene_payload: dict[str, object],
+        segment_payload: dict[str, object],
+        previous_segment_payload: dict[str, object] | None,
+        next_segment_payload: dict[str, object] | None,
+        continuity_issues: list[dict[str, object]],
+    ) -> str:
+        context = {
+            "story_title": story_title,
+            "character_profiles": [
+                {
+                    "name": item.name,
+                    "role": item.role,
+                    "gender": item.gender,
+                    "appearance": item.appearance,
+                    "outfit": item.outfit,
+                }
+                for item in character_profiles
+            ],
+            "target_scene": scene_payload,
+            "target_segment": segment_payload,
+            "previous_segment": previous_segment_payload,
+            "next_segment": next_segment_payload,
+            "continuity_issues": continuity_issues,
+        }
+        allowed_names = "、".join(
+            str(item.get("name", "")).strip()
+            for item in context["character_profiles"]
+            if str(item.get("name", "")).strip()
+        ) or "无"
+        return f"""
+请只修复目标片段的连续性规划，不要重写整个故事。
+
+- 小说标题：{story_title}
+- 允许角色白名单：{allowed_names}
+- 只能修复 `target_segment`
+- 不能修改：`segment_id`、`scene_id`、`scene_title`、`scene_summary`、`scene_anchor`、`involved_characters`
+- 不能新增角色、改名、换 scene、换章节
+- 你只能调整这些字段：
+  - `scene_prompt`
+  - `start_frame_prompt`
+  - `mid_frame_prompt`
+  - `end_frame_prompt`
+  - `start_frame_characters`
+  - `mid_frame_characters`
+  - `end_frame_characters`
+  - `narration`
+  - `dialogue_lines`
+  - `subtitle_lines`
+  - `timed_beats`
+  - `duration_seconds`
+  - `requires_mid_frame`
+  - `transition_hint`
+  - `shot_state`
+  - `continuity_link`
+- 输出必须让画面承接、动作推进、对白长度、字幕时长更成立
+- `duration_seconds` 必须在 5-12 秒
+- `subtitle_lines` 必须和实际能说完的旁白/对白一致
+- `timed_beats` 必须写出具体秒数，不要只写抽象节奏
+- `start_frame_characters` / `mid_frame_characters` / `end_frame_characters` 必须是 `involved_characters` 的子集
+- 如果不需要中段帧，`requires_mid_frame=false`，并把 `mid_frame_prompt` 置空、`mid_frame_characters` 置空数组
+- 如果问题主要是对白超时，就优先缩短对白、拆短字幕、压缩旁白，而不是盲目拉满 12 秒
+- 如果问题主要是动作或站位不连贯，就优先修 `shot_state`、`continuity_link` 和帧 prompt
+- 不要输出解释，不要输出 Markdown，只返回结构化结果
+
+上下文 JSON：
+{json.dumps(context, ensure_ascii=False, indent=2)}
 """.strip()
 
     def _build_chapter_segment_directive(
@@ -221,7 +297,7 @@ class VideoPromptingMixin:
             timed_beats.append(f"{start}-{end}秒：{description}")
         return timed_beats
 
-    def _fallback_subsegment_narration(
+    def _build_default_subsegment_narration(
         self,
         summary: str,
         segment_index: int,

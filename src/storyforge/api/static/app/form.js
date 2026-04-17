@@ -40,6 +40,7 @@ export function applyBootstrapToForm(payload) {
   fillInput("style_keywords", payload.default_brief.style_keywords.join(", "));
   fillInput("llm_provider", payload.llm_provider);
   fillInput("llm_model", payload.llm_model);
+  fillInput("continuity_review_mode", payload.continuity_review_mode || "auto");
   setSubmitStatus(
     `${payload.llm_provider} / ${payload.llm_model} 已就绪。`,
   );
@@ -82,8 +83,10 @@ export function clearForm() {
   if (window.storyforgeBootstrap) {
     fillInput("llm_provider", window.storyforgeBootstrap.llm_provider);
     fillInput("llm_model", window.storyforgeBootstrap.llm_model);
+    fillInput("continuity_review_mode", window.storyforgeBootstrap.continuity_review_mode || "auto");
   } else {
     syncLlmModelPreset();
+    fillInput("continuity_review_mode", "auto");
   }
   clearProjectBinding();
   setSubmitStatus("内容已清空，可以重新填写新的故事 brief。");
@@ -110,6 +113,7 @@ export function readProjectSubmission() {
       use_llm: true,
       llm_provider: elements.form.elements.llm_provider.value.trim(),
       llm_model: elements.form.elements.llm_model.value.trim(),
+      continuity_review_mode: elements.form.elements.continuity_review_mode.value.trim(),
     },
   };
 }
@@ -124,6 +128,13 @@ export function applyProjectToForm(detail) {
   fillInput("total_word_target", detail.brief.total_word_target);
   fillInput("must_include", detail.brief.must_include.join(", "));
   fillInput("style_keywords", detail.brief.style_keywords.join(", "));
+  fillInput(
+    "continuity_review_mode",
+    detail.tasks?.[0]?.result?.continuity_review_mode
+      || detail.tasks?.[0]?.payload?.continuity_review_mode
+      || window.storyforgeBootstrap?.continuity_review_mode
+      || "auto",
+  );
   setProjectBinding(detail.project_id, detail.story_title || detail.title_hint);
 }
 

@@ -6,7 +6,9 @@ import {
   buildPipelineStageLabel,
   chip,
   compactId,
+  continuityReviewModeLabel,
   escapeHtml,
+  resolveRunContinuityReviewMode,
   runModeLabel,
   statusLabel,
 } from "../utils.js";
@@ -30,6 +32,7 @@ export function renderRunDetail(task, artifacts, context, run = null) {
   const displayTask = run?.latestTask || task;
   const stageText = buildPipelineStageLabel(displayTask, run);
   const errorMessage = buildTaskErrorMessage(displayTask);
+  const continuityReviewMode = run ? resolveRunContinuityReviewMode(run) : "auto";
 
   return `
     <div class="detail-header">
@@ -47,6 +50,7 @@ export function renderRunDetail(task, artifacts, context, run = null) {
         ${chip(`故事 ${compactId(task.project_id)}`)}
         ${chip(`章节 ${task.payload?.brief?.chapter_count || 0}`)}
         ${chip(`字数 ${task.payload?.brief?.total_word_target || 0}`)}
+        ${chip(`V2 审校 ${continuityReviewModeLabel(continuityReviewMode)}`)}
         ${stageText ? chip(stageText) : ""}
       </div>
       ${artifacts?.output_dir ? `<div class="path-line">素材目录: ${escapeHtml(artifacts.output_dir)}</div>` : ""}

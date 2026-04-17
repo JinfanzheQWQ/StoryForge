@@ -145,6 +145,55 @@ class VideoSegmentSchema(BaseModel):
     )
 
 
+class SegmentContinuityRepairSchema(BaseModel):
+    segment_id: str = Field(description="需要被修复的目标片段 ID，必须与输入目标一致")
+    repair_summary: str = Field(
+        default="",
+        description="一句话说明本次修复打算解决什么连续性问题",
+    )
+    scene_prompt: str = Field(description="修复后的片段场景总提示词")
+    start_frame_prompt: str = Field(description="修复后的首帧 prompt")
+    mid_frame_prompt: str = Field(
+        default="",
+        description="修复后的中段锚点帧 prompt；若不需要中段帧则置空",
+    )
+    end_frame_prompt: str = Field(description="修复后的尾帧 prompt")
+    start_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="修复后的首帧实际出镜角色",
+    )
+    mid_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="修复后的中段帧实际出镜角色",
+    )
+    end_frame_characters: list[str] = Field(
+        default_factory=list,
+        description="修复后的尾帧实际出镜角色",
+    )
+    narration: str = Field(default="", description="修复后的旁白")
+    dialogue_lines: list[str] = Field(default_factory=list, description="修复后的对白")
+    subtitle_lines: list[str] = Field(default_factory=list, description="修复后的硬字幕")
+    timed_beats: list[str] = Field(default_factory=list, description="修复后的时间节拍")
+    duration_seconds: int = Field(ge=5, le=12, description="修复后的时长，必须在 5-12 秒内")
+    requires_mid_frame: bool = Field(default=False, description="是否保留中段锚点帧")
+    transition_hint: str = Field(default="auto", description="修复后的转场提示")
+    shot_state: ShotStateSchema = Field(
+        default_factory=ShotStateSchema,
+        description="修复后的镜头状态",
+    )
+    continuity_link: ContinuityLinkSchema = Field(
+        default_factory=ContinuityLinkSchema,
+        description="修复后的跨段连续性约束",
+    )
+
+    @model_validator(mode="after")
+    def normalize_mid_frame_fields(self) -> "SegmentContinuityRepairSchema":
+        if not self.requires_mid_frame:
+            self.mid_frame_prompt = ""
+            self.mid_frame_characters = []
+        return self
+
+
 class VideoSceneSchema(BaseModel):
     scene_id: str = Field(description="场景 ID")
     chapter_number: int = Field(description="所属章节")
@@ -238,8 +287,8 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
         scene_anchor = str(scene_payload.get("scene_anchor") or "").strip()
         scene_bible = _normalize_scene_bible(
             scene_payload.get("scene_bible"),
-            fallback_summary=summary,
-            fallback_anchor=scene_anchor,
+            default_summary=summary,
+            scene_anchor_default=scene_anchor,
         )
         involved_characters = _normalize_name_list(scene_payload.get("involved_characters", []))
         scene_master_frame_prompt = str(scene_payload.get("scene_master_frame_prompt") or "").strip()
@@ -263,9 +312,9 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             payload.setdefault("scene_bible", dict(scene_bible))
             payload["shot_state"] = _normalize_shot_state(
                 payload.get("shot_state"),
-                fallback_summary=str(payload.get("summary") or summary),
-                fallback_prompt=str(payload.get("scene_prompt") or ""),
-                fallback_anchor=scene_anchor,
+                default_summary=str(payload.get("summary") or summary),
+                default_prompt=str(payload.get("scene_prompt") or ""),
+                scene_anchor_default=scene_anchor,
             )
             payload["continuity_link"] = _normalize_continuity_link(
                 payload.get("continuity_link"),
@@ -322,14 +371,14 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
         scene_anchor = str(payload.get("scene_anchor") or "").strip()
         scene_bible = _normalize_scene_bible(
             payload.get("scene_bible"),
-            fallback_summary=scene_summary,
-            fallback_anchor=scene_anchor,
+            default_summary=scene_summary,
+            scene_anchor_default=scene_anchor,
         )
         shot_state = _normalize_shot_state(
             payload.get("shot_state"),
-            fallback_summary=scene_summary,
-            fallback_prompt=str(payload.get("scene_prompt") or ""),
-            fallback_anchor=scene_anchor,
+            default_summary=scene_summary,
+            default_prompt=str(payload.get("scene_prompt") or ""),
+            scene_anchor_default=scene_anchor,
         )
         payload["scene_id"] = scene_id
         payload["scene_title"] = scene_title
@@ -425,26 +474,26 @@ def _coerce_mapping(raw: object) -> dict[str, object] | None:
 def _normalize_scene_bible(
     raw_scene_bible: object,
     *,
-    fallback_summary: str,
-    fallback_anchor: str,
+    default_summary: str,
+    scene_anchor_default: str,
 ) -> dict[str, object]:
     payload = _coerce_mapping(raw_scene_bible) or {}
     normalized = SceneBibleSchema.model_validate(payload).model_dump()
     if not _scene_bible_has_signal(normalized):
         normalized["continuity_notes"] = (
-            f"保持 {fallback_summary or '当前场景'} 的空间、光线和氛围连续性。"
+            f"保持 {default_summary or '当前场景'} 的空间、光线和氛围连续性。"
         )
-        if fallback_anchor:
-            normalized["spatial_layout"] = fallback_anchor
+        if scene_anchor_default:
+            normalized["spatial_layout"] = scene_anchor_default
     return normalized
 
 
 def _normalize_shot_state(
     raw_shot_state: object,
     *,
-    fallback_summary: str,
-    fallback_prompt: str,
-    fallback_anchor: str,
+    default_summary: str,
+    default_prompt: str,
+    scene_anchor_default: str,
 ) -> dict[str, object]:
     payload = _coerce_mapping(raw_shot_state) or {}
     normalized = ShotStateSchema.model_validate(payload).model_dump()
@@ -452,14 +501,14 @@ def _normalize_shot_state(
         normalized["framing"] = "以中景或可交代空间关系的镜头建立主体与环境关系。"
         normalized["camera_motion"] = "镜头按当前片段节奏自然推进，除非明确转场，不要突然反向跳轴。"
         normalized["blocking"] = (
-            fallback_anchor
+            scene_anchor_default
             or "保持当前片段角色站位、朝向、进出场路径和相对位置稳定。"
         )
-        normalized["action_progression"] = fallback_summary or fallback_prompt or "保持当前片段的核心动作推进。"
-        normalized["emotion_progression"] = fallback_summary or "情绪沿当前片段自然推进。"
+        normalized["action_progression"] = default_summary or default_prompt or "保持当前片段的核心动作推进。"
+        normalized["emotion_progression"] = default_summary or "情绪沿当前片段自然推进。"
         normalized["prop_continuity"] = "保持服装、持物、手部状态和关键道具连续，不要凭空增删。"
         normalized["screen_direction"] = "保持角色运动方向与视线方向一致，避免突然反轴。"
-        normalized["end_state_lock"] = fallback_summary or fallback_prompt or "保持片段尾部动作与姿态，便于下一段承接。"
+        normalized["end_state_lock"] = default_summary or default_prompt or "保持片段尾部动作与姿态，便于下一段承接。"
     return normalized
 
 

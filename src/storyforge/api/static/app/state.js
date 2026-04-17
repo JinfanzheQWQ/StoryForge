@@ -16,6 +16,7 @@ export const state = {
   selectedProjectId: null,
   selectedProjectTaskId: null,
   projectDetailTab: "overview",
+  runContinuityReviewModes: new Map(),
   artifactsByTaskId: new Map(),
   artifactVersionByTaskId: new Map(),
   galleries: new Map(),

@@ -9,7 +9,6 @@ from pydantic import BaseModel
 from storyforge.agents.base import (
     AgentBackend,
     AgentBackendUnavailableError,
-    DryRunAgentBackend,
     PromptRequest,
     UnavailableAgentBackend,
 )
@@ -25,7 +24,6 @@ from storyforge.domains.novel.contracts import (
     StoryOutline,
 )
 from storyforge.domains.novel.errors import NovelStructuredGenerationError
-from storyforge.domains.novel.fallbacks import NovelFallbackMixin
 from storyforge.domains.novel.prompts import (
     build_architect_system_prompt,
     build_architect_user_prompt,
@@ -81,7 +79,6 @@ EVIDENCE_PREFIX_PATTERN = re.compile(
 
 class NovelGeneratorService(
     NovelRepairMixin,
-    NovelFallbackMixin,
     NovelRuleMixin,
 ):
     def __init__(
@@ -108,7 +105,7 @@ class NovelGeneratorService(
                 user_prompt=build_architect_user_prompt(brief),
                 metadata={"task": "story-architect"},
             ),
-            fallback=self._fallback_architecture(brief),
+            validator=lambda value: self._validate_story_architecture_output(value),
         )
 
         story_draft_set = self._run_structured_agent(
@@ -121,7 +118,10 @@ class NovelGeneratorService(
                 ),
                 metadata={"task": "story-drafter"},
             ),
-            fallback=self._fallback_story_draft_set(brief, architecture),
+            validator=lambda value: self._validate_story_draft_set_output(
+                value,
+                brief=brief,
+            ),
         )
         story_draft_set = self._repair_story_draft_set(
             story_draft_set,
@@ -155,11 +155,11 @@ class NovelGeneratorService(
                 ),
                 metadata={"task": "story-architect-analysis"},
             ),
-            fallback=self._fallback_architecture(brief),
+            validator=lambda value: self._validate_story_architecture_output(value),
         )
 
         # Agreement: LLM-based cast analysis is the primary source of truth
-        # for role structure. Heuristics only remain as repair and fallback backstops.
+        # for role structure. Local rules only do validation-facing normalization.
         cast_analysis = self._run_structured_agent(
             schema=CastAnalysisSchema,
             request=PromptRequest(
@@ -170,11 +170,6 @@ class NovelGeneratorService(
                     story_draft_context=story_draft_context,
                 ),
                 metadata={"task": "cast-analyzer"},
-            ),
-            fallback=self._fallback_cast_analysis(
-                brief,
-                architecture,
-                story_draft_set=story_draft_set,
             ),
             validator=lambda value: self._validate_cast_analysis_output(
                 value,
@@ -218,11 +213,6 @@ class NovelGeneratorService(
                     ),
                 },
             ),
-            fallback=self._fallback_character_roster(
-                brief,
-                architecture,
-                cast_analysis=cast_analysis,
-            ),
             validator=lambda value: self._validate_character_roster_output(
                 value,
                 cast_analysis=cast_analysis,
@@ -248,11 +238,10 @@ class NovelGeneratorService(
                 ),
                 metadata={"task": "chapter-planner"},
             ),
-            fallback=self._fallback_chapter_plan_set(
-                brief,
-                character_roster,
-                cast_analysis=cast_analysis,
-                story_draft_set=story_draft_set,
+            validator=lambda value: self._validate_chapter_plan_set_output(
+                value,
+                brief=brief,
+                character_roster=character_roster,
             ),
         )
         chapter_plan_set = self._repair_chapter_plan_set(
@@ -272,7 +261,7 @@ class NovelGeneratorService(
                 user_prompt=build_editor_user_prompt(brief, outline, chapters),
                 metadata={"task": "editor-review"},
             ),
-            fallback=self._fallback_editorial_review(outline, chapters),
+            validator=lambda value: self._validate_editorial_review_output(value),
         )
 
         return NovelPackage(
@@ -386,13 +375,8 @@ class NovelGeneratorService(
         self,
         schema: type[StructuredModelT],
         request: PromptRequest,
-        fallback: StructuredModelT,
         validator: Callable[[StructuredModelT], StructuredModelT] | None = None,
     ) -> StructuredModelT:
-        # Dry-run remains deterministic for tests and demos. Live LLM execution is
-        # fail-fast: invalid structured output is retried, then raised explicitly.
-        if isinstance(self.backend, DryRunAgentBackend):
-            return fallback
         last_error: Exception | None = None
         for attempt in range(1, self.structured_retry_attempts + 1):
             attempt_request = self._build_retry_request(
@@ -611,6 +595,21 @@ class NovelGeneratorService(
         *,
         story_draft_set: StoryDraftSetSchema,
     ) -> CastAnalysisSchema:
+        missing_fields = [
+            field_name
+            for field_name, value in (
+                ("story_shape", analysis.story_shape),
+                ("cast_strategy", analysis.cast_strategy),
+                ("chapter_participation_rule", analysis.chapter_participation_rule),
+                ("ordering_rule", analysis.ordering_rule),
+            )
+            if not str(value).strip()
+        ]
+        if missing_fields:
+            raise ValueError(
+                "CastAnalysisSchema 缺少必要字段："
+                + "、".join(missing_fields)
+            )
         story_text = self._normalize_story_evidence_text(
             self._story_draft_text(story_draft_set)
         )
@@ -637,6 +636,60 @@ class NovelGeneratorService(
             )
         return analysis
 
+    def _validate_story_architecture_output(
+        self,
+        architecture: StoryArchitectureSchema,
+    ) -> StoryArchitectureSchema:
+        missing_fields = [
+            field_name
+            for field_name, value in (
+                ("title", architecture.title),
+                ("premise", architecture.premise),
+                ("theme", architecture.theme),
+                ("setting", architecture.setting),
+                ("story_engine", architecture.story_engine),
+            )
+            if not str(value).strip()
+        ]
+        if missing_fields:
+            raise ValueError(
+                "StoryArchitectureSchema 缺少必要字段："
+                + "、".join(missing_fields)
+            )
+        if not [item.strip() for item in architecture.visual_motifs if item.strip()]:
+            raise ValueError("StoryArchitectureSchema.visual_motifs 不能为空。")
+        if not [item.strip() for item in architecture.tone_notes if item.strip()]:
+            raise ValueError("StoryArchitectureSchema.tone_notes 不能为空。")
+        return architecture
+
+    def _validate_story_draft_set_output(
+        self,
+        story_draft_set: StoryDraftSetSchema,
+        *,
+        brief: StoryBrief,
+    ) -> StoryDraftSetSchema:
+        if len(story_draft_set.chapters) != brief.chapter_count:
+            raise ValueError(
+                "StoryDraftSetSchema 章节数量必须与 brief.chapter_count 一致。"
+                f"期望 {brief.chapter_count}，实际 {len(story_draft_set.chapters)}。"
+            )
+        for index, chapter in enumerate(story_draft_set.chapters, start=1):
+            missing_fields = [
+                field_name
+                for field_name, value in (
+                    ("title", chapter.title),
+                    ("summary", chapter.summary),
+                    ("markdown", chapter.markdown),
+                )
+                if not str(value).strip()
+            ]
+            if missing_fields:
+                raise ValueError(
+                    f"story_drafter 第 {index} 章缺少必要字段："
+                    + "、".join(missing_fields)
+                )
+        return story_draft_set
+
     def _validate_character_roster_output(
         self,
         roster: CharacterRosterSchema,
@@ -660,7 +713,79 @@ class NovelGeneratorService(
                 "角色 cast_slot_id 必须与上游 slots 完全一致且顺序一致。"
                 f"期望：{expected_slots}；实际：{actual_slots}。"
             )
+        for item in roster.characters:
+            missing_fields = [
+                field_name
+                for field_name, value in (
+                    ("name", item.name),
+                    ("role", item.role),
+                    ("gender", item.gender),
+                    ("desire", item.desire),
+                    ("conflict", item.conflict),
+                    ("arc", item.arc),
+                    ("image_prompt", item.image_prompt),
+                )
+                if not str(value).strip()
+            ]
+            if missing_fields:
+                raise ValueError(
+                    f"角色 {item.cast_slot_id or item.name or 'unknown'} 缺少必要字段："
+                    + "、".join(missing_fields)
+                )
         return roster
+
+    def _validate_chapter_plan_set_output(
+        self,
+        chapter_plan_set: ChapterPlanSetSchema,
+        *,
+        brief: StoryBrief,
+        character_roster: CharacterRosterSchema,
+    ) -> ChapterPlanSetSchema:
+        canonical_names = [item.name for item in character_roster.characters]
+        role_map = {item.name: item.role for item in character_roster.characters}
+        if len(chapter_plan_set.chapters) != brief.chapter_count:
+            raise ValueError(
+                "ChapterPlanSetSchema 章节数量必须与 brief.chapter_count 一致。"
+                f"期望 {brief.chapter_count}，实际 {len(chapter_plan_set.chapters)}。"
+            )
+        for index, chapter in enumerate(chapter_plan_set.chapters, start=1):
+            missing_fields = [
+                field_name
+                for field_name, value in (
+                    ("title", chapter.title),
+                    ("goal", chapter.goal),
+                    ("summary", chapter.summary),
+                    ("key_conflict", chapter.key_conflict),
+                    ("cliffhanger", chapter.cliffhanger),
+                )
+                if not str(value).strip()
+            ]
+            if missing_fields:
+                raise ValueError(
+                    f"chapter_planner 第 {index} 章缺少必要字段："
+                    + "、".join(missing_fields)
+                )
+            beats = [item.strip() for item in chapter.beats if item.strip()]
+            if not beats:
+                raise ValueError(f"chapter_planner 第 {index} 章缺少有效 beats。")
+            featured = [
+                self._resolve_roster_name(raw_name, canonical_names, role_map)
+                for raw_name in chapter.featured_characters
+            ]
+            featured = [name for name in featured if name]
+            if not featured:
+                raise ValueError(f"chapter_planner 第 {index} 章缺少可映射到角色表的 featured_characters。")
+        return chapter_plan_set
+
+    def _validate_editorial_review_output(
+        self,
+        review: EditorialReviewSchema,
+    ) -> EditorialReviewSchema:
+        if not review.overall_verdict.strip():
+            raise ValueError("EditorialReviewSchema.overall_verdict 不能为空。")
+        if not [item.strip() for item in review.revision_notes if item.strip()]:
+            raise ValueError("EditorialReviewSchema.revision_notes 不能为空。")
+        return review
 
     def _normalize_story_evidence_text(self, text: str) -> str:
         return "".join(text.split())

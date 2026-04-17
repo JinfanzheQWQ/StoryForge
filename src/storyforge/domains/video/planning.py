@@ -156,7 +156,7 @@ class VideoPlanningMixin:
         "答题卡",
     ]
 
-    def _fallback_character_visual_bible(
+    def _build_default_character_visual_bible(
         self,
         novel_package: NovelPackage,
     ) -> CharacterVisualBibleSchema:
@@ -183,7 +183,7 @@ class VideoPlanningMixin:
             }
         )
 
-    def _fallback_segment_plan(
+    def _build_default_segment_plan(
         self,
         novel_package: NovelPackage,
         visual_bible: CharacterVisualBibleSchema,
@@ -202,7 +202,7 @@ class VideoPlanningMixin:
                     f"章节 {chapter.number} 的同一场景基线，"
                     f"重点保持 {beat} 的地点、光线与角色空间关系。"
                 )
-                scene_bible = self._build_fallback_scene_bible(
+                scene_bible = self._derive_scene_bible_defaults(
                     novel_package=novel_package,
                     chapter_number=chapter.number,
                     scene_title=scene_title,
@@ -210,7 +210,7 @@ class VideoPlanningMixin:
                     scene_anchor=scene_anchor,
                     focus_characters=focus_characters,
                 )
-                shot_state = self._build_fallback_shot_state(
+                shot_state = self._derive_shot_state_defaults(
                     summary=beat,
                     scene_anchor=scene_anchor,
                     scene_bible=scene_bible,
@@ -221,13 +221,8 @@ class VideoPlanningMixin:
                     for name in focus_characters
                     if name in references and references[name].color_palette
                 )
-                narration = (
-                    f"{chapter.summary} 当前片段聚焦：{beat}。"
-                    f"结尾要保留 {chapter.cliffhanger} 的余波。"
-                )
-                dialogue_lines = [
-                    f"{focus_characters[0]}（压低声音）：“{chapter.key_conflict}”"
-                ] if focus_characters else []
+                narration = f"{beat}。"
+                dialogue_lines: list[str] = []
                 sound_effects = [
                     "环境底噪保持低频压迫感",
                     f"突出 {'、'.join(novel_package.outline.visual_motifs[:2])} 对应的环境音",
@@ -318,7 +313,7 @@ class VideoPlanningMixin:
                 )
         return VideoSegmentPlanSchema.model_validate({"scenes": scenes})
 
-    def _build_fallback_scene_bible(
+    def _derive_scene_bible_defaults(
         self,
         *,
         novel_package: NovelPackage,
@@ -372,7 +367,7 @@ class VideoPlanningMixin:
             ),
         }
 
-    def _build_fallback_shot_state(
+    def _derive_shot_state_defaults(
         self,
         *,
         summary: str,
@@ -928,7 +923,7 @@ class VideoPlanningMixin:
             dialogue_lines = dialogue_chunks[index - 1]
             narration = (
                 narration_chunks[index - 1]
-                or self._fallback_subsegment_narration(segment.summary, index, split_count)
+                or self._build_default_subsegment_narration(segment.summary, index, split_count)
             )
             timed_beats_chunk = self._retime_beat_descriptions(beat_descriptions, clip_duration)
             requires_mid_frame = self._should_require_mid_frame(
@@ -949,7 +944,7 @@ class VideoPlanningMixin:
                     update={
                         "segment_id": f"{segment.segment_id}_{index:02d}",
                         "title": f"{segment.title} / 第{index}段",
-                        "summary": f"{segment.summary} 当前小段聚焦：{focus_summary}",
+                        "summary": focus_summary,
                         "narration": narration,
                         "dialogue_lines": dialogue_lines,
                         "subtitle_lines": subtitle_lines,
@@ -961,24 +956,21 @@ class VideoPlanningMixin:
                         "sound_effects": sound_effect_chunks[index - 1] or segment.sound_effects[:1],
                         "timed_beats": timed_beats_chunk,
                         "scene_prompt": (
-                            f"{segment.scene_prompt}，同一剧情片段的第{index}/{split_count}段，"
-                            f"本段重点：{focus_summary}"
+                            f"{segment.scene_prompt} 这一小段重点呈现：{focus_summary}"
                         ),
                         "start_frame_prompt": (
-                            f"{segment.start_frame_prompt} 当前子片段：第{index}/{split_count}段，"
-                            f"开场重点：{beat_descriptions[0]}"
+                            f"{segment.start_frame_prompt} 开场重点：{beat_descriptions[0]}"
                         ),
                         "mid_frame_prompt": (
                             (
                                 f"{segment.mid_frame_prompt or self._build_default_mid_frame_prompt(segment, focus_summary)} "
-                                f"当前子片段：第{index}/{split_count}段，中段重点：{focus_summary}"
+                                f"中段重点：{focus_summary}"
                             )
                             if requires_mid_frame
                             else ""
                         ),
                         "end_frame_prompt": (
-                            f"{segment.end_frame_prompt} 当前子片段：第{index}/{split_count}段，"
-                            f"收束重点：{beat_descriptions[-1]}"
+                            f"{segment.end_frame_prompt} 收束重点：{beat_descriptions[-1]}"
                         ),
                         "duration_seconds": clip_duration,
                         "requires_mid_frame": requires_mid_frame,

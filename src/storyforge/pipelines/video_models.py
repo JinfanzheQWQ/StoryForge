@@ -110,3 +110,31 @@ class VideoPlanningArtifacts:
     manifest_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
+
+
+@dataclass(slots=True)
+class VideoPlanningPaths:
+    output_dir: Path
+    character_bible_path: Path
+    character_images_path: Path
+    scene_plan_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    manifest_path: Path
+
+
+@dataclass(slots=True)
+class ContinuityRepairResult:
+    output_dir: Path
+    character_bible_path: Path
+    character_images_path: Path
+    scene_plan_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    manifest_path: Path
+    continuity_report_path: Path
+    repair_report_path: Path
+    project_package: VideoProjectPackage
+    manifest: SeedanceManifest
+    segment_id: str
+    repair_summary: str

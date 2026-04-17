@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from storyforge.application.task_support import (
     build_requested_image_error,
@@ -12,6 +12,7 @@ from storyforge.application.task_support import (
     load_story_source,
     persist_task_progress,
     propagate_shared_result,
+    resolve_continuity_review_mode,
     resolve_llm_selection,
     resolve_output_dir,
     resolve_pipeline_root_task_id,
@@ -27,6 +28,7 @@ from storyforge.pipelines.story_pipeline import (
 from storyforge.pipelines.video_pipeline import (
     run_character_image_pipeline,
     run_image_pipeline,
+    run_segment_continuity_repair_pipeline,
     run_video_merge_pipeline,
     run_scene_image_pipeline,
     run_video_pipeline,
@@ -41,6 +43,7 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
     brief = StoryBrief.from_dict(task.payload["brief"])
     use_llm = bool(task.payload.get("use_llm", True))
     llm_provider, llm_model = resolve_llm_selection(task)
+    continuity_review_mode = resolve_continuity_review_mode(task)
     output_root = _build_story_output_root(context, task)
     story_result = run_story_generation_pipeline(
         brief=brief,
@@ -62,6 +65,7 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
         "pipeline_root_task_id": task.task_id,
         "source_task_id": task.task_id,
         "artifact_revision": utc_now(),
+        "continuity_review_mode": continuity_review_mode,
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
     return response
@@ -73,6 +77,7 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
     story_source = load_story_source(source_task)
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     partial_response = {
         "project_id": task.project_id,
@@ -85,6 +90,7 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
         "pipeline_root_task_id": pipeline_root_task_id,
         "source_task_id": str(task.payload["source_task_id"]),
         "artifact_revision": utc_now(),
+        "continuity_review_mode": continuity_review_mode,
     }
     persist_task_progress(context, task, partial_response)
 
@@ -95,6 +101,7 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
         use_llm=use_llm,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        continuity_review_mode=continuity_review_mode,
         output_root=output_dir,
     )
     response = {
@@ -109,14 +116,15 @@ def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> 
         "scene_images_path": str(analysis_result.scene_images_path),
         "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
         "pipeline_stage": "story_analysis_completed",
-        "artifact_revision": utc_now(),
     }
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    propagate_shared_result(
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
         context,
-        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
         result=response,
-        exclude_task_id=task.task_id,
+        mode="propagate",
     )
     return response
 
@@ -126,16 +134,18 @@ def run_images_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     output_dir = resolve_output_dir(source_task)
     novel_package = load_novel_package(source_task)
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
-    partial_response = _build_stage_response(
-        task=task,
+    partial_response = _start_stage_task(
+        context,
+        task,
         source_task=source_task,
         output_dir=output_dir,
         task_stage="images",
         pipeline_stage="image_generation_started",
         pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
     )
-    persist_task_progress(context, task, partial_response)
 
     image_result = run_image_pipeline(
         novel_package=novel_package,
@@ -157,14 +167,15 @@ def run_images_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "seedream_execution_path": str(image_result.seedream_execution_path),
         "seedance_manifest_path": str(image_result.manifest_path),
         "pipeline_stage": "images_completed",
-        "artifact_revision": utc_now(),
     }
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    propagate_shared_result(
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
         context,
-        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
         result=response,
-        exclude_task_id=task.task_id,
+        mode="propagate",
     )
     image_error = build_requested_image_error(image_result.seedream_execution)
     if image_error:
@@ -177,16 +188,18 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
     output_dir = resolve_output_dir(source_task)
     novel_package = load_novel_package(source_task)
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
-    partial_response = _build_stage_response(
-        task=task,
+    partial_response = _start_stage_task(
+        context,
+        task,
         source_task=source_task,
         output_dir=output_dir,
         task_stage="characters",
         pipeline_stage="character_generation_started",
         pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
     )
-    persist_task_progress(context, task, partial_response)
 
     character_result = run_character_image_pipeline(
         novel_package=novel_package,
@@ -209,14 +222,15 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         "character_seedream_execution_path": str(character_result.character_seedream_execution_path),
         "seedream_execution_path": str(character_result.seedream_execution_path),
         "pipeline_stage": "characters_completed",
-        "artifact_revision": utc_now(),
     }
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    propagate_shared_result(
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
         context,
-        task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
         result=response,
-        exclude_task_id=task.task_id,
+        mode="propagate",
     )
     image_error = build_requested_image_error(character_result.seedream_execution)
     if image_error:
@@ -228,18 +242,25 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    llm_provider, llm_model = resolve_llm_selection(task, source_task)
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
     master_only = bool(task.payload.get("master_only", False))
-    partial_response = _build_stage_response(
-        task=task,
+    partial_response = _start_stage_task(
+        context,
+        task,
         source_task=source_task,
         output_dir=output_dir,
         task_stage="scene_master_frames" if master_only else "scenes",
-        pipeline_stage="scene_master_frame_generation_started" if master_only else "scene_generation_started",
+        pipeline_stage=(
+            "scene_master_frame_generation_started"
+            if master_only
+            else "scene_generation_started"
+        ),
         pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
     )
-    persist_task_progress(context, task, partial_response)
 
     scene_result = run_scene_image_pipeline(
         config=context.config,
@@ -249,6 +270,9 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         segment_id=segment_id,
         scene_id=scene_id,
         master_only=master_only,
+        continuity_review_mode=continuity_review_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
     response = {
         **partial_response,
@@ -264,23 +288,16 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "scene_seedream_execution_path": str(scene_result.scene_seedream_execution_path),
         "seedream_execution_path": str(scene_result.seedream_execution_path),
         "pipeline_stage": "scene_master_frame_completed" if master_only else "scenes_completed",
-        "artifact_revision": utc_now(),
     }
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    if segment_id:
-        refresh_artifact_revision_for_tasks(
-            context,
-            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-            artifact_revision=str(response["artifact_revision"]),
-            exclude_task_id=task.task_id,
-        )
-    else:
-        propagate_shared_result(
-            context,
-            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-            result=response,
-            exclude_task_id=task.task_id,
-        )
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
+        context,
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
+        result=response,
+        mode="refresh" if segment_id else "propagate",
+    )
     scene_error = build_requested_image_error(scene_result.seedream_execution)
     if scene_error:
         raise TaskExecutionError(scene_error, result=response)
@@ -291,23 +308,29 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     source_task = resolve_source_task(context, task)
     output_dir = resolve_output_dir(source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    llm_provider, llm_model = resolve_llm_selection(task, source_task)
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     merge_only = bool(task.payload.get("merge_only", False))
-    partial_response = _build_stage_response(
-        task=task,
+    partial_response = _start_stage_task(
+        context,
+        task,
         source_task=source_task,
         output_dir=output_dir,
         task_stage="video_merge" if merge_only else "videos",
         pipeline_stage="video_merge_started" if merge_only else "video_render_started",
         pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
     )
-    persist_task_progress(context, task, partial_response)
 
     if merge_only:
         video_result = run_video_merge_pipeline(
             config=context.config,
             project_root=context.project_root,
             output_root=output_dir,
+            continuity_review_mode=continuity_review_mode,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
         )
         response = {
             **partial_response,
@@ -320,7 +343,6 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
             "merge_only": True,
             "merged_clip_count": video_result.merged_clip_count,
             "skipped_clip_count": video_result.skipped_clip_count,
-            "artifact_revision": utc_now(),
         }
     else:
         video_result = run_video_render_pipeline(
@@ -329,6 +351,9 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
             output_root=output_dir,
             submit_seedance=True,
             segment_id=segment_id,
+            continuity_review_mode=continuity_review_mode,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
         )
         response = {
             **partial_response,
@@ -342,25 +367,18 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
             ),
             "pipeline_stage": "video_completed",
             "seedance_submitted": video_result.seedance_execution.submitted,
-            "artifact_revision": utc_now(),
         }
     if merge_only:
         response["merge_only"] = True
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    if segment_id:
-        refresh_artifact_revision_for_tasks(
-            context,
-            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-            artifact_revision=str(response["artifact_revision"]),
-            exclude_task_id=task.task_id,
-        )
-    else:
-        propagate_shared_result(
-            context,
-            task_ids={str(task.payload["source_task_id"]), pipeline_root_task_id},
-            result=response,
-            exclude_task_id=task.task_id,
-        )
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
+        context,
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
+        result=response,
+        mode="refresh" if segment_id else "propagate",
+    )
     if not merge_only:
         video_error = build_requested_video_error(video_result.seedance_execution)
         if video_error:
@@ -368,10 +386,115 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     return response
 
 
+def run_continuity_repair_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
+    source_task = resolve_source_task(context, task)
+    output_dir = resolve_output_dir(source_task)
+    pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    llm_provider, llm_model = resolve_llm_selection(task, source_task)
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    segment_id = str(task.payload.get("segment_id", "")).strip()
+    if not segment_id:
+        raise ValueError("segment_id is required for continuity repair.")
+
+    partial_response = _start_stage_task(
+        context,
+        task,
+        source_task=source_task,
+        output_dir=output_dir,
+        task_stage="continuity_repair",
+        pipeline_stage="continuity_repair_started",
+        pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
+    )
+
+    repair_result = run_segment_continuity_repair_pipeline(
+        config=context.config,
+        project_root=context.project_root,
+        output_root=output_dir,
+        segment_id=segment_id,
+        use_llm=True,
+        continuity_review_mode=continuity_review_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
+    _persist_stage_update(
+        context,
+        task,
+        partial_response,
+        story_title=repair_result.project_package.title,
+        character_bible_path=str(repair_result.character_bible_path),
+        character_images_path=str(repair_result.character_images_path),
+        scene_plan_path=str(repair_result.scene_plan_path),
+        segment_plan_path=str(repair_result.segment_plan_path),
+        scene_images_path=str(repair_result.scene_images_path),
+        seedance_manifest_path=str(repair_result.manifest_path),
+        continuity_report_path=str(repair_result.continuity_report_path),
+        repair_report_path=str(repair_result.repair_report_path),
+        repair_summary=repair_result.repair_summary,
+        pipeline_stage="continuity_repair_plan_completed",
+    )
+
+    scene_result = run_scene_image_pipeline(
+        config=context.config,
+        project_root=context.project_root,
+        output_root=output_dir,
+        submit_scenes=True,
+        segment_id=segment_id,
+        continuity_review_mode=continuity_review_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
+    _persist_stage_update(
+        context,
+        task,
+        partial_response,
+        scene_seedream_execution_path=str(scene_result.scene_seedream_execution_path),
+        seedream_execution_path=str(scene_result.seedream_execution_path),
+        pipeline_stage="continuity_repair_scene_completed",
+    )
+    scene_error = build_requested_image_error(scene_result.seedream_execution)
+    if scene_error:
+        raise TaskExecutionError(scene_error, result=dict(partial_response))
+
+    video_result = run_video_render_pipeline(
+        config=context.config,
+        project_root=context.project_root,
+        output_root=output_dir,
+        submit_seedance=True,
+        segment_id=segment_id,
+        continuity_review_mode=continuity_review_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+    )
+    response = {
+        **partial_response,
+        "seedance_execution_path": str(video_result.seedance_execution_path),
+        "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
+        "full_story_path": (
+            str(video_result.full_story_path) if video_result.full_story_path else None
+        ),
+        "pipeline_stage": "continuity_repair_completed",
+    }
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
+        context,
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
+        result=response,
+        mode="refresh",
+    )
+    video_error = build_requested_video_error(video_result.seedance_execution)
+    if video_error:
+        raise TaskExecutionError(video_error, result=response)
+    return response
+
+
 def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
     brief = StoryBrief.from_dict(task.payload["brief"])
     use_llm = bool(task.payload.get("use_llm", True))
     llm_provider, llm_model = resolve_llm_selection(task)
+    continuity_review_mode = resolve_continuity_review_mode(task)
     submit_seedance = bool(task.payload.get("submit_seedance", False))
     output_root = _build_story_output_root(context, task)
 
@@ -395,6 +518,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         "pipeline_root_task_id": task.task_id,
         "source_task_id": task.task_id,
         "artifact_revision": utc_now(),
+        "continuity_review_mode": continuity_review_mode,
     }
     persist_task_progress(context, task, partial_response)
 
@@ -405,6 +529,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         use_llm=use_llm,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        continuity_review_mode=continuity_review_mode,
         output_root=story_result.output_dir,
     )
     partial_response.update(
@@ -420,6 +545,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
             "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
             "pipeline_stage": "story_analysis_completed",
             "artifact_revision": utc_now(),
+            "continuity_review_mode": continuity_review_mode,
         }
     )
     persist_task_progress(context, task, partial_response)
@@ -431,6 +557,9 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         output_root=story_result.output_dir,
         use_llm=use_llm,
         submit_seedance=submit_seedance,
+        continuity_review_mode=continuity_review_mode,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
 
     response: dict[str, object] = {
@@ -459,6 +588,7 @@ def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> d
         "source_task_id": task.task_id,
         "artifact_revision": utc_now(),
         "seedance_submitted": video_result.seedance_execution.submitted,
+        "continuity_review_mode": continuity_review_mode,
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
     media_error = build_requested_media_error(
@@ -479,6 +609,86 @@ def _build_story_output_root(context: TaskExecutionContext, task: QueuedTask) ->
         / task.project_id
         / "runs"
         / task.task_id
+    )
+
+
+def _start_stage_task(
+    context: TaskExecutionContext,
+    task: QueuedTask,
+    *,
+    source_task,
+    output_dir: Path,
+    task_stage: str,
+    pipeline_stage: str,
+    pipeline_root_task_id: str,
+    continuity_review_mode: str,
+) -> dict[str, object]:
+    response = _build_stage_response(
+        task=task,
+        source_task=source_task,
+        output_dir=output_dir,
+        task_stage=task_stage,
+        pipeline_stage=pipeline_stage,
+        pipeline_root_task_id=pipeline_root_task_id,
+    )
+    response["continuity_review_mode"] = continuity_review_mode
+    persist_task_progress(context, task, response)
+    return response
+
+
+def _persist_stage_update(
+    context: TaskExecutionContext,
+    task: QueuedTask,
+    response: dict[str, object],
+    **updates: object,
+) -> None:
+    response.update(updates)
+    response["artifact_revision"] = utc_now()
+    persist_task_progress(context, task, response)
+
+
+def _build_completed_stage_response(
+    response: dict[str, object],
+    **updates: object,
+) -> dict[str, object]:
+    completed_response = {
+        **response,
+        **updates,
+    }
+    completed_response["artifact_revision"] = utc_now()
+    return completed_response
+
+
+def _store_stage_result(
+    context: TaskExecutionContext,
+    task: QueuedTask,
+    result: dict[str, object],
+) -> None:
+    context.project_store.mark_task_result(task.project_id, task.task_id, result)
+
+
+def _sync_stage_result(
+    context: TaskExecutionContext,
+    *,
+    task: QueuedTask,
+    pipeline_root_task_id: str,
+    result: dict[str, object],
+    mode: Literal["propagate", "refresh"],
+) -> None:
+    task_ids = {str(task.payload["source_task_id"]), pipeline_root_task_id}
+    if mode == "refresh":
+        refresh_artifact_revision_for_tasks(
+            context,
+            task_ids=task_ids,
+            artifact_revision=str(result["artifact_revision"]),
+            exclude_task_id=task.task_id,
+        )
+        return
+    propagate_shared_result(
+        context,
+        task_ids=task_ids,
+        result=result,
+        exclude_task_id=task.task_id,
     )
 
 

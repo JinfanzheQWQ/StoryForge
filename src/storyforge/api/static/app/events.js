@@ -25,6 +25,11 @@ import {
   updateStoryTitleDraft,
 } from "./story_source.js";
 import { state } from "./state.js";
+import {
+  getTaskRun,
+  normalizeContinuityReviewMode,
+  resolveRunContinuityReviewMode,
+} from "./utils.js";
 
 function handlePageTabClick(event) {
   const button = event.target.closest("[data-page]");
@@ -117,14 +122,26 @@ async function submitStageFromButton(
   }
 }
 
+function resolveContinuityReviewModeForSourceTask(sourceTaskId) {
+  const run = getTaskRun(sourceTaskId);
+  return resolveRunContinuityReviewMode(run);
+}
+
+function withContinuityReviewMode(sourceTaskId, payload) {
+  return {
+    ...payload,
+    continuity_review_mode: resolveContinuityReviewModeForSourceTask(sourceTaskId),
+  };
+}
+
 async function submitStoryAnalysisFromButton(button) {
   await submitStageFromButton(
     button,
     "/v1/projects/story-analysis",
-    {
+    withContinuityReviewMode(button.dataset.generateStoryAnalysis, {
       project_id: button.dataset.storySourceProject,
       source_task_id: button.dataset.generateStoryAnalysis,
-    },
+    }),
     "结构化任务已创建",
     "结构化任务提交失败。",
   );
@@ -170,6 +187,7 @@ function clearDeletedProjectState(projectId) {
   deletedTaskIds.forEach((taskId) => {
     state.artifactsByTaskId.delete(taskId);
     state.artifactVersionByTaskId.delete(taskId);
+    state.runContinuityReviewModes.delete(taskId);
   });
   state.projects = state.projects.filter((project) => project.project_id !== projectId);
   state.tasks = state.tasks.filter((task) => task.project_id !== projectId);
@@ -259,10 +277,10 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       characterButton,
       "/v1/projects/characters",
-      {
+      withContinuityReviewMode(characterButton.dataset.generateCharacters, {
         project_id: state.selectedProjectId,
         source_task_id: characterButton.dataset.generateCharacters,
-      },
+      }),
       "角色图任务已创建",
       "角色图任务提交失败。",
     );
@@ -274,10 +292,10 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       sceneButton,
       "/v1/projects/scenes",
-      {
+      withContinuityReviewMode(sceneButton.dataset.generateScenes, {
         project_id: state.selectedProjectId,
         source_task_id: sceneButton.dataset.generateScenes,
-      },
+      }),
       "场景图任务已创建",
       "场景图任务提交失败。",
     );
@@ -289,11 +307,11 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       sceneSegmentButton,
       "/v1/projects/scenes",
-      {
+      withContinuityReviewMode(sceneSegmentButton.dataset.sourceTask, {
         project_id: sceneSegmentButton.dataset.projectId || state.selectedProjectId,
         source_task_id: sceneSegmentButton.dataset.sourceTask,
         segment_id: sceneSegmentButton.dataset.generateSceneSegment,
-      },
+      }),
       "片段场景图任务已创建",
       "片段场景图任务提交失败。",
     );
@@ -305,12 +323,12 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       sceneMasterButton,
       "/v1/projects/scenes",
-      {
+      withContinuityReviewMode(sceneMasterButton.dataset.sourceTask, {
         project_id: sceneMasterButton.dataset.projectId || state.selectedProjectId,
         source_task_id: sceneMasterButton.dataset.sourceTask,
         scene_id: sceneMasterButton.dataset.generateSceneMaster,
         master_only: true,
-      },
+      }),
       "场景母图任务已创建",
       "场景母图任务提交失败。",
     );
@@ -322,10 +340,10 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       videoButton,
       "/v1/projects/videos",
-      {
+      withContinuityReviewMode(videoButton.dataset.generateVideos, {
         project_id: state.selectedProjectId,
         source_task_id: videoButton.dataset.generateVideos,
-      },
+      }),
       "视频任务已创建",
       "视频任务提交失败。",
     );
@@ -337,13 +355,29 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       videoSegmentButton,
       "/v1/projects/videos",
-      {
+      withContinuityReviewMode(videoSegmentButton.dataset.sourceTask, {
         project_id: videoSegmentButton.dataset.projectId || state.selectedProjectId,
         source_task_id: videoSegmentButton.dataset.sourceTask,
         segment_id: videoSegmentButton.dataset.generateVideoSegment,
-      },
+      }),
       "片段视频任务已创建",
       "片段视频任务提交失败。",
+    );
+    return;
+  }
+
+  const repairSegmentButton = event.target.closest("[data-auto-repair-segment]");
+  if (repairSegmentButton) {
+    await submitStageFromButton(
+      repairSegmentButton,
+      "/v1/projects/continuity-repair",
+      withContinuityReviewMode(repairSegmentButton.dataset.sourceTask, {
+        project_id: repairSegmentButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: repairSegmentButton.dataset.sourceTask,
+        segment_id: repairSegmentButton.dataset.autoRepairSegment,
+      }),
+      "智能修复任务已创建",
+      "智能修复任务提交失败。",
     );
     return;
   }
@@ -353,11 +387,11 @@ async function handleProjectDetailClick(event) {
     await submitStageFromButton(
       mergeVideosButton,
       "/v1/projects/videos",
-      {
+      withContinuityReviewMode(mergeVideosButton.dataset.mergeVideos, {
         project_id: mergeVideosButton.dataset.projectId || state.selectedProjectId,
         source_task_id: mergeVideosButton.dataset.mergeVideos,
         merge_only: true,
-      },
+      }),
       "视频合并任务已创建",
       "视频合并任务提交失败。",
     );
@@ -372,6 +406,19 @@ async function handleProjectDetailClick(event) {
 
 function handleStorySourceInput(event) {
   const container = elements.projectDetailView;
+
+  const continuityModeSelect = event.target.closest("[data-run-continuity-review-mode]");
+  if (continuityModeSelect) {
+    const runRootTaskId = continuityModeSelect.dataset.runContinuityReviewMode;
+    if (runRootTaskId) {
+      state.runContinuityReviewModes.set(
+        runRootTaskId,
+        normalizeContinuityReviewMode(continuityModeSelect.value),
+      );
+      elements.pollIndicator.textContent = "已更新当前版本的 V2 连续性软审校模式。";
+    }
+    return;
+  }
 
   const titleInput = event.target.closest("[data-story-title-input]");
   if (titleInput) {
@@ -479,6 +526,9 @@ export function bindEvents() {
     void handleProjectDetailClick(event);
   });
   elements.projectDetailView.addEventListener("input", (event) => {
+    handleStorySourceInput(event);
+  });
+  elements.projectDetailView.addEventListener("change", (event) => {
     handleStorySourceInput(event);
   });
   if (elements.refreshButton) {

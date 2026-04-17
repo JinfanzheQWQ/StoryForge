@@ -53,19 +53,22 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - 小说链路改为 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
 - Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，旧的结构化结果和媒体资产会被标记为需要重做
 - Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，当前内置 `DeepSeek` 与 `ChatGPT 5.4`
-- 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做 fallback / repair
+- 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做规则校验、归一化与轻量 repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
 - LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；不再用 `create_agent + ToolStrategy` 跑小说结构化输出
 - 结构化阶段具备后端幂等保护：同一故事正文修订已有 queued / running / completed 结构化任务时，不会重复创建任务
-- 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 DeepSeek 配置，非 LLM 模式会直接报错
+- 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 LLM provider 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - 视频规划已拆成场景主规划与执行索引两层：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 保留给逐段执行和重试
+- 视频 segment 规划在 live LLM 模式下同样采用 fail-fast：若返回分析模板、伪分镜或空结构，系统会重试并最终显式失败，不再静默写出坏掉的 `scene_plan.json`
 - Seedance manifest 标题继承真实小说标题，旧产物重载时会优先从 `novel_package.json` / `story_source.json` 恢复标题
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
 - 场景一致性链路：`scene_bible` -> 场景图 prompt -> Seedance 视频 prompt
 - 场景母图链路：`scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
 - 镜头连续性链路：`shot_state` -> 场景图 prompt -> Seedance 视频 prompt
 - 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 场景图 prompt -> Seedance 视频 prompt
+- 连续性审校链路：`continuity_report.json` 同时汇总 `V1` 规则校验与可选 `V2` LLM 软审校，支持 `off / auto / on`
+- 连续性修复链路：时间线高风险片段可直接触发 `project.continuity_repair`，由 LLM 只重写目标 segment 合同，再局部重跑该段场景图与视频
 - 项目详情时间线按 `scene` 分组展示多个 `segment`，同场景连续片段会优先按 `scene_id` 复用前一段尾帧
 - 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
@@ -199,7 +202,7 @@ uv run storyforge api serve
 uv run storyforge init
 ```
 
-运行 demo brief。该命令同样需要真实 DeepSeek 配置：
+运行 demo brief。该命令同样需要真实 LLM provider 配置：
 
 ```bash
 uv run storyforge pipeline demo
@@ -246,6 +249,7 @@ uv run storyforge video plan \
 
 - `llm_provider`: `deepseek` 或 `openai`
 - `llm_model`: 例如 `deepseek-chat` 或 `gpt-5.4`
+- `continuity_review_mode`: `off`、`auto` 或 `on`
 完整字段、请求示例和阶段接口说明见：[docs/api.md](docs/api.md)
 
 ## 输出产物

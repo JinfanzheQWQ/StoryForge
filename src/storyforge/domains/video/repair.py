@@ -23,10 +23,6 @@ class VideoRepairMixin:
         canonical_names = [item.name for item in canonical_characters]
         role_map = {item.name: item.role for item in canonical_characters}
         gender_map = {item.name: item.gender for item in canonical_characters}
-        fallback_map = {
-            item.name: item
-            for item in self._fallback_character_visual_bible(novel_package).characters
-        }
         repaired: dict[str, object] = {}
 
         for item in visual_bible.characters:
@@ -53,9 +49,6 @@ class VideoRepairMixin:
                 }
             )
             repaired[resolved_name] = repaired_item
-
-        for name in canonical_names:
-            repaired.setdefault(name, fallback_map[name])
 
         return CharacterVisualBibleSchema(
             characters=[repaired[name] for name in canonical_names]
@@ -121,28 +114,12 @@ class VideoRepairMixin:
         novel_package: NovelPackage,
         visual_bible: CharacterVisualBibleSchema,
     ) -> VideoSegmentPlanSchema:
-        fallback_plan = self._fallback_segment_plan(novel_package, visual_bible)
-        fallback_by_chapter = self._group_segments_by_chapter(fallback_plan.segments)
         valid_chapters = {chapter.number for chapter in novel_package.outline.chapters}
-        original_by_chapter = self._group_segments_by_chapter(
-            [
-                item
-                for item in plan.segments
-                if item.chapter_number in valid_chapters
-            ]
-        )
-
-        repaired_segments: list[VideoSegmentSchema] = []
-        for chapter in novel_package.outline.chapters:
-            chosen = list(original_by_chapter.get(chapter.number, []))
-            if chosen:
-                repaired_segments.extend(chosen)
-                continue
-
-            fallback_segments = fallback_by_chapter.get(chapter.number, [])
-            if fallback_segments:
-                repaired_segments.append(fallback_segments[0])
-
+        repaired_segments = [
+            item
+            for item in plan.segments
+            if item.chapter_number in valid_chapters
+        ]
         return VideoSegmentPlanSchema(segments=repaired_segments)
 
     def _repair_scene_bibles(
@@ -243,7 +220,7 @@ class VideoRepairMixin:
         scene_bible: SceneBibleSchema,
         involved_characters: list[str],
     ) -> SceneBibleSchema:
-        fallback_payload = self._build_fallback_scene_bible(
+        default_payload = self._derive_scene_bible_defaults(
             novel_package=novel_package,
             chapter_number=chapter_number,
             scene_title=scene_title or "场景",
@@ -253,13 +230,13 @@ class VideoRepairMixin:
         )
         payload = scene_bible.model_dump()
         repaired: dict[str, object] = {}
-        for key, fallback_value in fallback_payload.items():
+        for key, default_value in default_payload.items():
             current_value = payload.get(key)
             repaired[key] = (
                 current_value
                 if self._scene_bible_value_has_signal(current_value)
-                else fallback_value
-        )
+                else default_value
+            )
         return SceneBibleSchema.model_validate(repaired)
 
     def _repair_shot_state(
@@ -268,7 +245,7 @@ class VideoRepairMixin:
         novel_package: NovelPackage,
         segment: VideoSegmentSchema,
     ) -> ShotStateSchema:
-        fallback_payload = self._build_fallback_shot_state(
+        default_payload = self._derive_shot_state_defaults(
             summary=segment.summary,
             scene_anchor=segment.scene_anchor,
             scene_bible=segment.scene_bible,
@@ -276,12 +253,12 @@ class VideoRepairMixin:
         )
         payload = segment.shot_state.model_dump()
         repaired: dict[str, object] = {}
-        for key, fallback_value in fallback_payload.items():
+        for key, default_value in default_payload.items():
             current_value = payload.get(key)
             repaired[key] = (
                 current_value
                 if self._shot_state_value_has_signal(current_value)
-                else fallback_value
+                else default_value
             )
 
         if not str(repaired.get("action_progression", "")).strip():
@@ -478,7 +455,7 @@ class VideoRepairMixin:
                         resolved_names.append(resolved)
 
             if not resolved_names:
-                resolved_names = self._fallback_segment_characters(
+                resolved_names = self._default_segment_characters(
                     chapter_number=segment.chapter_number,
                     canonical_names=canonical_names,
                     chapter_feature_map=chapter_feature_map,
@@ -614,7 +591,7 @@ class VideoRepairMixin:
             "发起者",
         }
         if token.lower() in generic_lead_aliases or token in generic_lead_aliases:
-            featured = self._fallback_segment_characters(
+            featured = self._default_segment_characters(
                 chapter_number=chapter_number,
                 canonical_names=canonical_names,
                 chapter_feature_map=chapter_feature_map,
@@ -630,7 +607,7 @@ class VideoRepairMixin:
             "被回应的人",
         }
         if token in counterpart_aliases:
-            featured = self._fallback_segment_characters(
+            featured = self._default_segment_characters(
                 chapter_number=chapter_number,
                 canonical_names=canonical_names,
                 chapter_feature_map=chapter_feature_map,
@@ -657,7 +634,7 @@ class VideoRepairMixin:
 
         return ""
 
-    def _fallback_segment_characters(
+    def _default_segment_characters(
         self,
         chapter_number: int,
         canonical_names: list[str],

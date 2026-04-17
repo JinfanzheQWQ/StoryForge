@@ -25,13 +25,19 @@ from storyforge.domains.novel.schemas import (
     StoryDraftSetSchema,
     StoryArchitectureSchema,
 )
+from storyforge.domains.novel.rules import NovelRuleMixin
 
 
 DEFAULT_CHARACTER_NAMES = ["林雾", "沈砚", "周遥", "许舟", "秦岚", "顾屿"]
 
 
-class NovelFallbackMixin:
-    def _fallback_architecture(self, brief: StoryBrief) -> StoryArchitectureSchema:
+class DeterministicNovelBuilder(NovelRuleMixin):
+    """Test-only deterministic builders for novel-domain fixtures."""
+
+    def __init__(self, chapter_scene_count: int = 3) -> None:
+        self.chapter_scene_count = chapter_scene_count
+
+    def build_architecture(self, brief: StoryBrief) -> StoryArchitectureSchema:
         motifs = brief.style_keywords or ["雾气", "回声", "霓虹"]
         return StoryArchitectureSchema(
             title=brief.title_hint,
@@ -43,7 +49,7 @@ class NovelFallbackMixin:
             tone_notes=[brief.tone, "镜头感", "悬念递进"],
         )
 
-    def _fallback_story_draft_set(
+    def build_story_draft_set(
         self,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
@@ -84,7 +90,7 @@ class NovelFallbackMixin:
             )
         return StoryDraftSetSchema(chapters=chapters)
 
-    def _fallback_cast_analysis(
+    def build_cast_analysis(
         self,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
@@ -113,7 +119,7 @@ class NovelFallbackMixin:
         if not explicit_counterpart and len(role_labels) >= 4:
             requires_dual_leads = False
             prefers_pair = False
-        recommended_count = self._fallback_recommended_core_cast_count(
+        recommended_count = self._recommended_core_cast_count(
             brief,
             explicit_counterpart=explicit_counterpart,
             requires_dual_leads=requires_dual_leads,
@@ -400,7 +406,7 @@ class NovelFallbackMixin:
             relationships=relationships,
         )
 
-    def _fallback_recommended_core_cast_count(
+    def _recommended_core_cast_count(
         self,
         brief: StoryBrief,
         *,
@@ -433,32 +439,21 @@ class NovelFallbackMixin:
             return base_count
         return max(base_count, min(extracted_role_count, 5))
 
-    def _story_draft_text(
-        self,
-        story_draft_set: StoryDraftSetSchema | None,
-    ) -> str:
-        if story_draft_set is None:
-            return ""
-        return "\n".join(
-            f"{item.title}\n{item.summary}\n{item.markdown}"
-            for item in story_draft_set.chapters
-        ).strip()
-
-    def _fallback_character_roster(
+    def build_character_roster(
         self,
         brief: StoryBrief,
         architecture: StoryArchitectureSchema,
         cast_analysis: CastAnalysisSchema | None = None,
     ) -> CharacterRosterSchema:
         names = cycle(DEFAULT_CHARACTER_NAMES)
-        analysis = cast_analysis or self._fallback_cast_analysis(brief, architecture)
+        analysis = cast_analysis or self.build_cast_analysis(brief, architecture)
         slots = analysis.primary_slots(max(1, analysis.recommended_core_cast_count))
         characters = []
         for index, slot in enumerate(slots):
             name = next(names)
             role = self._role_from_cast_slot(slot)
             gender = self._resolved_cast_slot_gender(slot, brief, index)
-            voice_profile = self._build_fallback_voice_profile(
+            voice_profile = self._build_voice_profile(
                 brief=brief,
                 role=role,
             )
@@ -486,7 +481,7 @@ class NovelFallbackMixin:
             )
         return CharacterRosterSchema.model_validate({"characters": characters})
 
-    def _fallback_chapter_plan_set(
+    def build_chapter_plan_set(
         self,
         brief: StoryBrief,
         character_roster: CharacterRosterSchema,
@@ -591,13 +586,13 @@ class NovelFallbackMixin:
     def _gender_hint_from_label(
         self,
         label: str,
-        fallback: str = "未指定",
+        default_value: str = "未指定",
     ) -> str:
         if any(token in label for token in ("女生", "女人", "少女", "妻子", "女儿", "姐姐", "妹妹", "未婚妻")):
             return "女"
         if any(token in label for token in ("男生", "男人", "少年", "丈夫", "儿子", "哥哥", "弟弟", "未婚夫")):
             return "男"
-        return fallback
+        return default_value
 
     def _conflict_from_cast_slot(self, slot: CastSlotSchema) -> str:
         if slot.story_function == "protagonist":
@@ -617,7 +612,7 @@ class NovelFallbackMixin:
             return "从辅助或阻拦，逐步暴露更真实的立场。"
         return "在有限出场中完成明确功能。"
 
-    def _fallback_chapter_draft(
+    def build_chapter_draft(
         self,
         brief: StoryBrief,
         outline: StoryOutline,
@@ -667,7 +662,7 @@ class NovelFallbackMixin:
             continuity_refs=continuity_refs,
         )
 
-    def _fallback_editorial_review(
+    def build_editorial_review(
         self,
         outline: StoryOutline,
         chapters: list[DraftChapter],
@@ -689,7 +684,7 @@ class NovelFallbackMixin:
             ],
         )
 
-    def _build_fallback_voice_profile(
+    def _build_voice_profile(
         self,
         brief: StoryBrief,
         role: str,

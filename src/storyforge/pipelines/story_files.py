@@ -55,6 +55,7 @@ def clear_story_derived_artifacts(output_dir: Path) -> None:
     removable_files = {
         "novel_package.json",
         "novel_audit.json",
+        "continuity_report.json",
         "character_visual_bible.json",
         "character_image_manifest.json",
         "scene_plan.json",
@@ -74,6 +75,10 @@ def clear_story_derived_artifacts(output_dir: Path) -> None:
     for name in removable_files:
         path = output_dir / name
         if path.exists():
+            path.unlink()
+
+    for path in output_dir.glob("continuity_repair_*.json"):
+        if path.is_file():
             path.unlink()
 
     for path in removable_dirs:

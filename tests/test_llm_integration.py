@@ -32,6 +32,7 @@ class LlmIntegrationTestCase(unittest.TestCase):
 
         self.assertEqual(backend.provider, "deepseek")
         self.assertEqual(backend.model_name, "deepseek-chat")
+        self.assertEqual(backend.max_tokens, 8192)
         self.assertEqual(backend.api_key, "test-deepseek-key")
         self.assertEqual(backend.base_url, "https://api.deepseek.com/v1")
 
@@ -48,6 +49,7 @@ class LlmIntegrationTestCase(unittest.TestCase):
 
         self.assertEqual(backend.provider, "openai")
         self.assertEqual(backend.model_name, "gpt-5.4")
+        self.assertEqual(backend.max_tokens, 8192)
         self.assertEqual(backend.api_key, "test-openai-key")
         self.assertEqual(backend.base_url, "https://api.openai-proxy.example/v1")
 

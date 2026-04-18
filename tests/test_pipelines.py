@@ -49,9 +49,16 @@ from storyforge.pipelines.continuity import (  # noqa: E402
     ContinuitySoftReviewSchema,
     write_continuity_report,
 )
-from storyforge.pipelines.story_pipeline import run_story_pipeline  # noqa: E402
+from storyforge.pipelines.story_pipeline import (  # noqa: E402
+    run_story_generation_pipeline,
+    run_story_pipeline,
+    run_story_scene_structure_pipeline,
+    run_story_segment_contracts_pipeline,
+)
 from storyforge.pipelines.story_files import clear_story_derived_artifacts  # noqa: E402
 from storyforge.pipelines.video_pipeline import (  # noqa: E402
+    reset_scene_execution_contracts_for_repair,
+    run_scene_continuity_repair_pipeline,
     run_segment_continuity_repair_pipeline,
     run_scene_image_pipeline,
     run_video_merge_pipeline,
@@ -78,6 +85,28 @@ from _video_test_artifacts import (  # noqa: E402
     mark_scene_images_completed,
     mark_seedance_clips_completed,
 )
+
+
+def build_test_visual_bible(novel_package) -> CharacterVisualBibleSchema:
+    return CharacterVisualBibleSchema.model_validate(
+        {
+            "characters": [
+                {
+                    "name": item.name,
+                    "role": item.role,
+                    "gender": item.gender,
+                    "appearance": (
+                        f"{item.gender}，具有明确轮廓、情绪感和电影感的角色外观，年龄段和体态稳定"
+                    ),
+                    "outfit": "带有故事气味的功能性服装，适合持续出镜",
+                    "color_palette": item.visual_signature or novel_package.outline.visual_motifs[:2],
+                    "portrait_prompt": item.image_prompt
+                    or f"{item.name}，{item.role}，电影级肖像，{novel_package.brief.tone}",
+                }
+                for item in novel_package.outline.characters
+            ]
+        }
+    )
 
 
 class PipelineTestCase(unittest.TestCase):
@@ -117,6 +146,15 @@ class PipelineTestCase(unittest.TestCase):
             **kwargs,
         )
 
+    def _run_story_generation_pipeline(self, **kwargs):
+        return run_story_generation_pipeline(
+            config=kwargs.pop("config"),
+            project_root=kwargs.pop("project_root", ROOT),
+            output_root=kwargs.pop("output_root", self.temp_root),
+            backend=kwargs.pop("backend", self.story_backend),
+            **kwargs,
+        )
+
     def _build_video_planning_artifacts(self, **kwargs):
         return build_video_planning_artifacts(
             config=kwargs.pop("config"),
@@ -125,6 +163,25 @@ class PipelineTestCase(unittest.TestCase):
             backend=kwargs.pop("backend", self.video_backend),
             **kwargs,
         )
+
+    def _ensure_two_outline_characters(self, story_result):
+        characters = story_result.novel_package.outline.characters
+        if len(characters) >= 2:
+            return characters[0], characters[1]
+        synthetic = CharacterProfile(
+            cast_slot_id="lead_2",
+            name="林晚",
+            role="对手戏角色",
+            gender="女",
+            desire="回应当前主线关系",
+            conflict="面对关系推进时保持克制",
+            arc="从观望走向回应",
+            visual_signature=["花园小径", "傍晚侧光"],
+            voice_style="温柔克制",
+            image_prompt="林晚，女，青年，校园感。",
+        )
+        story_result.novel_package.outline.characters.append(synthetic)
+        return characters[0], characters[1]
 
     def test_live_structured_generation_retries_before_success(self) -> None:
         class RetryBackend:
@@ -525,6 +582,225 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(other_clip["submit_status"], "completed")
         self.assertNotEqual(other_clip["video_url"], "")
 
+    @patch("storyforge.pipelines.video_pipeline.build_agent_backend")
+    @patch("storyforge.pipelines.video_pipeline.NovelToVideoService.repair_scene_continuity")
+    def test_run_scene_continuity_repair_pipeline_writes_scene_repair_report(
+        self,
+        mock_repair_scene_continuity,
+        mock_build_agent_backend,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        ensure_secondary_segment_execution_contract(story_result)
+
+        scene_payload = read_json(story_result.scene_plan_path)
+        target_scene_id = str(scene_payload["scenes"][0]["scene_id"])
+        scene_segment_ids = [
+            item["segment_id"]
+            for item in scene_payload["scenes"][0]["segments"]
+        ]
+        localized_segment_id = str(scene_segment_ids[0])
+        continuity_report_path = story_result.output_dir / "continuity_report.json"
+        continuity_payload = read_json(continuity_report_path)
+        continuity_payload["scene_issues"] = [
+            {
+                "scope": "scene",
+                "severity": "medium",
+                "code": "scene_master_frame_status_mismatch",
+                "message": "只有一个片段的场景母图状态和 scene 主记录不一致。",
+                "scene_id": target_scene_id,
+                "segment_id": localized_segment_id,
+                "recommended_action": "regenerate_scene_master_frame",
+                "recommended_action_label": "重生成场景母图",
+                "details": {},
+            }
+        ]
+        continuity_payload["segment_issues"] = [
+            {
+                "scope": "segment",
+                "severity": "high",
+                "code": "video_generation_failed",
+                "message": "片段视频生成失败，需要重新生成视频。",
+                "scene_id": target_scene_id,
+                "segment_id": localized_segment_id,
+                "recommended_action": "regenerate_video",
+                "recommended_action_label": "重生成片段视频",
+                "details": {"error": "demo"},
+            }
+        ]
+        continuity_report_path.write_text(
+            json.dumps(continuity_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        scene_payload = read_json(story_result.scene_plan_path)
+        target_scene = dict(scene_payload["scenes"][0])
+        repaired_scene_payload = {
+            **target_scene,
+            "scene_anchor": "修复后的入口到内部步道场景锚点",
+            "scene_bible": {
+                **target_scene["scene_bible"],
+                "location": "玫瑰园入口连接内部花径",
+                "background_anchors": ["拱门", "花墙", "向内延伸的石板路"],
+                "fixed_props": ["路灯", "长椅"],
+                "spatial_layout": "镜头沿步道向园内推进，保持入口到内部的纵深关系",
+                "continuity_notes": "同一场景保持从入口到内部花径的连续空间，不回退成单一入口特写",
+            },
+            "scene_master_frame_prompt": "修复后的场景母图 prompt",
+            "scene_master_frame_status": "planned",
+            "scene_master_frame_url": "",
+            "scene_master_frame_error": "",
+        }
+        mock_repair_scene_continuity.return_value = (
+            VideoScene.from_dict(repaired_scene_payload),
+            {
+                "scene_id": target_scene_id,
+                "repair_summary": "已更新 scene 基线，等待人工决定是否重跑场景母图和媒体阶段。",
+                "changed_fields": ["scene_anchor", "scene_bible", "scene_master_frame_prompt"],
+            },
+        )
+
+        result = run_scene_continuity_repair_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            scene_id=target_scene_id,
+            use_llm=True,
+            continuity_review_mode="on",
+        )
+
+        self.assertEqual(result.scene_id, target_scene_id)
+        self.assertEqual(result.segment_id, "")
+        self.assertTrue(result.repair_report_path.exists())
+        self.assertTrue(mock_build_agent_backend.called)
+        repair_payload = read_json(result.repair_report_path)
+        self.assertEqual(repair_payload["scope"], "scene")
+        self.assertEqual(repair_payload["scene_id"], target_scene_id)
+        self.assertEqual(repair_payload["repair_action"], "regenerate_scene_master_frame")
+        self.assertEqual(repair_payload["selection_mode"], "localized_segments")
+        self.assertEqual(repair_payload["affected_segment_ids"], [localized_segment_id])
+        self.assertEqual(len(repair_payload["continuity_issues"]), 1)
+        self.assertEqual(len(repair_payload["related_segment_issues"]), 1)
+        self.assertEqual(result.affected_segment_ids, (localized_segment_id,))
+
+        updated_scene_plan = read_json(story_result.scene_plan_path)
+        updated_scene = next(item for item in updated_scene_plan["scenes"] if item["scene_id"] == target_scene_id)
+        self.assertEqual(updated_scene["scene_anchor"], "修复后的入口到内部步道场景锚点")
+        self.assertEqual(updated_scene["scene_bible"]["location"], "玫瑰园入口连接内部花径")
+        self.assertEqual(updated_scene["scene_master_frame_status"], "planned")
+
+        updated_segments = read_json(story_result.segment_plan_path)
+        repaired_segment = next(item for item in updated_segments if item["segment_id"] == localized_segment_id)
+        self.assertEqual(repaired_segment["scene_bible"]["location"], "玫瑰园入口连接内部花径")
+
+        updated_scene_images = read_json(story_result.output_dir / "scene_image_manifest.json")
+        repaired_scene_task = next(item for item in updated_scene_images if item["segment_id"] == localized_segment_id)
+        self.assertEqual(repaired_scene_task["status"], "planned")
+
+    @patch("storyforge.pipelines.video_pipeline.build_agent_backend")
+    @patch("storyforge.pipelines.video_pipeline.NovelToVideoService.repair_scene_continuity")
+    def test_run_scene_continuity_repair_pipeline_keeps_full_scene_for_global_issue(
+        self,
+        mock_repair_scene_continuity,
+        mock_build_agent_backend,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        ensure_secondary_segment_execution_contract(story_result)
+
+        scene_payload = read_json(story_result.scene_plan_path)
+        target_scene_id = str(scene_payload["scenes"][0]["scene_id"])
+        scene_segment_ids = [
+            item["segment_id"]
+            for item in scene_payload["scenes"][0]["segments"]
+        ]
+        continuity_report_path = story_result.output_dir / "continuity_report.json"
+        continuity_payload = read_json(continuity_report_path)
+        continuity_payload["scene_issues"] = [
+            {
+                "scope": "scene",
+                "severity": "high",
+                "code": "scene_master_frame_missing_output",
+                "message": "场景母图缺失，需要重生成。",
+                "scene_id": target_scene_id,
+                "segment_id": "",
+                "recommended_action": "regenerate_scene_master_frame",
+                "recommended_action_label": "重生成场景母图",
+                "details": {"scene_master_frame_path": "missing.png"},
+            }
+        ]
+        continuity_payload["segment_issues"] = [
+            {
+                "scope": "segment",
+                "severity": "high",
+                "code": "video_generation_failed",
+                "message": "其中一个片段视频失败。",
+                "scene_id": target_scene_id,
+                "segment_id": str(scene_segment_ids[0]),
+                "recommended_action": "regenerate_video",
+                "recommended_action_label": "重生成片段视频",
+                "details": {},
+            }
+        ]
+        continuity_report_path.write_text(
+            json.dumps(continuity_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        scene_payload = read_json(story_result.scene_plan_path)
+        target_scene = dict(scene_payload["scenes"][0])
+        repaired_scene_payload = {
+            **target_scene,
+            "scene_anchor": "全场景修复后的锚点",
+            "scene_bible": {
+                **target_scene["scene_bible"],
+                "location": "全新的场景连续空间",
+                "background_anchors": ["主入口", "中央花坛", "内部步道"],
+                "fixed_props": ["路灯", "长椅"],
+                "spatial_layout": "镜头在整 scene 内沿同一空间轴线推进",
+                "continuity_notes": "整 scene 保持统一空间与光线基线",
+            },
+            "scene_master_frame_prompt": "全场景修复后的母图 prompt",
+            "scene_master_frame_status": "planned",
+            "scene_master_frame_url": "",
+            "scene_master_frame_error": "",
+        }
+        mock_repair_scene_continuity.return_value = (
+            VideoScene.from_dict(repaired_scene_payload),
+            {
+                "scene_id": target_scene_id,
+                "repair_summary": "已更新全 scene 基线。",
+                "changed_fields": ["scene_bible"],
+            },
+        )
+
+        result = run_scene_continuity_repair_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            scene_id=target_scene_id,
+            use_llm=True,
+            continuity_review_mode="on",
+        )
+
+        self.assertTrue(mock_build_agent_backend.called)
+        repair_payload = read_json(result.repair_report_path)
+        self.assertEqual(repair_payload["selection_mode"], "full_scene_global_issue")
+        self.assertEqual(repair_payload["affected_segment_ids"], scene_segment_ids)
+        self.assertEqual(result.affected_segment_ids, tuple(scene_segment_ids))
+
     @patch("storyforge.pipelines.continuity.build_agent_backend")
     def test_write_continuity_report_can_force_v2_soft_review(self, mock_build_backend) -> None:
         class InitialBackend:
@@ -924,6 +1200,25 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("重复槽位", service.backend.requests[-1].user_prompt)
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
 
+    def test_video_structured_retry_adds_length_compression_note(self) -> None:
+        service = NovelToVideoService(backend=self.video_backend)
+        retry_request = service._build_retry_request(
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "video-segment-planner"},
+            ),
+            schema=VideoSegmentPlanSchema,
+            attempt=2,
+            last_error=RuntimeError(
+                "LangChain structured output was empty; finish_reason='length'"
+            ),
+        )
+
+        self.assertEqual(retry_request.metadata["structured_retry_attempt"], 2)
+        self.assertIn("输出过长被截断", retry_request.user_prompt)
+        self.assertIn("不要重复父级 scene", retry_request.user_prompt)
+
     def test_character_roster_count_mismatch_triggers_missing_slot_backfill(self) -> None:
         class CountMismatchBackend:
             def __init__(self) -> None:
@@ -1246,27 +1541,6 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("未通过结构化校验", service.backend.requests[-1].user_prompt)
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
 
-    def test_video_build_default_segment_plan_stays_scene_local(self) -> None:
-        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
-        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
-        story_result = self._run_story_pipeline(
-            brief=brief,
-            config=config,
-            project_root=ROOT,
-            output_root=self.temp_root,
-        )
-        service = NovelToVideoService()
-        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
-        plan = service._build_default_segment_plan(story_result.novel_package, visual_bible)
-        first_segment = plan.segments[0]
-        first_chapter = story_result.novel_package.outline.chapters[0]
-
-        self.assertNotIn("当前片段聚焦", first_segment.narration)
-        self.assertNotIn("结尾要保留", first_segment.narration)
-        self.assertEqual(first_segment.dialogue_lines, [])
-        self.assertEqual(first_segment.narration, f"{first_segment.summary}。")
-        self.assertNotIn(first_chapter.cliffhanger, first_segment.narration)
-
     def test_story_and_video_pipeline(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
@@ -1280,6 +1554,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(story_result.story_source_path.exists())
         self.assertTrue(story_result.novel_package_path.exists())
         self.assertTrue(story_result.novel_audit_path.exists())
+        self.assertTrue(story_result.story_memory_path.exists())
         self.assertTrue(story_result.character_bible_path.exists())
         self.assertTrue(story_result.character_images_path.exists())
         self.assertTrue(story_result.scene_plan_path.exists())
@@ -1295,6 +1570,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("cast_analyzer", story_result.novel_package.workflow_trace)
         persisted_novel_package = read_json(story_result.novel_package_path)
         persisted_novel_audit = read_json(story_result.novel_audit_path)
+        persisted_story_memory = read_json(story_result.story_memory_path)
         self.assertNotIn("review", persisted_novel_package)
         self.assertNotIn("workflow_trace", persisted_novel_package)
         self.assertNotIn("premise", persisted_novel_package["outline"])
@@ -1306,6 +1582,18 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("workflow_trace", persisted_novel_audit)
         self.assertIn("outline_context", persisted_novel_audit)
         self.assertIn("chapter_context", persisted_novel_audit)
+        self.assertEqual(
+            persisted_story_memory["story_identity"]["story_title"],
+            story_result.novel_package.outline.title,
+        )
+        self.assertEqual(
+            persisted_story_memory["planning_index"]["chapter_count"],
+            len(story_result.novel_package.outline.chapters),
+        )
+        self.assertEqual(
+            persisted_story_memory["generation_notes"]["last_successful_stage"],
+            "video-segment-plan-merged",
+        )
         self.assertTrue(
             all(item.voice_profile.voice_style for item in story_result.novel_package.outline.characters)
         )
@@ -1489,6 +1777,78 @@ class PipelineTestCase(unittest.TestCase):
         )
         self.assertFalse(video_result.seedream_execution.submitted)
         self.assertFalse(video_result.seedance_execution.submitted)
+
+    def test_story_scene_structure_and_segment_contract_pipelines(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+
+        generation = self._run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=ROOT,
+            output_root=generation.output_dir,
+            backend=self.story_backend,
+            video_backend=self.video_backend,
+        )
+        self.assertTrue(scene_structure.novel_package_path.exists())
+        self.assertTrue(scene_structure.novel_audit_path.exists())
+        self.assertTrue(scene_structure.story_memory_path.exists())
+        self.assertTrue(scene_structure.character_bible_path.exists())
+        self.assertTrue(scene_structure.scene_plan_path.exists())
+        self.assertFalse((generation.output_dir / "segment_plan.json").exists())
+        stage_one_memory = read_json(scene_structure.story_memory_path)
+        self.assertEqual(
+            stage_one_memory["generation_notes"]["last_successful_stage"],
+            "video-scene-structure",
+        )
+        stage_one_scene_plan = read_json(scene_structure.scene_plan_path)
+        self.assertTrue(stage_one_scene_plan["scenes"])
+        self.assertTrue(all(not item.get("segments") for item in stage_one_scene_plan["scenes"]))
+
+        segment_contracts = run_story_segment_contracts_pipeline(
+            novel_package=scene_structure.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=generation.output_dir,
+            backend=self.video_backend,
+        )
+        self.assertTrue(segment_contracts.story_memory_path.exists())
+        self.assertTrue(segment_contracts.character_images_path.exists())
+        self.assertTrue(segment_contracts.scene_plan_path.exists())
+        self.assertTrue(segment_contracts.segment_plan_path.exists())
+        self.assertTrue(segment_contracts.scene_images_path.exists())
+        self.assertTrue(segment_contracts.seedance_manifest_path.exists())
+        stage_two_memory = read_json(segment_contracts.story_memory_path)
+        self.assertEqual(
+            stage_two_memory["generation_notes"]["last_successful_stage"],
+            "video-segment-plan-merged",
+        )
+        persisted_scene_plan = read_json(segment_contracts.scene_plan_path)
+        self.assertTrue(
+            all(item.get("scene_bible") for item in persisted_scene_plan["scenes"])
+        )
+        self.assertTrue(
+            all(item.get("scene_master_frame_prompt") for item in persisted_scene_plan["scenes"])
+        )
+        self.assertTrue(
+            all(str(item.get("scene_master_frame_path", "")).endswith("_master.png") for item in persisted_scene_plan["scenes"])
+        )
+        persisted_segment_plan = read_json(segment_contracts.segment_plan_path)
+        self.assertTrue(
+            all(item.get("scene_bible") for item in persisted_segment_plan)
+        )
+        self.assertTrue(
+            all(item.get("shot_state") for item in persisted_segment_plan)
+        )
+        self.assertTrue(
+            all(item.get("continuity_link") for item in persisted_segment_plan)
+        )
 
     def test_cast_analysis_source_evidence_must_exist_in_story_draft(self) -> None:
         service = NovelGeneratorService()
@@ -1941,6 +2301,39 @@ class PipelineTestCase(unittest.TestCase):
             any(item.action == "regenerate_video" for item in report.recommended_actions)
         )
 
+    def test_write_continuity_report_flags_weak_scene_baseline(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        scene_plan_payload = read_json(story_result.scene_plan_path)
+        target_scene = scene_plan_payload["scenes"][0]
+        target_scene["scene_bible"]["background_anchors"] = ["站台"]
+        target_scene["scene_bible"]["fixed_props"] = []
+        target_scene["scene_bible"]["dominant_palette"] = []
+        target_scene["scene_master_frame_prompt"] = "站台傍晚"
+        story_result.scene_plan_path.write_text(
+            json.dumps(scene_plan_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        _, report = write_continuity_report(story_result.output_dir)
+
+        scene_codes = {item.code for item in report.scene_issues if item.scene_id == target_scene["scene_id"]}
+        self.assertIn("scene_baseline_weak", scene_codes)
+        weak_issue = next(
+            item
+            for item in report.scene_issues
+            if item.scene_id == target_scene["scene_id"] and item.code == "scene_baseline_weak"
+        )
+        self.assertEqual(weak_issue.recommended_action, "regenerate_scene_master_frame")
+        self.assertIn("背景锚点不足", weak_issue.message)
+
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_master_frames")
     def test_run_scene_image_pipeline_only_updates_selected_scene_master_frame(
         self,
@@ -2002,6 +2395,119 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(selected_scene_tasks)
         self.assertTrue(all(item["scene_master_frame_url"] for item in selected_scene_tasks))
 
+    @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_images")
+    def test_run_scene_image_pipeline_only_updates_selected_scene_segments(
+        self,
+        mock_generate_scene_images,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        scene_plan = read_json(story_result.scene_plan_path)
+        selected_scene_id = scene_plan["scenes"][0]["scene_id"]
+        selected_segment_ids = {
+            item["segment_id"]
+            for item in scene_plan["scenes"][0]["segments"]
+        }
+
+        def fake_generate_scene_images(project_package, force_submit=False, segment_ids=None):
+            self.assertTrue(force_submit)
+            self.assertEqual(segment_ids, selected_segment_ids)
+            mark_runtime_scene_images_completed(
+                project_package,
+                segment_ids=selected_segment_ids,
+            )
+            return SeedreamExecutionReport(
+                submitted=True,
+                generated_count=2,
+                failed_count=0,
+                note="ok",
+            )
+
+        mock_generate_scene_images.side_effect = fake_generate_scene_images
+
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_scenes=True,
+            scene_id=selected_scene_id,
+        )
+
+        scene_manifest = read_json(scene_result.scene_images_path)
+        selected_tasks = [
+            item for item in scene_manifest if item["scene_id"] == selected_scene_id
+        ]
+        untouched_tasks = [
+            item for item in scene_manifest if item["scene_id"] != selected_scene_id
+        ]
+        self.assertTrue(selected_tasks)
+        self.assertTrue(all(item["start_frame_url"] for item in selected_tasks))
+        self.assertTrue(all(not item.get("start_frame_url") for item in untouched_tasks))
+
+    def test_reset_scene_execution_contracts_for_repair_resets_only_selected_scene_segments(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        ensure_secondary_segment_execution_contract(story_result)
+        scene_plan = read_json(story_result.scene_plan_path)
+        selected_scene_id = scene_plan["scenes"][0]["scene_id"]
+        selected_scene_segment_ids = [
+            item["segment_id"]
+            for item in scene_plan["scenes"][0]["segments"]
+        ]
+        selected_segment_id = str(selected_scene_segment_ids[0])
+
+        mark_scene_images_completed(story_result)
+        mark_seedance_clips_completed(story_result)
+
+        selected_segment_ids = reset_scene_execution_contracts_for_repair(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            scene_id=selected_scene_id,
+            segment_ids={selected_segment_id},
+        )
+
+        scene_manifest = read_json(story_result.scene_images_path)
+        selected_tasks = [
+            item for item in scene_manifest if item["segment_id"] in selected_segment_ids
+        ]
+        untouched_tasks = [
+            item for item in scene_manifest if item["segment_id"] not in selected_segment_ids
+        ]
+        self.assertTrue(selected_tasks)
+        self.assertTrue(all(item["status"] == "planned" for item in selected_tasks))
+        self.assertTrue(all(not item["start_frame_url"] for item in selected_tasks))
+        self.assertTrue(
+            all(item["scene_id"] == selected_scene_id for item in selected_tasks)
+        )
+        self.assertTrue(all(item["status"] == "completed" for item in untouched_tasks))
+        self.assertTrue(all(item["start_frame_url"] for item in untouched_tasks))
+
+        manifest_payload = read_json(story_result.seedance_manifest_path)
+        selected_clips = [
+            item for item in manifest_payload["clips"] if item["segment_id"] in selected_segment_ids
+        ]
+        untouched_clips = [
+            item for item in manifest_payload["clips"] if item["segment_id"] not in selected_segment_ids
+        ]
+        self.assertTrue(selected_clips)
+        self.assertTrue(all(item["submit_status"] == "planned" for item in selected_clips))
+        self.assertTrue(all(not item["downloaded_path"] for item in selected_clips))
+        self.assertTrue(all(item["submit_status"] == "completed" for item in untouched_clips))
+        self.assertTrue(all(item["downloaded_path"] for item in untouched_clips))
+
     @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
     def test_run_video_render_pipeline_only_selected_segment_skips_full_concat(
@@ -2058,6 +2564,71 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(video_result.rendered_clip_paths, [selected_output_path])
         self.assertIsNone(video_result.full_story_path)
         mock_concat_manifest_clips.assert_not_called()
+
+    @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
+    def test_run_video_render_pipeline_only_selected_scene_segments(self, mock_execute_manifest) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        scene_plan = read_json(story_result.scene_plan_path)
+        selected_scene_id = scene_plan["scenes"][0]["scene_id"]
+        selected_segment_ids = {
+            item["segment_id"]
+            for item in scene_plan["scenes"][0]["segments"]
+        }
+        manifest_payload = read_json(story_result.seedance_manifest_path)
+        selected_output_paths = {
+            str(item["segment_id"]): Path(item["output_path"])
+            for item in manifest_payload["clips"]
+            if item["segment_id"] in selected_segment_ids
+        }
+        for clip in manifest_payload["clips"]:
+            if clip["segment_id"] not in selected_segment_ids:
+                continue
+            clip["start_frame_url"] = f"https://example.com/{clip['segment_id']}_start.png"
+            clip["end_frame_url"] = f"https://example.com/{clip['segment_id']}_end.png"
+        story_result.seedance_manifest_path.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
+            self.assertTrue(force_submit)
+            self.assertEqual(segment_ids, selected_segment_ids)
+            mark_runtime_manifest_clips_completed(
+                manifest,
+                segment_ids=selected_segment_ids,
+                remote_status="succeeded",
+                write_bytes=b"scene clip",
+            )
+            return SeedanceExecutionReport(
+                submitted=True,
+                manifest_title=manifest.title,
+                completed_count=len(selected_segment_ids),
+                failed_count=0,
+                pending_count=0,
+                note="ok",
+            )
+
+        mock_execute_manifest.side_effect = fake_execute_manifest
+
+        video_result = run_video_render_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_seedance=True,
+            scene_id=selected_scene_id,
+        )
+
+        self.assertEqual(
+            {str(path) for path in video_result.rendered_clip_paths},
+            {str(path) for path in selected_output_paths.values()},
+        )
 
     def test_generic_character_aliases_are_normalized_to_real_names(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -2205,8 +2776,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        first_character = story_result.novel_package.outline.characters[0]
-        second_character = story_result.novel_package.outline.characters[1]
+        first_character, second_character = self._ensure_two_outline_characters(story_result)
         story_result.novel_package.outline.chapters[0].featured_characters = [
             first_character.name,
             second_character.name,
@@ -2286,8 +2856,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        first_character = story_result.novel_package.outline.characters[0]
-        second_character = story_result.novel_package.outline.characters[1]
+        first_character, second_character = self._ensure_two_outline_characters(story_result)
         story_result.novel_package.outline.chapters[0].featured_characters = [
             first_character.name,
             second_character.name,
@@ -2375,8 +2944,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        first_character = story_result.novel_package.outline.characters[0]
-        second_character = story_result.novel_package.outline.characters[1]
+        first_character, second_character = self._ensure_two_outline_characters(story_result)
         story_result.novel_package.outline.chapters[0].featured_characters = [
             first_character.name,
             second_character.name,
@@ -2874,7 +3442,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
+        visual_bible = build_test_visual_bible(story_result.novel_package)
         raw_plan = VideoSegmentPlanSchema.model_validate(
             {
                 "segments": [
@@ -2941,6 +3509,59 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("mid_frame_prompt", prompt)
         self.assertNotIn("推荐最少片段数", prompt)
 
+    def test_chapter_segment_planner_uses_story_memory_and_calls_once_per_chapter(self) -> None:
+        class ChapterCountingVideoBackend(DeterministicVideoBackend):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scene_requests: list[PromptRequest] = []
+                self.segment_requests: list[PromptRequest] = []
+
+            def generate_structured(self, request: PromptRequest, schema):
+                if request.metadata.get("task") == "video-chapter-scene-planner":
+                    self.scene_requests.append(request)
+                if request.metadata.get("task") == "video-scene-segment-planner":
+                    self.segment_requests.append(request)
+                return super().generate_structured(request, schema)
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="镜湖告白",
+            idea="毕业前夕，一个男生准备在镜湖边对喜欢的人告白。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=3,
+            total_word_target=2400,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "story-memory-source",
+        )
+        backend = ChapterCountingVideoBackend()
+        artifacts = build_video_planning_artifacts(
+            novel_package=story_result.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "story-memory-plan",
+            backend=backend,
+        )
+
+        self.assertEqual(len(backend.scene_requests), 3)
+        self.assertEqual(
+            [request.metadata.get("chapter_number") for request in backend.scene_requests],
+            [1, 2, 3],
+        )
+        self.assertTrue(all("story memory" in request.user_prompt for request in backend.scene_requests))
+        self.assertTrue(
+            all(request.user_prompt.count("该章应由模型自行判断拆成几段") == 1 for request in backend.scene_requests)
+        )
+        self.assertEqual(len(backend.segment_requests), 3)
+        self.assertTrue(all("目标 scene JSON" in request.user_prompt for request in backend.segment_requests))
+        self.assertTrue(artifacts.story_memory_path.exists())
+        loaded = load_video_planning_artifacts(artifacts.output_dir)
+        self.assertIsNotNone(loaded.project_package.story_memory)
+
     def test_repair_segment_plan_preserves_all_llm_segments_within_same_chapter(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
@@ -2958,7 +3579,7 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        visual_bible = service._build_default_character_visual_bible(story_result.novel_package)
+        visual_bible = build_test_visual_bible(story_result.novel_package)
         lead_name = story_result.novel_package.outline.characters[0].name
         raw_plan = VideoSegmentPlanSchema.model_validate(
             {
@@ -3114,7 +3735,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(all(item.mid_frame_prompt for item in normalized.segments))
         self.assertTrue(all(item.timed_beats for item in normalized.segments))
         self.assertTrue(all(item.subtitle_lines for item in normalized.segments))
-        self.assertTrue(all("当前子片段" in item.start_frame_prompt for item in normalized.segments))
+        self.assertTrue(all("开场重点" in item.start_frame_prompt for item in normalized.segments))
 
         segments = [VideoSegment.from_dict(item.model_dump()) for item in normalized.segments]
         scenes = service._prepare_scene_master_frames(
@@ -3191,9 +3812,12 @@ class PipelineTestCase(unittest.TestCase):
         )
 
         self.assertIn("纯场景参考图", prompt)
+        self.assertIn("场景基线锁定", prompt)
         self.assertIn("不得出现任何人物", prompt)
         self.assertIn("大学中心花园的紫藤花架", prompt)
         self.assertIn("紫藤花架", prompt)
+        self.assertIn("木质长椅", prompt)
+        self.assertIn("暖金", prompt)
         self.assertNotIn("陈默", prompt)
         self.assertNotIn("林晚", prompt)
         self.assertNotIn("角色调度", prompt)
@@ -3268,10 +3892,12 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(prepared.scene_bible.location, "考场")
         self.assertEqual(prepared.scene_bible.time_window, "下午")
         self.assertEqual(prepared.scene_bible.lighting, "夕阳")
+        self.assertIn("答题卡", prepared.scene_bible.fixed_props)
         self.assertTrue(
             any("下午考场临近收卷" in item for item in prepared.scene_bible.background_anchors)
         )
         self.assertIn("下午考场临近收卷", prepared.scene_master_frame_prompt)
+        self.assertIn("场景基线锁定", prepared.scene_master_frame_prompt)
         self.assertIn("考场", prepared.scene_master_frame_prompt)
         self.assertNotIn("林栀", prepared.scene_master_frame_prompt)
         self.assertNotIn("周骁", prepared.scene_master_frame_prompt)
@@ -3512,8 +4138,10 @@ class PipelineTestCase(unittest.TestCase):
         video_prompt = service._build_seedance_clip_prompt(segment)
 
         self.assertIn("紫藤花廊", scene_prompt)
+        self.assertIn("场景基线锁定", scene_prompt)
         self.assertIn("夕阳暖光", scene_prompt)
         self.assertIn("紫藤花架", frame_prompt)
+        self.assertIn("场景基线必须优先服从 scene master frame", frame_prompt)
         self.assertIn("缓慢推进", frame_prompt)
         self.assertIn("开场先承接上一段尾部", frame_prompt)
         self.assertIn("场景圣经", video_prompt)
@@ -3737,8 +4365,13 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(repaired.segments[0].continuity_link.transition_mode, "start")
         self.assertEqual(repaired.segments[1].continuity_link.transition_mode, "continue")
         self.assertEqual(repaired.segments[1].continuity_link.previous_segment_id, "ch01-sc01-seg01")
-        self.assertTrue(repaired.segments[1].continuity_link.opening_match)
-        self.assertTrue(repaired.segments[1].continuity_link.carry_over_elements)
+        self.assertIn(
+            "林雪回头确认追兵位置后继续保持前冲姿态",
+            repaired.segments[1].continuity_link.opening_match,
+        )
+        self.assertIn("上一段尾部动作定格", repaired.segments[1].continuity_link.carry_over_elements)
+        self.assertIn("推进到", repaired.segments[1].continuity_link.allowed_changes)
+        self.assertIn("林雪继续沿着同一条巷道前进", repaired.segments[1].continuity_link.allowed_changes)
 
     def test_adjacent_segments_in_same_chapter_reuse_previous_end_frame_when_continuous(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -3881,6 +4514,181 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(scene_tasks[2].continuity_source_segment_id, "")
         self.assertFalse(scene_tasks[2].reuse_previous_end_frame)
         self.assertTrue(all(item.scene_master_frame_path.endswith("_master.png") for item in scene_tasks))
+
+    def test_persisted_reuse_flag_for_normal_continuous_segment_still_reuses_previous_end_frame(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        segments = [
+            VideoSegment(
+                segment_id="ch01-sc01-seg01",
+                chapter_number=1,
+                scene_id="ch01-sc01",
+                scene_title="玫瑰园入口",
+                scene_summary="陈默等待林薇到来。",
+                scene_anchor="玫瑰园入口 / 傍晚 / 金色侧光",
+                title="等待",
+                summary="陈默独自等待。",
+                involved_characters=["陈默"],
+                narration="陈默站在入口处等待。",
+                dialogue_lines=[],
+                subtitle_lines=["陈默站在入口处等待。"],
+                sound_effects=["微风"],
+                music_direction="温柔",
+                timed_beats=["0-5秒：陈默等待。"],
+                scene_prompt="玫瑰园入口，陈默等待。",
+                start_frame_prompt="陈默站在入口处。",
+                end_frame_prompt="陈默保持等待姿势，看向前方。",
+                duration_seconds=5,
+                transition_hint="auto",
+                source_segment_id="ch01-sc01-seg01",
+                continuity_link=ContinuityLink(
+                    previous_segment_id="",
+                    transition_mode="start",
+                    opening_match="",
+                    carry_over_elements=[],
+                    allowed_changes="新场景开始",
+                    transition_reason="陈默独自等待",
+                ),
+            ),
+            VideoSegment(
+                segment_id="ch01-sc01-seg02",
+                chapter_number=1,
+                scene_id="ch01-sc01",
+                scene_title="玫瑰园入口",
+                scene_summary="陈默等待林薇到来。",
+                scene_anchor="玫瑰园入口 / 傍晚 / 金色侧光",
+                title="到来",
+                summary="林薇走近，陈默转身看向她。",
+                involved_characters=["陈默", "林薇"],
+                narration="林薇从另一端走来。",
+                dialogue_lines=["陈默！"],
+                subtitle_lines=["陈默！"],
+                sound_effects=["脚步声"],
+                music_direction="温柔",
+                timed_beats=["0-5秒：林薇走近。"],
+                scene_prompt="同一玫瑰园入口，林薇走近。",
+                start_frame_prompt="陈默保持上一段尾部等待姿势。",
+                end_frame_prompt="两人面对面站立。",
+                duration_seconds=5,
+                transition_hint="continue",
+                source_segment_id="ch01-sc01-seg02",
+                reuse_previous_end_frame=True,
+                continuity_link=ContinuityLink(
+                    previous_segment_id="ch01-sc01-seg01",
+                    transition_mode="continue",
+                    opening_match="陈默保持等待姿势，面向前方。",
+                    carry_over_elements=["陈默的站姿", "玫瑰园入口背景", "夕阳光线"],
+                    allowed_changes="林薇入画，陈默转身看向她。",
+                    transition_reason="林薇到来，动作连续推进",
+                ),
+            ),
+        ]
+        character_profiles = [
+            CharacterVisualProfile(
+                name="陈默",
+                role="男主",
+                gender="男",
+                appearance="测试外观",
+                outfit="测试服装",
+                color_palette=["浅蓝"],
+                portrait_prompt="测试角色图",
+            ),
+            CharacterVisualProfile(
+                name="林薇",
+                role="女主",
+                gender="女",
+                appearance="测试外观",
+                outfit="测试服装",
+                color_palette=["米白"],
+                portrait_prompt="测试角色图",
+            ),
+        ]
+        character_images = service._build_character_image_tasks(character_profiles, str(self.temp_root))
+        profile_map = {item.name: item for item in character_profiles}
+        scenes = service._prepare_scene_master_frames(
+            [
+                VideoScene(
+                    scene_id="ch01-sc01",
+                    chapter_number=1,
+                    title="玫瑰园入口",
+                    summary="陈默等待林薇到来。",
+                    scene_anchor="玫瑰园入口 / 傍晚 / 金色侧光",
+                    involved_characters=["陈默", "林薇"],
+                    segments=list(segments),
+                )
+            ],
+            str(self.temp_root),
+        )
+
+        scene_tasks = service._build_scene_image_tasks(
+            scenes,
+            segments,
+            character_images,
+            profile_map,
+            str(self.temp_root),
+        )
+
+        self.assertFalse(scene_tasks[0].reuse_previous_end_frame)
+        self.assertTrue(scene_tasks[1].reuse_previous_end_frame)
+        self.assertEqual(scene_tasks[1].continuity_source_segment_id, "ch01-sc01-seg01")
+
+    def test_write_continuity_report_flags_weak_opening_match_and_duplicate_adjacent_segment(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        scene_plan_payload = read_json(story_result.scene_plan_path)
+        target_scene = next(
+            (item for item in scene_plan_payload["scenes"] if len(item.get("segments", [])) >= 2),
+            None,
+        )
+        if target_scene is None:
+            target_scene = scene_plan_payload["scenes"][0]
+            first_segment = target_scene["segments"][0]
+            second_segment = json.loads(json.dumps(first_segment, ensure_ascii=False))
+            second_segment["segment_id"] = first_segment["segment_id"] + "-dup"
+            second_segment["title"] = first_segment["title"] + "续"
+            target_scene["segments"].append(second_segment)
+        else:
+            first_segment = target_scene["segments"][0]
+            second_segment = target_scene["segments"][1]
+
+        first_segment["shot_state"]["end_state_lock"] = "林远停在花架下，右手仍握着信封，没有迈步。"
+        second_segment["continuity_link"]["transition_mode"] = "continue"
+        second_segment["continuity_link"]["previous_segment_id"] = first_segment["segment_id"]
+        second_segment["continuity_link"]["opening_match"] = "承接上一段继续。"
+        second_segment["continuity_link"]["allowed_changes"] = "继续保持承接状态。"
+        second_segment["summary"] = first_segment["summary"]
+        second_segment["shot_state"]["action_progression"] = "林远停在花架下，右手仍握着信封，没有迈步。"
+        second_segment["timed_beats"] = list(first_segment["timed_beats"])
+
+        story_result.scene_plan_path.write_text(
+            json.dumps(scene_plan_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        _, report = write_continuity_report(story_result.output_dir)
+
+        segment_codes = {
+            item.code
+            for item in report.segment_issues
+            if item.segment_id == second_segment["segment_id"]
+        }
+        self.assertIn("opening_match_weak", segment_codes)
+        self.assertIn("action_progression_stalled", segment_codes)
+        self.assertIn("adjacent_segment_duplicate", segment_codes)
 
 
 if __name__ == "__main__":

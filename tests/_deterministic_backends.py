@@ -15,7 +15,13 @@ from storyforge.domains.novel.schemas import (
     StoryDraftSetSchema,
 )
 from storyforge.domains.novel.service import NovelGeneratorService
-from storyforge.domains.video.schemas import SegmentContinuityRepairSchema, VideoSegmentPlanSchema
+from storyforge.domains.video.schemas import (
+    ChapterSceneStructureSchema,
+    SceneContinuityRepairSchema,
+    SceneSegmentContractBatchSchema,
+    SegmentContinuityRepairSchema,
+    VideoSegmentPlanSchema,
+)
 
 
 _LINE_PATTERNS = {
@@ -389,10 +395,16 @@ class DeterministicVideoBackend:
         task = str(request.metadata.get("task", "")).strip()
         if task == "video-character-bible":
             return self._build_character_visual_bible(request)
+        if task == "video-chapter-scene-planner":
+            return self._build_scene_structure(request)
+        if task == "video-scene-segment-planner":
+            return self._build_scene_segment_contracts(request)
         if task == "video-segment-planner":
             return self._build_segment_plan(request)
         if task == "segment-continuity-repair":
             return self._build_segment_repair(request)
+        if task == "scene-continuity-repair":
+            return self._build_scene_repair(request)
         return schema.model_validate({})
 
     def _build_character_visual_bible(self, request: PromptRequest):
@@ -429,6 +441,91 @@ class DeterministicVideoBackend:
                 }
             )
         return {"characters": characters}
+
+    def _build_scene_structure(self, request: PromptRequest):
+        story_title = self._novel_title(request.user_prompt)
+        allowed_names = self._allowed_names(request.user_prompt)
+        chapter_directives = self._chapter_directives(request.user_prompt)
+        focus_characters = allowed_names[:2] or ["主角"]
+        scenes: list[dict[str, object]] = []
+        for chapter_number, chapter_title, chapter_summary in chapter_directives:
+            scene_id = f"ch{chapter_number:02d}-sc01"
+            summary = chapter_summary or f"{chapter_title} 的核心事件。"
+            scenes.append(
+                {
+                    "scene_id": scene_id,
+                    "chapter_number": chapter_number,
+                    "title": f"{chapter_title} / 场景 1",
+                    "summary": summary,
+                    "scene_anchor": f"{story_title} 第 {chapter_number} 章的连续性场景基线",
+                    "scene_bible": {
+                        "location": "统一测试场景",
+                        "time_window": "傍晚",
+                        "weather": "微风",
+                        "lighting": "柔和侧光",
+                        "dominant_palette": ["米白", "灰蓝"],
+                        "background_anchors": ["固定背景锚点"],
+                        "fixed_props": ["关键道具"],
+                        "spatial_layout": "主体位于画面中部，背景结构稳定",
+                        "character_blocking": "主要角色从画面中部入镜",
+                        "continuity_notes": "保持同一场景的光线和空间关系",
+                    },
+                    "involved_characters": focus_characters,
+                }
+            )
+        return ChapterSceneStructureSchema.model_validate({"scenes": scenes})
+
+    def _build_scene_segment_contracts(self, request: PromptRequest):
+        scene_id = str(request.metadata.get("scene_id", "")).strip() or "ch01-sc01"
+        chapter_number = int(request.metadata.get("chapter_number", 1) or 1)
+        allowed_names = self._allowed_names(request.user_prompt)
+        focus_characters = allowed_names[:2] or ["主角"]
+        first_character = focus_characters[0]
+        summary = f"{scene_id} 的核心事件。"
+        return SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "segments": [
+                    {
+                        "segment_id": f"{scene_id}-seg01",
+                        "chapter_number": chapter_number,
+                        "scene_id": scene_id,
+                        "title": f"{scene_id} / 片段 1",
+                        "summary": summary,
+                        "involved_characters": focus_characters,
+                        "start_frame_characters": [first_character],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": [first_character],
+                        "narration": summary,
+                        "dialogue_lines": [],
+                        "subtitle_lines": [summary],
+                        "timed_beats": [f"0-6秒：{summary}"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "framing": "中景",
+                            "camera_motion": "缓慢推进",
+                            "blocking": f"{first_character} 位于画面中心",
+                            "action_progression": summary,
+                            "emotion_progression": "情绪逐步升高",
+                            "prop_continuity": "关键道具保持在手中",
+                            "screen_direction": "保持向右推进",
+                            "end_state_lock": f"{first_character} 在尾部停留一个定格动作",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立新的场景与动作基线",
+                            "transition_reason": "场景起始段",
+                        },
+                    }
+                ],
+            }
+        )
 
     def _build_segment_plan(self, request: PromptRequest):
         story_title = self._novel_title(request.user_prompt)
@@ -534,6 +631,27 @@ class DeterministicVideoBackend:
             duration_seconds=6,
             requires_mid_frame=False,
             transition_hint="auto",
+        )
+
+    def _build_scene_repair(self, request: PromptRequest):
+        scene_id_match = re.search(r'"scene_id":\s*"([^"]+)"', request.user_prompt)
+        scene_id = scene_id_match.group(1) if scene_id_match else "scene"
+        return SceneContinuityRepairSchema(
+            scene_id=scene_id,
+            repair_summary="deterministic scene repair",
+            scene_anchor="修复后的场景锚点，覆盖入口到内部步道的连续空间",
+            scene_bible={
+                "location": "玫瑰园入口连接内部步道的连续空间",
+                "time_window": "傍晚",
+                "weather": "晴朗微风",
+                "lighting": "暖金色夕阳侧光",
+                "dominant_palette": ["暖金", "花叶绿"],
+                "background_anchors": ["入口拱门", "玫瑰花墙", "向内延伸的石板步道"],
+                "fixed_props": ["路灯", "长椅"],
+                "spatial_layout": "镜头可从入口沿步道向园内推进，保持纵深透视和前后景层次",
+                "character_blocking": "角色沿同一条步道从入口向内部移动，不突然跳轴",
+                "continuity_notes": "同一 scene 内保持入口到园内步道的空间连续，不回退成孤立入口角落",
+            },
         )
 
     def _allowed_names(self, user_prompt: str) -> list[str]:

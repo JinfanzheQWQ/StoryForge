@@ -146,6 +146,102 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+#### `POST /v1/projects/scene-structure`
+
+创建“生成场景结构”任务。
+
+这一步会基于当前 `story_source.json` 生成：
+
+- `novel_package.json`
+- `novel_audit.json`
+- `story_memory.json`
+- `character_visual_bible.json`
+- 第一版 `scene_plan.json`
+
+其中：
+
+- `scene_plan.json` 这时只保存 `chapter -> scene` skeleton、`scene_bible` 和 `scene_master_frame` 相关字段
+- 还不会生成正式 `segment contracts`、`segment_plan.json`、`scene_image_manifest.json` 或 `seedance_manifest.json`
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "use_llm": true,
+  "continuity_review_mode": "auto"
+}
+```
+
+说明：
+
+- `continuity_review_mode` 会跟随任务记录保留下来，供后续 `project.segment_contracts`、`project.scenes`、`project.videos` 继承
+- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode` 复用已有 queued / running / completed 任务
+
+#### `POST /v1/projects/segment-contracts`
+
+创建“生成分段合同”任务。
+
+这一步依赖已经完成且未过期的 `project.scene_structure`，并会在已有 scene skeleton 的基础上继续生成：
+
+- `character_image_manifest.json`
+- 最终版 `scene_plan.json`
+- `segment_plan.json`
+- `scene_image_manifest.json`
+- `seedance_manifest.json`
+- `continuity_report.json`
+
+其中：
+
+- 最终版 `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
+- `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "use_llm": true,
+  "continuity_review_mode": "auto"
+}
+```
+
+说明：
+
+- 如果缺少 scene structure 产物，接口会直接返回 `400`
+- `continuity_review_mode` 可选 `off / auto / on`
+- `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
+- 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
+- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode` 复用已有 queued / running / completed 任务
+
+#### `POST /v1/projects/story-analysis`
+
+创建兼容模式下的“生成结构化信息”任务。
+
+这个接口仍会基于当前 `story_source.json` 生成完整结构化与视频规划产物，但内部实现已经改成串行执行：
+
+- `project.scene_structure`
+- `project.segment_contracts`
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "use_llm": true,
+  "continuity_review_mode": "auto"
+}
+```
+
+说明：
+
+- 新页面默认优先调用分步接口；这个兼容接口主要保留给旧调用方与一键式串行执行场景
+- `continuity_review_mode` 的语义与 `project.segment_contracts` 一致
+- 幂等去重会把 `continuity_review_mode` 计入判定；同一正文修订下，切换模式后会创建新的兼容结构化任务
+
 #### `POST /v1/projects/characters`
 
 创建“生成角色图”任务。
@@ -165,49 +261,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `Cast Analyzer` 的 `source_evidence` 仍必须能在正文中定位；当前后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
-- 这一步依赖已经完成且未过期的 `project.story_analysis`
+- 这一步依赖已经完成且未过期的 `project.segment_contracts`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上
-
-#### `POST /v1/projects/story-analysis`
-
-创建“生成结构化信息”任务。
-
-这一步会基于当前 `story_source.json` 生成：
-
-- `novel_package.json`
-- `novel_audit.json`
-- `scene_plan.json`
-- `segment_plan.json`
-- `continuity_report.json`
-
-其中：
-
-- `novel_package.json` 是运行态最小包
-- `novel_audit.json` 保存 `review`、`workflow_trace` 和分析上下文
-- `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
-- 每个 scene 还会携带 `scene_master_frame_prompt / path / status / url`
-- `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
-- `continuity_report.json` 当前包含两层结果：
-  - `V1` 规则校验
-  - 可选的 `V2` LLM 软审校
-
-请求示例：
-
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id",
-  "use_llm": true,
-  "continuity_review_mode": "auto"
-}
-```
-
-说明：
-
-- `continuity_review_mode` 可选 `off / auto / on`
-- `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
-- 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
-- 幂等去重会把 `continuity_review_mode` 计入判定；同一正文修订下，切换模式后会创建新的结构化任务
 
 #### `POST /v1/projects/scenes`
 
@@ -264,9 +319,12 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `segment_id` 可选
+- `scene_id` 可选
 - `merge_only` 可选
 - 传入 `segment_id` 后只会提交该片段对应的 Seedance clip
+- 传入 `scene_id` 后会提交该 scene 下全部 segment 的 Seedance clip
 - 单段执行不会自动重新生成其它片段，也不会自动拼接总片
+- `merge_only = true` 不能与 `segment_id` 或 `scene_id` 同时提交
 - 如果传 `merge_only = true`，则不会再向 Seedance 提交任务，而是把当前已生成的本地 mp4 片段按 manifest 顺序合并成 `rendered/full_story.mp4`
 
 手动合并请求示例：
@@ -283,7 +341,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 创建“连续性智能修复”任务。
 
-当前是首版 `segment` 级闭环，只会修复并重跑目标片段，不会批量改其它片段或自动重生成整场 scene 母图。
+当前支持两种 scope：
+
+- `segment_id`：片段级智能修复。会重写目标片段合同，并返回后续建议执行的媒体动作
+- `scene_id`：场景级智能修复。会重写目标 scene 的 `scene_anchor / scene_bible`，并返回 `selection_mode`、`affected_segment_ids` 与后续建议执行的媒体动作
 
 请求示例：
 
@@ -297,15 +358,76 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+或：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "scene_id": "ch01-sc01",
+  "use_llm": true,
+  "continuity_review_mode": "on"
+}
+```
+
 说明：
 
-- `segment_id` 必填
-- 这一步要求输出目录里已经存在 `continuity_report.json`，且目标 `segment_id` 在报告里至少有一条 `segment` 级问题
-- 当前任务会先让 LLM 重写该段执行合同，再只回写目标片段对应的 `segment_plan.json / scene_image_manifest.json / seedance_manifest.json`
-- 随后会自动串行重跑该段场景图和视频
-- 非目标 segment 的 manifest 状态和已生成产物不会被重置
-- 会额外落盘 `continuity_repair_{segment_id}.json`
-- 对同一 `source_task_id + segment_id`，如果已经有 queued / running 的修复任务，后端会直接返回已有任务
+- `segment_id` 与 `scene_id` 必须二选一
+- 这一步要求输出目录里已经存在 `continuity_report.json`
+- 传 `segment_id` 时，目标片段必须在报告里至少有一条 `segment` 级问题
+- 传 `scene_id` 时，目标 scene 必须在报告里至少有一条 `scene` 级问题，或该 scene 下至少有一条可定位的 `segment` 级问题
+- `segment_id` 模式会先让 LLM 重写该段执行合同，再只回写目标片段对应的 `segment_plan.json / scene_image_manifest.json / seedance_manifest.json`
+- `scene_id` 模式会让 LLM 重写该 scene 的 `scene_anchor / scene_bible`，回写 `scene_plan.json`、受影响片段的 `segment_plan.json`，并把对应 `scene_image_manifest.json / seedance_manifest.json` 目标片段重置为待重新执行
+- 两种模式当前都只更新修复合同与修复报告，不会自动重跑场景母图、场景图或视频
+- 如果目标当前没有可修复问题，任务会直接以 `completed` 结束，并返回：
+  - `repair_execution_mode = "noop"`
+  - `media_regeneration_required = false`
+  - `pending_media_actions = []`
+- 如果目标存在可修复问题，任务结果会返回：
+  - `repair_execution_mode = "plan_only"`
+  - `media_regeneration_required = true`
+  - `pending_media_actions`
+- `scene_id` 模式会额外落盘 `continuity_repair_{scene_id}.json`，其中包含 `selection_mode` 与 `affected_segment_ids`
+- 修复报告文件名统一为 `continuity_repair_<segment_id|scene_id>.json`
+- 对同一 `source_task_id + segment_id` 或 `source_task_id + scene_id`，如果已经有 queued / running 的修复任务，后端会直接返回已有任务
+
+#### `POST /v1/projects/continuity-repair-batch`
+
+创建“批量连续性合同修复”任务。
+
+这一步只会按 `continuity_report.json` 里的风险优先级，分批回写 `scene` / `segment` 合同与连续性报告，不会自动重跑场景母图、场景图、视频或合并任务。
+
+请求示例：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "use_llm": true,
+  "continuity_review_mode": "on",
+  "severity_threshold": "medium",
+  "max_units_per_batch": 4
+}
+```
+
+说明：
+
+- `severity_threshold` 可选 `high / medium / low`
+- `max_units_per_batch` 默认 `4`，范围 `1-12`
+- 当前批次会优先处理更高风险目标；同风险下优先 `scene`，再处理 `segment`
+- 每次只处理一小批目标；如果结果里 `has_more_batches = true`，表示还有剩余风险可继续发下一批
+- 任务结果会额外返回：
+  - `repair_execution_mode`
+  - `pending_media_actions`
+  - `processed_unit_count`
+  - `repaired_unit_count`
+  - `noop_unit_count`
+  - `failed_unit_count`
+  - `repaired_scene_ids`
+  - `repaired_segment_ids`
+  - `remaining_repairable_count`
+  - `has_more_batches`
+- 这个接口不会新建任何媒体任务；它只更新合同与报告，后续是否重跑 `project.scenes` / `project.videos` 仍由用户手动决定
 
 #### `POST /v1/projects/images`
 
@@ -324,7 +446,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 重写 `story_source.json`
 - 清除旧的 `novel_package.json`、`novel_audit.json`、角色图、场景图、视频等派生产物
 - 清除旧的 `continuity_repair_*.json`
-- 让前端把结构化信息与媒体阶段视为“待重新生成”
+- 让前端把场景结构、分段合同与媒体阶段视为“待重新生成”
 
 #### `POST /v1/projects/novel-to-video`
 
@@ -363,10 +485,19 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `error` 为失败时的可展示原因，前端会直接展示它。
-- 阶段任务会通过 `result.pipeline_root_task_id` 指向同一条 story run。
-- `result.story_source_revision` 用于判断结构化信息、图片和视频是否仍对应当前正文。
+- 阶段任务会在提交时继承 `pipeline_root_task_id`，并通过 `payload.pipeline_root_task_id` 与 `result.pipeline_root_task_id` 指向同一条 story run。
+- `result.story_source_revision` 用于判断场景结构、分段合同、图片和视频是否仍对应当前正文。
 - `project.scenes` 的单段任务会带 `segment_id`；场景母图重生成任务会带 `scene_id` 和 `master_only = true`
-- `project.continuity_repair` 会带 `segment_id`，并按 `continuity_repair_started -> continuity_repair_plan_completed -> continuity_repair_scene_completed -> continuity_repair_completed` 逐步更新
+- `project.scenes` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部关键帧；内部连续性修复链路还可进一步附带受影响 `segment_ids`，把重跑范围缩小到 scene 内局部片段
+- `project.videos` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部视频片段
+- `project.continuity_repair` 现在可带 `segment_id` 或 `scene_id`
+- `project.continuity_repair_batch` 用于按风险优先级批量回写连续性合同，不会自动重跑媒体
+- `project.continuity_repair` 当前是 `plan-only`；任务会停在 `continuity_repair_plan_completed`，随后由任务状态本身转为 `completed`
+- `project.continuity_repair_batch` 当前也统一是 `plan-only`；任务会停在 `continuity_repair_batch_completed`，随后由任务状态本身转为 `completed`
+- 如果目标没有问题可修，修复任务会以 `completed noop` 结束，不会再报失败
+- 修复任务的 `result` 会额外带 `repair_execution_mode`、`media_regeneration_required` 和 `pending_media_actions`
+- `scene_id` 修复任务的 `result` 还会额外带 `selection_mode` 与 `affected_segment_ids`，用于解释本次修复是局部联动还是整 scene 方案
+- `project.continuity_repair_batch` 的 `result` 还会额外带 `processed_unit_count`、`repaired_unit_count`、`noop_unit_count`、`failed_unit_count`、`remaining_repairable_count` 与 `has_more_batches`
 - 如果任务或其根 run 开启了 `V2` 软审校，`payload` / `result` 里会带 `continuity_review_mode`
 
 #### `GET /v1/tasks/{task_id}/artifacts`
@@ -402,6 +533,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 如果某个片段执行过智能修复，`documents` 里还可能出现：
 
 - `continuity_repair_{segment_id}.json`
+- `continuity_repair_{scene_id}.json`
 
 `continuity_summary` 当前会返回：
 

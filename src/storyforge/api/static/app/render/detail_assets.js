@@ -112,6 +112,12 @@ const CONTINUITY_V2_STATUS_LABEL = {
   failed: "失败",
 };
 
+const REPAIR_PENDING_ACTION_LABELS = {
+  regenerate_scene_master_frame: "手动重生成场景母图",
+  regenerate_scene_images: "手动重生成场景图",
+  regenerate_video: "手动重生成视频",
+};
+
 function renderContinuityModeOptions(selectedMode) {
   const current = String(selectedMode || "auto").trim().toLowerCase() || "auto";
   return [
@@ -125,7 +131,8 @@ function renderContinuityModeOptions(selectedMode) {
 
 function renderStageFailureList(run, storySourceRevision) {
   const failedStages = [
-    ["结构化信息", run.latestAnalysisTask],
+    ["场景结构", run.latestSceneStructureTask],
+    ["分段合同", run.latestSegmentContractsTask],
     ["角色图", run.latestCharacterTask],
     ["场景图", run.latestSceneTask],
     ["视频", run.latestVideoTask],
@@ -442,8 +449,161 @@ function getLatestSceneMasterTask(run, sceneId) {
   )) || null;
 }
 
+function getLatestSceneRepairTask(run, sceneId) {
+  return run?.tasks?.find((task) => (
+    task.task_type === "project.continuity_repair"
+    && String(task.payload?.scene_id || task.result?.scene_id || "") === String(sceneId || "")
+    && !String(task.payload?.segment_id || task.result?.segment_id || "")
+  )) || null;
+}
+
+function getLatestBatchRepairTask(run) {
+  return run?.tasks?.find((task) => task.task_type === "project.continuity_repair_batch") || null;
+}
+
+function taskCreatedTimestamp(task) {
+  const value = Date.parse(String(task?.created_at || ""));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function isBusyTaskStatus(status) {
+  return status === "queued" || status === "running";
+}
+
+function isTaskStartedAfter(task, referenceTask, storySourceRevision) {
+  if (!task || !referenceTask) {
+    return false;
+  }
+  if (taskCreatedTimestamp(task) <= taskCreatedTimestamp(referenceTask)) {
+    return false;
+  }
+  const status = getRunStageStatus(task, storySourceRevision);
+  return status === "queued" || status === "running" || status === "completed";
+}
+
+function getRepairAffectedSegmentIds(task) {
+  return new Set(
+    (Array.isArray(task?.result?.affected_segment_ids) ? task.result.affected_segment_ids : [])
+      .map((segmentId) => String(segmentId || "").trim())
+      .filter(Boolean),
+  );
+}
+
+function hasLaterMatchingTask(run, repairTask, storySourceRevision, matcher) {
+  return (run?.tasks || []).some(
+    (task) => matcher(task) && isTaskStartedAfter(task, repairTask, storySourceRevision),
+  );
+}
+
+function hasSegmentStageCoverage(run, repairTask, storySourceRevision, taskType, segmentIds) {
+  const targets = Array.from(segmentIds).filter(Boolean);
+  if (!targets.length) {
+    return false;
+  }
+  return targets.every((segmentId) => hasLaterMatchingTask(
+    run,
+    repairTask,
+    storySourceRevision,
+    (task) => task.task_type === taskType
+      && String(task.payload?.segment_id || task.result?.segment_id || "") === segmentId,
+  ));
+}
+
+function resolveRepairRemainingActions(run, repairTask, storySourceRevision) {
+  if (!repairTask || repairTask.status !== "completed" || !repairTask.result?.media_regeneration_required) {
+    return [];
+  }
+  const pendingActions = Array.isArray(repairTask.result?.pending_media_actions)
+    ? repairTask.result.pending_media_actions
+      .map((action) => String(action || "").trim())
+      .filter(Boolean)
+    : [];
+  if (!pendingActions.length) {
+    return [];
+  }
+
+  const sceneId = String(repairTask.payload?.scene_id || repairTask.result?.scene_id || "").trim();
+  const segmentId = String(repairTask.payload?.segment_id || repairTask.result?.segment_id || "").trim();
+  const affectedSegmentIds = getRepairAffectedSegmentIds(repairTask);
+  if (!affectedSegmentIds.size && segmentId) {
+    affectedSegmentIds.add(segmentId);
+  }
+
+  return pendingActions.filter((action) => {
+    if (action === "regenerate_scene_master_frame") {
+      return !hasLaterMatchingTask(
+        run,
+        repairTask,
+        storySourceRevision,
+        (task) => (
+          task.task_type === "project.scenes"
+          && Boolean(task.payload?.master_only || task.result?.master_only)
+          && String(task.payload?.scene_id || task.result?.scene_id || "") === sceneId
+        ),
+      );
+    }
+
+    if (action === "regenerate_scene_images") {
+      const coveredByBroadTask = hasLaterMatchingTask(
+        run,
+        repairTask,
+        storySourceRevision,
+        (task) => (
+          task.task_type === "project.images"
+          || task.task_type === "project.build"
+          || (
+            task.task_type === "project.scenes"
+            && !task.payload?.master_only
+            && !task.payload?.segment_id
+            && !task.payload?.scene_id
+          )
+          || (
+            task.task_type === "project.scenes"
+            && !task.payload?.master_only
+            && sceneId
+            && String(task.payload?.scene_id || task.result?.scene_id || "") === sceneId
+          )
+        ),
+      );
+      if (coveredByBroadTask) {
+        return false;
+      }
+      return !hasSegmentStageCoverage(run, repairTask, storySourceRevision, "project.scenes", affectedSegmentIds);
+    }
+
+    if (action === "regenerate_video") {
+      const coveredByBroadTask = hasLaterMatchingTask(
+        run,
+        repairTask,
+        storySourceRevision,
+        (task) => (
+          task.task_type === "project.build"
+          || (
+            task.task_type === "project.videos"
+            && !task.payload?.merge_only
+            && !task.payload?.segment_id
+            && !task.payload?.scene_id
+          )
+          || (
+            task.task_type === "project.videos"
+            && !task.payload?.merge_only
+            && sceneId
+            && String(task.payload?.scene_id || task.result?.scene_id || "") === sceneId
+          )
+        ),
+      );
+      if (coveredByBroadTask) {
+        return false;
+      }
+      return !hasSegmentStageCoverage(run, repairTask, storySourceRevision, "project.videos", affectedSegmentIds);
+    }
+
+    return true;
+  });
+}
+
 function buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus) {
-  if (sceneMasterTaskStatus === "queued" || sceneMasterTaskStatus === "running") {
+  if (isBusyTaskStatus(sceneMasterTaskStatus)) {
     return "场景母图生成中";
   }
   if (sceneGroup.sceneMasterFrame) {
@@ -455,8 +615,40 @@ function buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus) {
   return "生成场景母图";
 }
 
+function buildSceneRepairButtonLabel(sceneRepairTaskStatus, hasPendingActions) {
+  if (isBusyTaskStatus(sceneRepairTaskStatus)) {
+    return "智能修复中";
+  }
+  if (sceneRepairTaskStatus === "failed") {
+    return "重试智能修复";
+  }
+  if (hasPendingActions) {
+    return "修复方案已更新";
+  }
+  if (sceneRepairTaskStatus === "completed") {
+    return "重新智能修复";
+  }
+  return "智能修复场景";
+}
+
+function buildBatchRepairButtonLabel(batchRepairTaskStatus, batchRepairTask) {
+  if (isBusyTaskStatus(batchRepairTaskStatus)) {
+    return "批量修复中";
+  }
+  if (batchRepairTaskStatus === "failed") {
+    return "重试批量修复";
+  }
+  if (batchRepairTask?.result?.has_more_batches) {
+    return "继续修下一批";
+  }
+  if (batchRepairTaskStatus === "completed") {
+    return "重新批量修复";
+  }
+  return "一键修复风险合同";
+}
+
 function buildSegmentSceneButtonLabel(segment, sceneTaskStatus) {
-  if (sceneTaskStatus === "queued" || sceneTaskStatus === "running") {
+  if (isBusyTaskStatus(sceneTaskStatus)) {
     return "场景图生成中";
   }
   if (segment.sceneReady) {
@@ -469,7 +661,7 @@ function buildSegmentSceneButtonLabel(segment, sceneTaskStatus) {
 }
 
 function buildSegmentVideoButtonLabel(segment, videoTaskStatus) {
-  if (videoTaskStatus === "queued" || videoTaskStatus === "running") {
+  if (isBusyTaskStatus(videoTaskStatus)) {
     return "视频生成中";
   }
   if (segment.videoReady) {
@@ -481,9 +673,12 @@ function buildSegmentVideoButtonLabel(segment, videoTaskStatus) {
   return "生成视频";
 }
 
-function buildSegmentRepairButtonLabel(segment, repairTaskStatus) {
-  if (repairTaskStatus === "queued" || repairTaskStatus === "running") {
+function buildSegmentRepairButtonLabel(segment, repairTaskStatus, hasPendingActions) {
+  if (isBusyTaskStatus(repairTaskStatus)) {
     return "智能修复中";
+  }
+  if (hasPendingActions) {
+    return "修复合同已更新";
   }
   if (segment.videoReady || segment.sceneReady) {
     return "重新智能修复";
@@ -513,6 +708,44 @@ function renderSegmentTaskError(task, label) {
     return "";
   }
   return `<p class="timeline-task-error">${escapeHtml(`${label}：${error}`)}</p>`;
+}
+
+function renderRepairPlanNotice(task, remainingActions = null) {
+  if (!task || task.status !== "completed" || !task.result?.media_regeneration_required) {
+    return "";
+  }
+  const pendingActions = Array.isArray(remainingActions)
+    ? remainingActions
+    : (
+      Array.isArray(task.result?.pending_media_actions)
+        ? task.result.pending_media_actions
+        : []
+    );
+  const actionLabels = pendingActions
+      .map((action) => REPAIR_PENDING_ACTION_LABELS[action] || action)
+      .filter(Boolean);
+  const repairSummary = String(task.result?.repair_summary || "").trim();
+  const message = actionLabels.length
+    ? [
+      repairSummary || "智能修复已完成，只更新了当前修复合同。",
+      `媒体不会自动重跑，请按需要继续：${actionLabels.join("、")}。`,
+    ].join(" ")
+    : [
+      repairSummary || "智能修复已完成，只更新了当前修复合同。",
+      "后续媒体任务已手动提交或完成，可以继续审阅最新结果。",
+    ].join(" ");
+  return `<p class="asset-note">${escapeHtml(message)}</p>`;
+}
+
+function renderBatchRepairNotice(task) {
+  if (!task || task.status !== "completed") {
+    return "";
+  }
+  const summary = String(task.result?.repair_summary || "").trim();
+  if (!summary) {
+    return "";
+  }
+  return `<p class="asset-note">${escapeHtml(summary)}</p>`;
 }
 
 function buildContinuityLookup(groups, keyField) {
@@ -675,12 +908,25 @@ function renderTimelineTab(task, artifacts, context, run = null) {
   const continuitySegmentLookup = buildContinuityLookup(artifacts?.continuity_segment_groups, "segment_id");
   const rootTask = run?.rootTask || task;
   const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
-  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
+  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
   const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
   const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
+  const batchRepairTask = getLatestBatchRepairTask(run);
+  const batchRepairTaskStatus = run ? getRunStageStatus(batchRepairTask, storySourceRevision) : "idle";
   const readySceneCount = segments.filter((segment) => segment.sceneReady).length;
   const readyVideoCount = segments.filter((segment) => segment.videoReady).length;
   const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeTaskStatus);
+  const repairableRiskCount = Number(artifacts?.continuity_summary?.high_risk_count || 0)
+    + Number(artifacts?.continuity_summary?.medium_risk_count || 0);
+  const runHasBusyRepairTask = (run?.tasks || []).some(
+    (item) => (
+      (item.task_type === "project.continuity_repair" || item.task_type === "project.continuity_repair_batch")
+      && isBusyTaskStatus(getRunStageStatus(item, storySourceRevision))
+    ),
+  );
+  const canRunBatchRepair = segmentContractsStatus === "completed"
+    && repairableRiskCount > 0
+    && !runHasBusyRepairTask;
 
   return `
     <section class="timeline-shell">
@@ -688,7 +934,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
         <div>
           <p class="section-kicker">Timeline</p>
           <h4>按视频片段审片</h4>
-          <p class="asset-note">结构化信息完成后，这里会按 LLM 生成的 segment_plan 逐段展示。每一段都可以单独生成场景图和视频，不再一次性把全部片段跑完。</p>
+          <p class="asset-note">分段合同完成后，这里会按 LLM 生成的 segment_plan 逐段展示。每一段都可以单独生成场景图和视频，不再一次性把全部片段跑完。</p>
           <p class="asset-note">首帧、中段锚点帧、尾帧和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
         </div>
         <div class="detail-chip-row">
@@ -712,6 +958,16 @@ function renderTimelineTab(task, artifacts, context, run = null) {
           <button
             type="button"
             class="secondary"
+            data-auto-repair-batch="${escapeAttr(rootTask.task_id)}"
+            data-project-id="${escapeAttr(rootTask.project_id)}"
+            data-source-task="${escapeAttr(rootTask.task_id)}"
+            ${canRunBatchRepair ? "" : "disabled"}
+          >
+            ${escapeHtml(buildBatchRepairButtonLabel(batchRepairTaskStatus, batchRepairTask))}
+          </button>
+          <button
+            type="button"
+            class="secondary"
             data-merge-videos="${escapeAttr(rootTask.task_id)}"
             data-project-id="${escapeAttr(rootTask.project_id)}"
             ${canMergeVideos ? "" : "disabled"}
@@ -720,6 +976,12 @@ function renderTimelineTab(task, artifacts, context, run = null) {
           </button>
         </div>
         ${renderContinuityOverview(artifacts?.continuity_summary)}
+        ${renderSegmentTaskError(batchRepairTask, "批量合同修复失败")}
+        ${renderBatchRepairNotice(batchRepairTask)}
+        ${renderRepairPlanNotice(
+          batchRepairTask,
+          resolveRepairRemainingActions(run, batchRepairTask, storySourceRevision),
+        )}
       </article>
 
       ${artifacts.full_story ? renderFullStoryBlock(artifacts.full_story, context, galleryId) : ""}
@@ -733,14 +995,42 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                   (sceneGroup) => {
                     const sceneContinuity = continuitySceneLookup.get(sceneGroup.sceneId) || null;
                     const sceneMasterTask = getLatestSceneMasterTask(run, sceneGroup.sceneId);
+                    const sceneRepairTask = getLatestSceneRepairTask(run, sceneGroup.sceneId);
                     const sceneMasterTaskStatus = run ? getRunStageStatus(sceneMasterTask, storySourceRevision) : "idle";
+                    const sceneRepairTaskStatus = run ? getRunStageStatus(sceneRepairTask, storySourceRevision) : "idle";
+                    const sceneRepairRemainingActions = resolveRepairRemainingActions(
+                      run,
+                      sceneRepairTask,
+                      storySourceRevision,
+                    );
+                    const sceneRepairAffectedSegmentIds = getRepairAffectedSegmentIds(sceneRepairTask);
+                    const sceneHasBusySegmentTask = sceneGroup.segments.some((segment) => {
+                      const segmentSceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
+                      const segmentVideoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
+                      const segmentRepairTask = getLatestSegmentStageTask(run, "project.continuity_repair", segment.segmentId);
+                      return [
+                        getRunStageStatus(segmentSceneTask, storySourceRevision),
+                        getRunStageStatus(segmentVideoTask, storySourceRevision),
+                        getRunStageStatus(segmentRepairTask, storySourceRevision),
+                      ].some((status) => isBusyTaskStatus(status));
+                    });
                     const canGenerateSceneMaster =
-                      analysisStatus === "completed"
-                      && !["queued", "running"].includes(sceneMasterTaskStatus);
+                      segmentContractsStatus === "completed"
+                      && !isBusyTaskStatus(batchRepairTaskStatus)
+                      && !isBusyTaskStatus(sceneRepairTaskStatus)
+                      && !isBusyTaskStatus(sceneMasterTaskStatus)
+                      && !sceneHasBusySegmentTask;
+                    const canRunSceneRepair =
+                      segmentContractsStatus === "completed"
+                      && Boolean(sceneContinuity?.issue_count)
+                      && !isBusyTaskStatus(batchRepairTaskStatus)
+                      && !isBusyTaskStatus(sceneRepairTaskStatus)
+                      && !isBusyTaskStatus(sceneMasterTaskStatus)
+                      && !sceneHasBusySegmentTask;
                     const sceneMasterRecommended = hasRecommendedContinuityAction(
                       sceneContinuity,
                       "regenerate_scene_master_frame",
-                    );
+                    ) || sceneRepairRemainingActions.includes("regenerate_scene_master_frame");
                     return `
                     <section class="timeline-scene-group">
                       <div class="timeline-scene-head">
@@ -756,8 +1046,22 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           <div class="detail-chip-row">
                             ${chip(`片段 ${sceneGroup.segments.length}`)}
                             ${chip(`母图 ${sceneGroup.sceneMasterFrame ? "已生成" : "未生成"}`)}
+                            ${sceneRepairRemainingActions.length ? chip("修复方案已更新") : ""}
                             ${renderContinuityRiskChips(sceneContinuity)}
                           </div>
+                          <button
+                            type="button"
+                            class="secondary small"
+                            data-auto-repair-scene="${escapeAttr(sceneGroup.sceneId)}"
+                            data-project-id="${escapeAttr(rootTask.project_id)}"
+                            data-source-task="${escapeAttr(rootTask.task_id)}"
+                            ${canRunSceneRepair ? "" : "disabled"}
+                          >
+                            ${escapeHtml(buildSceneRepairButtonLabel(
+                              sceneRepairTaskStatus,
+                              sceneRepairRemainingActions.length > 0,
+                            ))}
+                          </button>
                           <button
                             type="button"
                             class="secondary small${sceneMasterRecommended ? " recommended-action" : ""}"
@@ -771,6 +1075,8 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                         </div>
                       </div>
                       ${renderContinuityIssueList(sceneContinuity)}
+                      ${renderSegmentTaskError(sceneRepairTask, "场景智能修复失败")}
+                      ${renderRepairPlanNotice(sceneRepairTask, sceneRepairRemainingActions)}
                       <div class="timeline-scene-master">
                         ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
                       </div>
@@ -786,26 +1092,55 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                     const sceneTaskStatus = run ? getRunStageStatus(sceneTask, storySourceRevision) : "idle";
                     const videoTaskStatus = run ? getRunStageStatus(videoTask, storySourceRevision) : "idle";
                     const repairTaskStatus = run ? getRunStageStatus(repairTask, storySourceRevision) : "idle";
+                    const segmentRepairRemainingActions = resolveRepairRemainingActions(
+                      run,
+                      repairTask,
+                      storySourceRevision,
+                    );
+                    const sceneScopeLocked =
+                      isBusyTaskStatus(batchRepairTaskStatus)
+                      || runHasBusyRepairTask
+                      || isBusyTaskStatus(sceneRepairTaskStatus)
+                      || isBusyTaskStatus(sceneMasterTaskStatus);
+                    const segmentRepairLocked = isBusyTaskStatus(repairTaskStatus);
+                    const affectedBySceneRepair = sceneRepairAffectedSegmentIds.has(segment.segmentId);
                     const canGenerateScene =
                       characterStatus === "completed"
-                      && !["queued", "running"].includes(sceneTaskStatus);
+                      && !sceneScopeLocked
+                      && !segmentRepairLocked
+                      && !isBusyTaskStatus(sceneTaskStatus)
+                      && !isBusyTaskStatus(videoTaskStatus);
                     const canGenerateVideo =
                       segment.sceneReady
-                      && !["queued", "running"].includes(videoTaskStatus);
+                      && !sceneScopeLocked
+                      && !segmentRepairLocked
+                      && !isBusyTaskStatus(sceneTaskStatus)
+                      && !isBusyTaskStatus(videoTaskStatus);
                     const canRunRepair =
                       characterStatus === "completed"
                       && Boolean(segmentContinuity?.issue_count)
-                      && !["queued", "running"].includes(repairTaskStatus)
-                      && !["queued", "running"].includes(sceneTaskStatus)
-                      && !["queued", "running"].includes(videoTaskStatus);
+                      && !sceneScopeLocked
+                      && !isBusyTaskStatus(repairTaskStatus)
+                      && !isBusyTaskStatus(sceneTaskStatus)
+                      && !isBusyTaskStatus(videoTaskStatus);
                     const sceneRecommended = hasRecommendedContinuityAction(
                       segmentContinuity,
                       "regenerate_scene_images",
-                    );
+                    )
+                      || segmentRepairRemainingActions.includes("regenerate_scene_images")
+                      || (
+                        affectedBySceneRepair
+                        && sceneRepairRemainingActions.includes("regenerate_scene_images")
+                      );
                     const videoRecommended = hasRecommendedContinuityAction(
                       segmentContinuity,
                       "regenerate_video",
-                    );
+                    )
+                      || segmentRepairRemainingActions.includes("regenerate_video")
+                      || (
+                        affectedBySceneRepair
+                        && sceneRepairRemainingActions.includes("regenerate_video")
+                      );
                     return `
                     <article class="timeline-card">
                       <div class="timeline-card-head">
@@ -829,6 +1164,8 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
                           ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
                           ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+                          ${segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
+                          ${affectedBySceneRepair && sceneRepairRemainingActions.length ? chip("场景修复目标") : ""}
                           ${renderContinuityRiskChips(segmentContinuity)}
                         </div>
                         ${renderContinuityIssueList(segmentContinuity)}
@@ -841,7 +1178,11 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                             data-source-task="${escapeAttr(rootTask.task_id)}"
                             ${canRunRepair ? "" : "disabled"}
                           >
-                            ${escapeHtml(buildSegmentRepairButtonLabel(segment, repairTaskStatus))}
+                            ${escapeHtml(buildSegmentRepairButtonLabel(
+                              segment,
+                              repairTaskStatus,
+                              segmentRepairRemainingActions.length > 0,
+                            ))}
                           </button>
                           <button
                             type="button"
@@ -865,6 +1206,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                           </button>
                         </div>
                         ${renderSegmentTaskError(repairTask, "智能修复失败")}
+                        ${renderRepairPlanNotice(repairTask, segmentRepairRemainingActions)}
                         ${renderSegmentTaskError(sceneTask, "场景图失败")}
                         ${renderSegmentTaskError(videoTask, "视频失败")}
                       </div>
@@ -924,27 +1266,46 @@ function renderStoryTab(task, context, run = null) {
   }
 
   const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : storySource.story_source_revision;
-  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
-  const canAnalyze =
+  const sceneStructureStatus = run ? getRunStageStatus(run.latestSceneStructureTask, storySourceRevision) : "idle";
+  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
+  const canGenerateSceneStructure =
     !meta.loading
     && !meta.saving
     && !meta.dirty
-    && !["queued", "running", "completed"].includes(analysisStatus);
-  const analysisLabel =
-    analysisStatus === "completed"
-      ? "结构化已完成"
-      : analysisStatus === "stale"
-        ? "重新生成结构化信息"
-        : analysisStatus === "running"
-          ? "结构化生成中"
-          : "生成结构化信息";
+    && !["queued", "running", "completed"].includes(sceneStructureStatus);
+  const canGenerateSegmentContracts =
+    !meta.loading
+    && !meta.saving
+    && !meta.dirty
+    && sceneStructureStatus === "completed"
+    && !["queued", "running", "completed"].includes(segmentContractsStatus);
+  const sceneStructureLabel =
+    sceneStructureStatus === "completed"
+      ? "场景结构已完成"
+      : sceneStructureStatus === "stale"
+        ? "重新生成场景结构"
+        : sceneStructureStatus === "running"
+          ? "场景结构生成中"
+          : "生成场景结构";
+  const segmentContractsLabel =
+    segmentContractsStatus === "completed"
+      ? "分段合同已完成"
+      : segmentContractsStatus === "stale"
+        ? "重新生成分段合同"
+        : segmentContractsStatus === "running"
+          ? "分段合同生成中"
+          : "生成分段合同";
   const statusText =
     meta.message
-    || (analysisStatus === "completed"
-      ? "结构化信息已完成。继续生成角色图，或修改并保存正文后再重新生成结构化信息。"
-      : analysisStatus === "stale"
-        ? "故事文本已变更，旧的结构化结果已失效。请保存后重新生成结构化信息。"
-        : "先检查并按需修改小说正文，保存后再进入结构化解析。");
+    || (sceneStructureStatus === "stale"
+      ? "故事文本已变更，旧的场景结构结果已失效。请保存后重新生成场景结构。"
+      : segmentContractsStatus === "stale"
+        ? "分段合同已失效。请先重新生成场景结构，再继续生成分段合同。"
+        : segmentContractsStatus === "completed"
+          ? "场景结构和分段合同都已完成。继续生成角色图，或修改并保存正文后重新规划。"
+          : sceneStructureStatus === "completed"
+            ? "场景结构已完成。请先检查 scene 划分，再继续生成分段合同。"
+            : "先检查并按需修改小说正文，保存后再进入场景结构和分段合同解析。");
 
   return `
     <section class="story-editor-shell">
@@ -968,17 +1329,27 @@ function renderStoryTab(task, context, run = null) {
               type="button"
               class="secondary"
               data-story-source-project="${escapeAttr(locator.projectId)}"
-              data-generate-story-analysis="${escapeAttr(locator.sourceTaskId)}"
-              ${canAnalyze ? "" : "disabled"}
+              data-generate-scene-structure="${escapeAttr(locator.sourceTaskId)}"
+              ${canGenerateSceneStructure ? "" : "disabled"}
             >
-              ${escapeHtml(analysisLabel)}
+              ${escapeHtml(sceneStructureLabel)}
+            </button>
+            <button
+              type="button"
+              class="secondary"
+              data-story-source-project="${escapeAttr(locator.projectId)}"
+              data-generate-segment-contracts="${escapeAttr(locator.sourceTaskId)}"
+              ${canGenerateSegmentContracts ? "" : "disabled"}
+            >
+              ${escapeHtml(segmentContractsLabel)}
             </button>
           </div>
         </div>
         <div class="detail-chip-row">
           ${chip(`章节 ${storySource.chapters.length}`)}
           ${chip(`文本 ${meta.dirty ? "待保存" : "已保存"}`)}
-          ${chip(`结构 ${stageStatusLabel(analysisStatus)}`)}
+          ${chip(`场景结构 ${stageStatusLabel(sceneStructureStatus)}`)}
+          ${chip(`分段合同 ${stageStatusLabel(segmentContractsStatus)}`)}
           ${storySource.story_source_revision ? chip(`修订 ${formatShortTime(storySource.story_source_revision)}`) : ""}
         </div>
         <p
@@ -1207,7 +1578,8 @@ export function renderRunStageActions(run) {
   }
 
   const storySourceRevision = getStorySourceRevision(rootTask);
-  const analysisStatus = getRunStageStatus(run.latestAnalysisTask, storySourceRevision);
+  const sceneStructureStatus = getRunStageStatus(run.latestSceneStructureTask, storySourceRevision);
+  const segmentContractsStatus = getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision);
   const characterStatus = getRunStageStatus(run.latestCharacterTask, storySourceRevision);
   const sceneStatus = getRunStageStatus(run.latestSceneTask, storySourceRevision);
   const videoStatus = getRunStageStatus(run.latestVideoTask, storySourceRevision);
@@ -1216,37 +1588,53 @@ export function renderRunStageActions(run) {
   const storyMeta = storyLocator
     ? getStorySourceMeta(storyLocator.projectId, storyLocator.sourceTaskId)
     : { dirty: false, loading: false, saving: false };
-  const analysisReady = analysisStatus === "completed";
-  const canGenerateAnalysis =
+  const sceneStructureReady = sceneStructureStatus === "completed";
+  const segmentContractsReady = segmentContractsStatus === "completed";
+  const canGenerateSceneStructure =
     rootTask.status === "completed"
     && !storyMeta.dirty
     && !storyMeta.loading
     && !storyMeta.saving
-    && !["queued", "running", "completed"].includes(analysisStatus);
+    && !["queued", "running", "completed"].includes(sceneStructureStatus);
+  const canGenerateSegmentContracts =
+    sceneStructureReady
+    && !storyMeta.dirty
+    && !storyMeta.loading
+    && !storyMeta.saving
+    && !["queued", "running", "completed"].includes(segmentContractsStatus);
   const canGenerateCharacters =
-    analysisReady && !["queued", "running", "completed"].includes(characterStatus);
+    segmentContractsReady && !["queued", "running", "completed"].includes(characterStatus);
   const plannedSegments = run.latestArtifacts?.planned_segments || [];
   const readySceneCount = plannedSegments.filter((segment) => segment.scene_ready).length;
   const readyVideoCount = plannedSegments.filter((segment) => segment.video_ready).length;
   const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeStatus);
   const continuityReviewMode = resolveRunContinuityReviewMode(run);
 
-  const analysisButtonLabel =
-    analysisStatus === "failed" || analysisStatus === "stale"
-      ? "重新生成结构化信息"
-      : analysisStatus === "completed"
-        ? "结构化已完成"
-        : analysisStatus === "running"
-          ? "结构化生成中"
-          : "生成结构化信息";
+  const sceneStructureButtonLabel =
+    sceneStructureStatus === "failed" || sceneStructureStatus === "stale"
+      ? "重新生成场景结构"
+      : sceneStructureStatus === "completed"
+        ? "场景结构已完成"
+        : sceneStructureStatus === "running"
+          ? "场景结构生成中"
+          : "生成场景结构";
+  const segmentContractsButtonLabel =
+    segmentContractsStatus === "failed" || segmentContractsStatus === "stale"
+      ? "重新生成分段合同"
+      : segmentContractsStatus === "completed"
+        ? "分段合同已完成"
+        : segmentContractsStatus === "running"
+          ? "分段合同生成中"
+          : "生成分段合同";
   const characterButtonLabel =
     characterStatus === "failed" || characterStatus === "stale" ? "重新生成角色图" : characterStatus === "completed" ? "角色图已完成" : characterStatus === "running" ? "角色图生成中" : "生成角色图";
   const steps = [
     ["01", "小说正文", rootTask.status, "先确认故事文本"],
-    ["02", "结构信息", analysisStatus, "解析角色和分段"],
-    ["03", "角色图", characterStatus, "生成角色定妆"],
-    ["04", "场景图", sceneStatus, plannedSegments.length ? `${readySceneCount}/${plannedSegments.length} 段已就绪` : "在时间线中逐段生成"],
-    ["05", "视频", videoStatus, plannedSegments.length ? `${readyVideoCount}/${plannedSegments.length} 段已出片` : "在时间线中逐段生成"],
+    ["02", "场景结构", sceneStructureStatus, "章节拆 scene"],
+    ["03", "分段合同", segmentContractsStatus, "scene 拆 segment"],
+    ["04", "角色图", characterStatus, "生成角色定妆"],
+    ["05", "场景图", sceneStatus, plannedSegments.length ? `${readySceneCount}/${plannedSegments.length} 段已就绪` : "在时间线中逐段生成"],
+    ["06", "视频", videoStatus, plannedSegments.length ? `${readyVideoCount}/${plannedSegments.length} 段已出片` : "在时间线中逐段生成"],
   ];
 
   return `
@@ -1284,10 +1672,19 @@ export function renderRunStageActions(run) {
             type="button"
             class="secondary"
             data-story-source-project="${escapeAttr(rootTask.project_id)}"
-            data-generate-story-analysis="${escapeAttr(rootTask.task_id)}"
-            ${canGenerateAnalysis ? "" : "disabled"}
+            data-generate-scene-structure="${escapeAttr(rootTask.task_id)}"
+            ${canGenerateSceneStructure ? "" : "disabled"}
           >
-            ${escapeHtml(analysisButtonLabel)}
+            ${escapeHtml(sceneStructureButtonLabel)}
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            data-story-source-project="${escapeAttr(rootTask.project_id)}"
+            data-generate-segment-contracts="${escapeAttr(rootTask.task_id)}"
+            ${canGenerateSegmentContracts ? "" : "disabled"}
+          >
+            ${escapeHtml(segmentContractsButtonLabel)}
           </button>
           <button
             type="button"

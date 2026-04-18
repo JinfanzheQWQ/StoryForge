@@ -10,6 +10,7 @@ from storyforge.api.serializers import (
 )
 from storyforge.api.schemas import (
     BuildProjectRequest,
+    CreateContinuityRepairBatchTaskRequest,
     CreateContinuityRepairTaskRequest,
     CreateStageTaskRequest,
     CreateStoryTaskRequest,
@@ -54,6 +55,19 @@ def _apply_continuity_review_mode(task_payload: dict[str, object], mode: str | N
     normalized = str(mode or "").strip().lower()
     if normalized in {"off", "auto", "on"}:
         task_payload["continuity_review_mode"] = normalized
+
+
+def _apply_pipeline_root_task_id(
+    container,
+    task_payload: dict[str, object],
+    *,
+    project_id: str,
+    source_task_id: str,
+) -> None:
+    source_task = container.task_queue.store.get(source_task_id)
+    if source_task is None or source_task.project_id != project_id:
+        return
+    task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
 
 
 @router.get("", response_model=list[ProjectSummaryResponse])
@@ -167,6 +181,12 @@ async def create_image_job(
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
     }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
@@ -222,11 +242,126 @@ async def create_story_analysis_job(
         "source_task_id": payload.source_task_id,
         "use_llm": True if payload.use_llm is None else payload.use_llm,
     }
+    task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.story_analysis",
+        payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/scene-structure", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_scene_structure_job(
+    payload: CreateStageTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    source_task = _resolve_story_source_task(
+        container,
+        payload.project_id,
+        payload.source_task_id,
+        require_completed=True,
+    )
+    existing_task = _find_existing_revisioned_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.scene_structure",
+        source_task_id=payload.source_task_id,
+        pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
+        story_source_revision=str(source_task.result.get("story_source_revision", "")),
+        continuity_review_mode=payload.continuity_review_mode,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "use_llm": True if payload.use_llm is None else payload.use_llm,
+    }
+    task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.scene_structure",
+        payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/segment-contracts", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_segment_contracts_job(
+    payload: CreateStageTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    source_task = _resolve_story_source_task(
+        container,
+        payload.project_id,
+        payload.source_task_id,
+        require_completed=True,
+    )
+    if not (source_task.result and source_task.result.get("scene_plan_path")):
+        raise HTTPException(
+            status_code=400,
+            detail="Scene structure artifacts are missing. Generate scene structure first.",
+        )
+
+    existing_task = _find_existing_revisioned_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.segment_contracts",
+        source_task_id=payload.source_task_id,
+        pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
+        story_source_revision=str(source_task.result.get("story_source_revision", "")),
+        continuity_review_mode=payload.continuity_review_mode,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "use_llm": True if payload.use_llm is None else payload.use_llm,
+    }
+    task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.segment_contracts",
         payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
@@ -254,6 +389,7 @@ async def create_continuity_repair_job(
         task_type="project.continuity_repair",
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
+        scene_id=payload.scene_id,
         continuity_review_mode=payload.continuity_review_mode,
     )
     if existing_task is not None:
@@ -266,14 +402,78 @@ async def create_continuity_repair_job(
     task_payload = {
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
-        "segment_id": payload.segment_id,
         "use_llm": True if payload.use_llm is None else payload.use_llm,
     }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
+    if payload.segment_id:
+        task_payload["segment_id"] = payload.segment_id
+    if payload.scene_id:
+        task_payload["scene_id"] = payload.scene_id
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.continuity_repair",
+        payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/continuity-repair-batch", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_continuity_repair_batch_job(
+    payload: CreateContinuityRepairBatchTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    _ensure_live_llm_requested(payload.use_llm)
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    existing_task = _find_existing_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.continuity_repair_batch",
+        source_task_id=payload.source_task_id,
+        segment_id=None,
+        scene_id=None,
+        continuity_review_mode=payload.continuity_review_mode,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "use_llm": True if payload.use_llm is None else payload.use_llm,
+        "severity_threshold": payload.severity_threshold,
+        "max_units_per_batch": payload.max_units_per_batch,
+    }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.continuity_repair_batch",
         payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
@@ -293,9 +493,30 @@ def _find_existing_story_analysis_task(
     story_source_revision: str,
     continuity_review_mode: str | None = None,
 ):
+    return _find_existing_revisioned_stage_task(
+        container,
+        project_id=project_id,
+        task_type="project.story_analysis",
+        source_task_id=source_task_id,
+        pipeline_root_task_id=pipeline_root_task_id,
+        story_source_revision=story_source_revision,
+        continuity_review_mode=continuity_review_mode,
+    )
+
+
+def _find_existing_revisioned_stage_task(
+    container,
+    *,
+    project_id: str,
+    task_type: str,
+    source_task_id: str,
+    pipeline_root_task_id: str,
+    story_source_revision: str,
+    continuity_review_mode: str | None = None,
+):
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     for task in container.task_queue.store.list(project_id=project_id):
-        if task.task_type != "project.story_analysis":
+        if task.task_type != task_type:
             continue
         if str(task.payload.get("source_task_id", "")) != source_task_id:
             continue
@@ -366,6 +587,12 @@ async def create_character_job(
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
     }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
     if payload.use_llm is not None:
         task_payload["use_llm"] = payload.use_llm
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
@@ -416,6 +643,12 @@ async def create_scene_job(
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
     }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
     if payload.scene_id:
@@ -454,6 +687,7 @@ async def create_video_job(
         task_type="project.videos",
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
+        scene_id=payload.scene_id,
         merge_only=payload.merge_only,
         continuity_review_mode=payload.continuity_review_mode,
     )
@@ -468,10 +702,18 @@ async def create_video_job(
         "project_id": payload.project_id,
         "source_task_id": payload.source_task_id,
     }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
     if payload.merge_only:
         task_payload["merge_only"] = True
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
+    if payload.scene_id:
+        task_payload["scene_id"] = payload.scene_id
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
     record = await container.task_queue.submit(

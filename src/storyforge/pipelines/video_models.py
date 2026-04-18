@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from storyforge.domains.video.contracts import SeedanceManifest, VideoProjectPackage
+from storyforge.domains.video.contracts import SeedanceManifest, StoryMemoryPackage, VideoProjectPackage
+from storyforge.domains.video.schemas import VideoSegmentPlanSchema
 from storyforge.integrations.seedance import SeedanceExecutionReport
 from storyforge.integrations.seedream import SeedreamExecutionReport
 
@@ -102,6 +103,7 @@ class VideoMergeResult:
 @dataclass(slots=True)
 class VideoPlanningArtifacts:
     output_dir: Path
+    story_memory_path: Path
     character_bible_path: Path
     character_images_path: Path
     scene_plan_path: Path
@@ -113,8 +115,19 @@ class VideoPlanningArtifacts:
 
 
 @dataclass(slots=True)
+class VideoSceneStructureArtifacts:
+    output_dir: Path
+    story_memory_path: Path
+    character_bible_path: Path
+    scene_plan_path: Path
+    scene_plan: VideoSegmentPlanSchema
+    story_memory: StoryMemoryPackage
+
+
+@dataclass(slots=True)
 class VideoPlanningPaths:
     output_dir: Path
+    story_memory_path: Path
     character_bible_path: Path
     character_images_path: Path
     scene_plan_path: Path
@@ -136,5 +149,9 @@ class ContinuityRepairResult:
     repair_report_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
-    segment_id: str
     repair_summary: str
+    repair_action: str = ""
+    selection_mode: str = ""
+    affected_segment_ids: tuple[str, ...] = ()
+    segment_id: str = ""
+    scene_id: str = ""

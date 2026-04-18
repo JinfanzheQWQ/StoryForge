@@ -54,6 +54,8 @@ class CreateStageTaskRequest(BaseModel):
         scene_id = str(self.scene_id or "").strip()
         if segment_id and scene_id:
             raise ValueError("scene_id 不能与 segment_id 同时提交。")
+        if self.merge_only and (segment_id or scene_id):
+            raise ValueError("merge_only 不能与 segment_id 或 scene_id 同时提交。")
         if self.master_only and not scene_id:
             raise ValueError("master_only=true 时必须提供 scene_id。")
         if self.master_only and segment_id:
@@ -64,17 +66,31 @@ class CreateStageTaskRequest(BaseModel):
 class CreateContinuityRepairTaskRequest(BaseModel):
     project_id: str
     source_task_id: str
-    segment_id: str
+    segment_id: str | None = None
+    scene_id: str | None = None
     use_llm: bool | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
 
     @model_validator(mode="after")
-    def validate_segment_id(self) -> "CreateContinuityRepairTaskRequest":
-        if not str(self.segment_id or "").strip():
-            raise ValueError("segment_id 不能为空。")
+    def validate_scope(self) -> "CreateContinuityRepairTaskRequest":
+        segment_id = str(self.segment_id or "").strip()
+        scene_id = str(self.scene_id or "").strip()
+        if bool(segment_id) == bool(scene_id):
+            raise ValueError("segment_id 与 scene_id 必须二选一。")
         return self
+
+
+class CreateContinuityRepairBatchTaskRequest(BaseModel):
+    project_id: str
+    source_task_id: str
+    use_llm: bool | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    continuity_review_mode: Literal["off", "auto", "on"] | None = None
+    severity_threshold: Literal["high", "medium", "low"] = "medium"
+    max_units_per_batch: int = Field(default=4, ge=1, le=12)
 
 
 class StorySourceChapterInput(BaseModel):

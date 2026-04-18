@@ -54,6 +54,10 @@ export function buildTaskErrorMessage(task) {
   return message ? message.trim() : "后端没有返回具体失败原因，请查看服务端日志。";
 }
 
+function isRepairTaskType(taskType) {
+  return taskType === "project.continuity_repair" || taskType === "project.continuity_repair_batch";
+}
+
 function buildRunGroup(rootTaskId, tasks) {
   const sortedTasks = [...tasks].sort(
     (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at),
@@ -61,6 +65,12 @@ function buildRunGroup(rootTaskId, tasks) {
   const rootTask = sortedTasks.find((task) => task.task_id === rootTaskId) || sortedTasks[sortedTasks.length - 1];
   const latestTask = sortedTasks[0];
   const analysisTasks = sortedTasks.filter((task) => task.task_type === "project.story_analysis");
+  const sceneStructureTasks = sortedTasks.filter(
+    (task) => task.task_type === "project.scene_structure" || task.task_type === "project.story_analysis",
+  );
+  const segmentContractTasks = sortedTasks.filter(
+    (task) => task.task_type === "project.segment_contracts" || task.task_type === "project.story_analysis",
+  );
   const characterTasks = sortedTasks.filter(
     (task) => task.task_type === "project.characters" || task.task_type === "project.images",
   );
@@ -71,7 +81,7 @@ function buildRunGroup(rootTaskId, tasks) {
     (task) => task.task_type === "project.videos" && !task.payload?.merge_only,
   );
   const repairTasks = sortedTasks.filter(
-    (task) => task.task_type === "project.continuity_repair",
+    (task) => isRepairTaskType(task.task_type),
   );
   const mergeTasks = sortedTasks.filter(
     (task) => task.task_type === "project.videos" && task.payload?.merge_only,
@@ -83,6 +93,8 @@ function buildRunGroup(rootTaskId, tasks) {
     latestTask,
     tasks: sortedTasks,
     latestAnalysisTask: analysisTasks[0] || null,
+    latestSceneStructureTask: sceneStructureTasks[0] || null,
+    latestSegmentContractsTask: segmentContractTasks[0] || null,
     latestCharacterTask: characterTasks[0] || null,
     latestSceneTask: sceneTasks[0] || null,
     latestVideoTask: videoTasks[0] || null,
@@ -137,6 +149,10 @@ export function resolveRunContinuityReviewMode(run) {
   const candidates = [
     run?.latestTask?.payload?.continuity_review_mode,
     run?.latestTask?.result?.continuity_review_mode,
+    run?.latestSegmentContractsTask?.payload?.continuity_review_mode,
+    run?.latestSegmentContractsTask?.result?.continuity_review_mode,
+    run?.latestSceneStructureTask?.payload?.continuity_review_mode,
+    run?.latestSceneStructureTask?.result?.continuity_review_mode,
     run?.latestAnalysisTask?.payload?.continuity_review_mode,
     run?.latestAnalysisTask?.result?.continuity_review_mode,
     run?.rootTask?.result?.continuity_review_mode,
@@ -165,7 +181,7 @@ export function findPreviewAsset(artifacts) {
   return null;
 }
 
-export function summarizeRunProgress(run, totalStages = 5) {
+export function summarizeRunProgress(run, totalStages = 6) {
   if (!run?.rootTask) {
     return {
       completedCount: 0,
@@ -177,7 +193,8 @@ export function summarizeRunProgress(run, totalStages = 5) {
   const storySourceRevision = getStorySourceRevision(run.rootTask);
   const statuses = [
     run.rootTask.status,
-    getRunStageStatus(run.latestAnalysisTask, storySourceRevision),
+    getRunStageStatus(run.latestSceneStructureTask, storySourceRevision),
+    getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision),
     getRunStageStatus(run.latestCharacterTask, storySourceRevision),
     getRunStageStatus(run.latestSceneTask, storySourceRevision),
     getRunStageStatus(run.latestVideoTask, storySourceRevision),
@@ -235,7 +252,8 @@ export function buildTaskDetailSubtitle(task, run = null) {
 export function buildOverviewNote(task, artifacts, run = null) {
   const effectiveTask = run?.latestTask || task;
   const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : getStorySourceRevision(task);
-  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
+  const sceneStructureStatus = run ? getRunStageStatus(run.latestSceneStructureTask, storySourceRevision) : "idle";
+  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
   const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
   const sceneStatus = run ? getRunStageStatus(run.latestSceneTask, storySourceRevision) : "idle";
   const videoStatus = run ? getRunStageStatus(run.latestVideoTask, storySourceRevision) : "idle";
@@ -252,13 +270,22 @@ export function buildOverviewNote(task, artifacts, run = null) {
     return "当前阶段已完成，但页面还在整理可展示的内容索引。";
   }
   if (run?.latestTask.task_type === "project.story") {
-    return "故事文本已经完成。先在“小说”页确认或修改正文，再继续生成结构化信息。";
+    return "故事文本已经完成。先在“小说”页确认或修改正文，再继续生成场景结构。";
   }
-  if (analysisStatus === "stale") {
-    return "故事正文已经更新，当前结构化结果已过期。请先重新生成结构化信息，再继续图片和视频阶段。";
+  if (sceneStructureStatus === "stale") {
+    return "故事正文已经更新，当前场景结构已过期。请先重新生成场景结构，再继续后续阶段。";
   }
-  if (run?.latestTask.task_type === "project.story_analysis") {
-    return "结构化信息已经完成。确认角色和章节拆分准确后，再继续生成角色图。";
+  if (run?.latestTask.task_type === "project.scene_structure") {
+    return "场景结构已经完成。先检查 scene 划分是否合理，再继续生成分段合同。";
+  }
+  if (segmentContractsStatus === "stale") {
+    return "故事正文或场景结构已经更新，当前分段合同已过期。请先重新生成分段合同，再继续图片和视频阶段。";
+  }
+  if (
+    run?.latestTask.task_type === "project.segment_contracts"
+    || run?.latestTask.task_type === "project.story_analysis"
+  ) {
+    return "分段合同已经完成。确认场景和片段顺序准确后，再继续生成角色图。";
   }
   if (characterStatus === "stale") {
     return "角色图仍然对应旧文本版本。请先重新生成角色图，再继续场景图。";
@@ -275,8 +302,11 @@ export function buildOverviewNote(task, artifacts, run = null) {
   if (run?.latestTask.task_type === "project.scenes") {
     return "最近一次片段场景图任务已完成。确认该片段满意后，再继续生成对应视频。";
   }
-  if (run?.latestTask.task_type === "project.continuity_repair") {
-    return "最近一次智能修复已完成。系统已经按新分镜合同重跑该片段场景图和视频，请重点复查这一段的连续性。";
+  if (isRepairTaskType(run?.latestTask.task_type)) {
+    if (run?.latestTask.result?.media_regeneration_required) {
+      return "最近一次智能修复已完成，但这一步只更新了修复合同，没有自动重跑场景图和视频。请按需要手动继续媒体阶段。";
+    }
+    return "最近一次智能修复已完成，请重点复查当前片段或场景的连续性。";
   }
   if (run?.latestTask.task_type === "project.images") {
     return "图片阶段已经完成。确认角色和场景一致后，再继续生成视频。";
@@ -297,12 +327,19 @@ export function buildOverviewNote(task, artifacts, run = null) {
 export function buildArtifactPendingMessage(task, kind, run = null) {
   const effectiveTask = run?.latestTask || task;
   const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : getStorySourceRevision(task);
-  const analysisStatus = run ? getRunStageStatus(run.latestAnalysisTask, storySourceRevision) : "idle";
+  const sceneStructureStatus = run ? getRunStageStatus(run.latestSceneStructureTask, storySourceRevision) : "idle";
+  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
   const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
   const sceneStatus = run ? getRunStageStatus(run.latestSceneTask, storySourceRevision) : "idle";
   if (effectiveTask.status === "running") {
     if (effectiveTask.task_type === "project.story" && kind !== "docs") {
       return "故事文本还在生成，先等待第一步完成。";
+    }
+    if (effectiveTask.task_type === "project.scene_structure" && kind !== "docs") {
+      return "场景结构正在生成，完成后才能继续分段合同和媒体阶段。";
+    }
+    if (effectiveTask.task_type === "project.segment_contracts" && kind !== "docs") {
+      return "分段合同正在生成，完成后才能继续图片和视频阶段。";
     }
     if (effectiveTask.task_type === "project.story_analysis" && kind !== "docs") {
       return "结构化信息正在生成，完成后才能继续图片和视频阶段。";
@@ -329,15 +366,26 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
   }
   if (run?.latestTask.task_type === "project.story") {
     if (kind === "images" || kind === "characters" || kind === "scenes" || kind === "videos") {
-      return "故事文本已经完成，但结构化信息阶段还没开始。请先生成结构化信息。";
+      return "故事文本已经完成，但场景结构阶段还没开始。请先生成场景结构。";
     }
   }
-  if (analysisStatus === "stale") {
-    return "故事正文已经修改，旧的结构化结果已过期。请先重新生成结构化信息。";
+  if (sceneStructureStatus === "stale") {
+    return "故事正文已经修改，旧的场景结构结果已过期。请先重新生成场景结构。";
   }
-  if (run?.latestTask.task_type === "project.story_analysis") {
+  if (run?.latestTask.task_type === "project.scene_structure") {
+    if (kind === "images" || kind === "characters" || kind === "scenes" || kind === "videos") {
+      return "场景结构已经完成，但分段合同阶段还没开始。请先生成分段合同。";
+    }
+  }
+  if (segmentContractsStatus === "stale") {
+    return "当前分段合同已过期。请先重新生成分段合同。";
+  }
+  if (
+    run?.latestTask.task_type === "project.segment_contracts"
+    || run?.latestTask.task_type === "project.story_analysis"
+  ) {
     if (kind === "images" || kind === "characters") {
-      return "结构化信息已经完成，但角色图阶段还没开始。请先生成角色图。";
+      return "分段合同已经完成，但角色图阶段还没开始。请先生成角色图。";
     }
     if (kind === "scenes" || kind === "videos") {
       return "角色图和后续媒体阶段都还没开始，建议先生成角色图。";
@@ -360,6 +408,14 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
   ) {
     return "场景图已经完成，但视频阶段还没开始。请继续生成视频。";
   }
+  if (isRepairTaskType(run?.latestTask.task_type) && run?.latestTask.result?.media_regeneration_required) {
+    if (kind === "scenes") {
+      return "智能修复已经完成，但系统没有自动重跑场景图。请按需要手动重生成场景母图或片段场景图。";
+    }
+    if (kind === "videos") {
+      return "智能修复已经完成，但系统没有自动重跑视频。请按需要手动继续生成视频。";
+    }
+  }
   if (sceneStatus === "stale") {
     return "场景图仍然对应旧文本版本。请先重新生成场景图。";
   }
@@ -369,6 +425,18 @@ export function buildArtifactPendingMessage(task, kind, run = null) {
 export function buildPipelineStageLabel(task, run = null) {
   const effectiveTask = run?.latestTask || task;
   const propagatedStage = effectiveTask.result?.pipeline_stage;
+  if (propagatedStage === "scene_structure_started" && effectiveTask.status === "running") {
+    return "场景结构生成中";
+  }
+  if (propagatedStage === "scene_structure_completed") {
+    return "场景结构已完成";
+  }
+  if (propagatedStage === "segment_contracts_started" && effectiveTask.status === "running") {
+    return "分段合同生成中";
+  }
+  if (propagatedStage === "segment_contracts_completed") {
+    return "分段合同已完成";
+  }
   if (propagatedStage === "story_analysis_started" && effectiveTask.status === "running") {
     return "结构化信息生成中";
   }
@@ -390,14 +458,17 @@ export function buildPipelineStageLabel(task, run = null) {
   if (propagatedStage === "continuity_repair_started") {
     return "智能修复启动中";
   }
-  if (propagatedStage === "continuity_repair_plan_completed") {
-    return "智能修复已更新规划";
+  if (propagatedStage === "continuity_repair_batch_started") {
+    return "批量合同修复中";
   }
-  if (propagatedStage === "continuity_repair_scene_completed") {
-    return "智能修复已重跑场景图";
-  }
-  if (propagatedStage === "continuity_repair_completed") {
-    return "智能修复已完成";
+  if (
+    propagatedStage === "continuity_repair_plan_completed"
+    || propagatedStage === "continuity_repair_batch_completed"
+    || propagatedStage === "continuity_repair_scene_completed"
+    || propagatedStage === "continuity_repair_scene_master_completed"
+    || propagatedStage === "continuity_repair_completed"
+  ) {
+    return "智能修复合同已更新";
   }
   if (propagatedStage === "video_completed") {
     return "视频已完成";
@@ -416,6 +487,18 @@ export function buildPipelineStageLabel(task, run = null) {
     if (effectiveTask.status === "running") return "结构化信息生成中";
     if (effectiveTask.status === "completed") return "结构化信息已完成";
     if (effectiveTask.status === "failed") return "结构化信息生成失败";
+  }
+  if (effectiveTask.task_type === "project.scene_structure") {
+    if (effectiveTask.status === "queued") return "等待场景结构";
+    if (effectiveTask.status === "running") return "场景结构生成中";
+    if (effectiveTask.status === "completed") return "场景结构已完成";
+    if (effectiveTask.status === "failed") return "场景结构生成失败";
+  }
+  if (effectiveTask.task_type === "project.segment_contracts") {
+    if (effectiveTask.status === "queued") return "等待分段合同";
+    if (effectiveTask.status === "running") return "分段合同生成中";
+    if (effectiveTask.status === "completed") return "分段合同已完成";
+    if (effectiveTask.status === "failed") return "分段合同生成失败";
   }
   if (effectiveTask.task_type === "project.characters") {
     if (effectiveTask.status === "queued") return "等待角色设定图";
@@ -453,6 +536,12 @@ export function buildPipelineStageLabel(task, run = null) {
     if (effectiveTask.status === "completed") return "视频已完成";
     if (effectiveTask.status === "failed") return "视频生成失败";
   }
+  if (effectiveTask.task_type === "project.continuity_repair_batch") {
+    if (effectiveTask.status === "queued") return "等待批量合同修复";
+    if (effectiveTask.status === "running") return "批量合同修复中";
+    if (effectiveTask.status === "completed") return "批量合同已更新";
+    if (effectiveTask.status === "failed") return "批量合同修复失败";
+  }
   if (effectiveTask.task_type === "project.continuity_repair") {
     if (effectiveTask.status === "queued") return "等待智能修复";
     if (effectiveTask.status === "running") return "智能修复中";
@@ -488,6 +577,12 @@ export function runModeLabel(task) {
   if (task.task_type === "project.story") {
     return `${llmLabel} / 故事文本`;
   }
+  if (task.task_type === "project.scene_structure") {
+    return `${llmLabel} / 场景结构`;
+  }
+  if (task.task_type === "project.segment_contracts") {
+    return `${llmLabel} / 分段合同`;
+  }
   if (task.task_type === "project.story_analysis") {
     return `${llmLabel} / 结构解析`;
   }
@@ -509,8 +604,14 @@ export function runModeLabel(task) {
     }
     return "Seedance / 视频阶段";
   }
+  if (task.task_type === "project.continuity_repair_batch") {
+    return `${llmLabel} / 批量合同修复`;
+  }
   if (task.task_type === "project.continuity_repair") {
-    return `${llmLabel} / 智能修复`;
+    if (task.payload?.scene_id && !task.payload?.segment_id) {
+      return `${llmLabel} / 场景修复规划`;
+    }
+    return `${llmLabel} / 智能修复规划`;
   }
   if (task.task_type === "project.build") {
     return `${llmLabel} / 全流程`;
@@ -520,6 +621,8 @@ export function runModeLabel(task) {
 
 export function taskTypeLabel(task) {
   if (task.task_type === "project.story") return "故事文本";
+  if (task.task_type === "project.scene_structure") return "场景结构";
+  if (task.task_type === "project.segment_contracts") return "分段合同";
   if (task.task_type === "project.story_analysis") return "结构化信息";
   if (task.task_type === "project.characters") return "角色设定图";
   if (task.task_type === "project.scenes" && task.payload?.master_only) return "场景母图";
@@ -527,6 +630,10 @@ export function taskTypeLabel(task) {
   if (task.task_type === "project.images") return "图片";
   if (task.task_type === "project.videos" && task.payload?.merge_only) return "视频合并";
   if (task.task_type === "project.videos") return "视频成片";
+  if (task.task_type === "project.continuity_repair_batch") return "批量合同修复";
+  if (task.task_type === "project.continuity_repair" && task.payload?.scene_id && !task.payload?.segment_id) {
+    return "场景智能修复";
+  }
   if (task.task_type === "project.continuity_repair") return "智能修复";
   if (task.task_type === "project.build") return "全流程";
   return "";

@@ -139,6 +139,51 @@ class LangChainAgentBackendTestCase(unittest.TestCase):
         self.assertEqual(result.title, "雨夜站台")
         self.assertEqual(result.visual_motifs, ["雨", "灯牌"])
 
+    def test_structured_generation_falls_back_to_plain_json_when_raw_is_empty(self) -> None:
+        class FakeRawMessage:
+            content = ""
+            tool_calls: list[object] = []
+            response_metadata = {"finish_reason": "stop"}
+
+        class FakeStructuredModel:
+            def invoke(self, messages):
+                return {
+                    "raw": FakeRawMessage(),
+                    "parsed": None,
+                    "parsing_error": None,
+                }
+
+        class FakeModel:
+            def with_structured_output(self, schema, **kwargs):
+                return FakeStructuredModel()
+
+            def invoke(self, messages):
+                return """
+{
+  "title": "深夜航站楼",
+  "premise": "她在航站楼最后一次等他。",
+  "theme": "错过",
+  "setting": "深夜机场",
+  "story_engine": "最后一班航班迫使关系做出结论。",
+  "visual_motifs": ["航显屏", "玻璃幕墙"],
+  "tone_notes": ["克制", "冷静"]
+}
+"""
+
+        backend = LangChainTextAgentBackend(model_name="deepseek-chat")
+        with patch.object(backend, "_build_model", return_value=FakeModel()):
+            result = backend.generate_structured(
+                PromptRequest(
+                    system_prompt="system",
+                    user_prompt="user",
+                    metadata={"task": "story-architect"},
+                ),
+                StoryArchitectureSchema,
+            )
+
+        self.assertEqual(result.title, "深夜航站楼")
+        self.assertEqual(result.visual_motifs, ["航显屏", "玻璃幕墙"])
+
     def test_structured_generation_raises_clear_error_when_parsed_output_is_empty(self) -> None:
         class FakeRawMessage:
             content = "我无法按要求输出。"

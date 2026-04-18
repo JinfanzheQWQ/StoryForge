@@ -14,8 +14,11 @@ from storyforge.pipelines.story_files import (
     write_story_analysis_files,
     write_story_source_files,
 )
-from storyforge.pipelines.video_models import VideoPlanningArtifacts
-from storyforge.pipelines.video_planning import build_video_planning_artifacts
+from storyforge.pipelines.video_models import VideoPlanningArtifacts, VideoSceneStructureArtifacts
+from storyforge.pipelines.video_planning import (
+    build_video_scene_structure_artifacts,
+    build_video_segment_contract_artifacts,
+)
 
 
 @dataclass(slots=True)
@@ -26,10 +29,36 @@ class StoryGenerationResult:
 
 
 @dataclass(slots=True)
+class StorySceneStructureResult:
+    output_dir: Path
+    novel_package_path: Path
+    novel_audit_path: Path
+    story_memory_path: Path
+    character_bible_path: Path
+    scene_plan_path: Path
+    novel_package: NovelPackage
+    scene_structure: VideoSceneStructureArtifacts
+
+
+@dataclass(slots=True)
+class StorySegmentContractsResult:
+    output_dir: Path
+    story_memory_path: Path
+    character_bible_path: Path
+    character_images_path: Path
+    scene_plan_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    seedance_manifest_path: Path
+    video_planning: VideoPlanningArtifacts
+
+
+@dataclass(slots=True)
 class StoryAnalysisResult:
     output_dir: Path
     novel_package_path: Path
     novel_audit_path: Path
+    story_memory_path: Path
     character_bible_path: Path
     character_images_path: Path
     scene_plan_path: Path
@@ -46,6 +75,7 @@ class StoryPipelineResult:
     story_source_path: Path
     novel_package_path: Path
     novel_audit_path: Path
+    story_memory_path: Path
     character_bible_path: Path
     character_images_path: Path
     scene_plan_path: Path
@@ -91,6 +121,92 @@ def run_story_generation_pipeline(
     )
 
 
+def run_story_scene_structure_pipeline(
+    story_source: StorySourcePackage,
+    config: AppConfig,
+    project_root: Path,
+    use_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    output_root: Path | None = None,
+    backend: AgentBackend | None = None,
+    video_backend: AgentBackend | None = None,
+) -> StorySceneStructureResult:
+    package = _build_novel_package_from_story_source(
+        story_source=story_source,
+        config=config,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        backend=backend,
+    )
+
+    base_dir = output_root or (project_root / config.paths.output_dir)
+    output_dir = _resolve_story_output_dir(base_dir, story_source.title)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    clear_story_derived_artifacts(output_dir)
+    analysis_files = write_story_analysis_files(output_dir, package)
+    scene_structure = build_video_scene_structure_artifacts(
+        novel_package=package,
+        config=config,
+        project_root=project_root,
+        output_root=output_dir,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        backend=video_backend,
+    )
+
+    return StorySceneStructureResult(
+        output_dir=output_dir,
+        novel_package_path=analysis_files.novel_package_path,
+        novel_audit_path=analysis_files.novel_audit_path,
+        story_memory_path=scene_structure.story_memory_path,
+        character_bible_path=scene_structure.character_bible_path,
+        scene_plan_path=scene_structure.scene_plan_path,
+        novel_package=package,
+        scene_structure=scene_structure,
+    )
+
+
+def run_story_segment_contracts_pipeline(
+    novel_package: NovelPackage,
+    config: AppConfig,
+    project_root: Path,
+    use_llm: bool = True,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    continuity_review_mode: str = "auto",
+    output_root: Path | None = None,
+    backend: AgentBackend | None = None,
+    scene_structure_artifacts: VideoSceneStructureArtifacts | None = None,
+) -> StorySegmentContractsResult:
+    video_planning = build_video_segment_contract_artifacts(
+        novel_package=novel_package,
+        config=config,
+        project_root=project_root,
+        output_root=output_root,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        continuity_review_mode=continuity_review_mode,
+        backend=backend,
+        scene_structure_artifacts=scene_structure_artifacts,
+    )
+    return StorySegmentContractsResult(
+        output_dir=video_planning.output_dir,
+        story_memory_path=video_planning.story_memory_path,
+        character_bible_path=video_planning.character_bible_path,
+        character_images_path=video_planning.character_images_path,
+        scene_plan_path=video_planning.scene_plan_path,
+        segment_plan_path=video_planning.segment_plan_path,
+        scene_images_path=video_planning.scene_images_path,
+        seedance_manifest_path=video_planning.manifest_path,
+        video_planning=video_planning,
+    )
+
+
 def run_story_analysis_pipeline(
     story_source: StorySourcePackage,
     config: AppConfig,
@@ -103,47 +219,43 @@ def run_story_analysis_pipeline(
     backend: AgentBackend | None = None,
     video_backend: AgentBackend | None = None,
 ) -> StoryAnalysisResult:
-    resolved_backend = backend or build_agent_backend(
-        config,
-        use_llm=use_llm,
-        provider=llm_provider,
-        model=llm_model,
-    )
-    service = NovelGeneratorService(
-        backend=resolved_backend,
-        chapter_scene_count=config.novel.chapter_scene_count,
-    )
-    package = service.build_novel_package_from_story_source(story_source)
-
-    base_dir = output_root or (project_root / config.paths.output_dir)
-    output_dir = _resolve_story_output_dir(base_dir, story_source.title)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    analysis_files = write_story_analysis_files(output_dir, package)
-    video_planning = build_video_planning_artifacts(
-        novel_package=package,
+    scene_structure = run_story_scene_structure_pipeline(
+        story_source=story_source,
         config=config,
         project_root=project_root,
-        output_root=output_dir,
+        use_llm=use_llm,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        output_root=output_root,
+        backend=backend,
+        video_backend=video_backend,
+    )
+    segment_contracts = run_story_segment_contracts_pipeline(
+        novel_package=scene_structure.novel_package,
+        config=config,
+        project_root=project_root,
         use_llm=use_llm,
         llm_provider=llm_provider,
         llm_model=llm_model,
         continuity_review_mode=continuity_review_mode,
+        output_root=scene_structure.output_dir,
         backend=video_backend,
+        scene_structure_artifacts=scene_structure.scene_structure,
     )
 
     return StoryAnalysisResult(
-        output_dir=output_dir,
-        novel_package_path=analysis_files.novel_package_path,
-        novel_audit_path=analysis_files.novel_audit_path,
-        character_bible_path=video_planning.character_bible_path,
-        character_images_path=video_planning.character_images_path,
-        scene_plan_path=video_planning.scene_plan_path,
-        segment_plan_path=video_planning.segment_plan_path,
-        scene_images_path=video_planning.scene_images_path,
-        seedance_manifest_path=video_planning.manifest_path,
-        novel_package=package,
-        video_planning=video_planning,
+        output_dir=scene_structure.output_dir,
+        novel_package_path=scene_structure.novel_package_path,
+        novel_audit_path=scene_structure.novel_audit_path,
+        story_memory_path=segment_contracts.story_memory_path,
+        character_bible_path=segment_contracts.character_bible_path,
+        character_images_path=segment_contracts.character_images_path,
+        scene_plan_path=segment_contracts.scene_plan_path,
+        segment_plan_path=segment_contracts.segment_plan_path,
+        scene_images_path=segment_contracts.scene_images_path,
+        seedance_manifest_path=segment_contracts.seedance_manifest_path,
+        novel_package=scene_structure.novel_package,
+        video_planning=segment_contracts.video_planning,
     )
 
 
@@ -187,6 +299,7 @@ def run_story_pipeline(
         story_source_path=generation.story_source_path,
         novel_package_path=analysis.novel_package_path,
         novel_audit_path=analysis.novel_audit_path,
+        story_memory_path=analysis.story_memory_path,
         character_bible_path=analysis.character_bible_path,
         character_images_path=analysis.character_images_path,
         scene_plan_path=analysis.scene_plan_path,
@@ -197,6 +310,28 @@ def run_story_pipeline(
         novel_package=analysis.novel_package,
         video_planning=analysis.video_planning,
     )
+
+
+def _build_novel_package_from_story_source(
+    *,
+    story_source: StorySourcePackage,
+    config: AppConfig,
+    use_llm: bool,
+    llm_provider: str | None,
+    llm_model: str | None,
+    backend: AgentBackend | None,
+) -> NovelPackage:
+    resolved_backend = backend or build_agent_backend(
+        config,
+        use_llm=use_llm,
+        provider=llm_provider,
+        model=llm_model,
+    )
+    service = NovelGeneratorService(
+        backend=resolved_backend,
+        chapter_scene_count=config.novel.chapter_scene_count,
+    )
+    return service.build_novel_package_from_story_source(story_source)
 
 
 def _resolve_story_output_dir(base_dir: Path, title: str) -> Path:

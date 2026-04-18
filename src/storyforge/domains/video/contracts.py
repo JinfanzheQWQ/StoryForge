@@ -448,6 +448,212 @@ class SeedanceManifest:
 
 
 @dataclass(slots=True)
+class StoryMemoryIdentity:
+    project_id: str = ""
+    source_task_id: str = ""
+    story_title: str = ""
+    story_source_revision: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryIdentity":
+        return cls(
+            project_id=str(raw.get("project_id", "") or ""),
+            source_task_id=str(raw.get("source_task_id", "") or ""),
+            story_title=str(raw.get("story_title", "") or ""),
+            story_source_revision=str(raw.get("story_source_revision", "") or ""),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryGlobalBible:
+    core_theme: str = ""
+    world_rules: list[str] = field(default_factory=list)
+    narrative_promise: str = ""
+    forbidden_deviations: list[str] = field(default_factory=list)
+    visual_motifs: list[str] = field(default_factory=list)
+    ending_direction: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryGlobalBible":
+        return cls(
+            core_theme=str(raw.get("core_theme", "") or ""),
+            world_rules=list(raw.get("world_rules", [])),
+            narrative_promise=str(raw.get("narrative_promise", "") or ""),
+            forbidden_deviations=list(raw.get("forbidden_deviations", [])),
+            visual_motifs=list(raw.get("visual_motifs", [])),
+            ending_direction=str(raw.get("ending_direction", "") or ""),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryCastEntry:
+    name: str
+    gender: str = "未指定"
+    role: str = ""
+    relationships: list[str] = field(default_factory=list)
+    appearance_summary: str = ""
+    voice_summary: str = ""
+    personality_summary: str = ""
+    hard_constraints: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryCastEntry":
+        return cls(
+            name=str(raw.get("name", "") or ""),
+            gender=str(raw.get("gender", "未指定") or "未指定"),
+            role=str(raw.get("role", "") or ""),
+            relationships=list(raw.get("relationships", [])),
+            appearance_summary=str(raw.get("appearance_summary", "") or ""),
+            voice_summary=str(raw.get("voice_summary", "") or ""),
+            personality_summary=str(raw.get("personality_summary", "") or ""),
+            hard_constraints=list(raw.get("hard_constraints", [])),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryChapterState:
+    chapter_number: int
+    chapter_title: str = ""
+    chapter_summary: str = ""
+    entry_state: dict[str, Any] = field(default_factory=dict)
+    exit_state: dict[str, Any] = field(default_factory=dict)
+    new_facts: list[str] = field(default_factory=list)
+    resolved_threads: list[str] = field(default_factory=list)
+    unresolved_threads: list[str] = field(default_factory=list)
+    generated_scene_ids: list[str] = field(default_factory=list)
+    generated_segment_ids: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryChapterState":
+        return cls(
+            chapter_number=int(raw.get("chapter_number", 0) or 0),
+            chapter_title=str(raw.get("chapter_title", "") or ""),
+            chapter_summary=str(raw.get("chapter_summary", "") or ""),
+            entry_state=dict(raw.get("entry_state", {}) or {}),
+            exit_state=dict(raw.get("exit_state", {}) or {}),
+            new_facts=list(raw.get("new_facts", [])),
+            resolved_threads=list(raw.get("resolved_threads", [])),
+            unresolved_threads=list(raw.get("unresolved_threads", [])),
+            generated_scene_ids=list(raw.get("generated_scene_ids", [])),
+            generated_segment_ids=list(raw.get("generated_segment_ids", [])),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryContinuityState:
+    current_time_context: str = ""
+    current_location_context: str = ""
+    active_props: list[str] = field(default_factory=list)
+    active_costume_state: list[str] = field(default_factory=list)
+    active_relationship_state: list[str] = field(default_factory=list)
+    carry_over_visuals: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryContinuityState":
+        return cls(
+            current_time_context=str(raw.get("current_time_context", "") or ""),
+            current_location_context=str(raw.get("current_location_context", "") or ""),
+            active_props=list(raw.get("active_props", [])),
+            active_costume_state=list(raw.get("active_costume_state", [])),
+            active_relationship_state=list(raw.get("active_relationship_state", [])),
+            carry_over_visuals=list(raw.get("carry_over_visuals", [])),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryPlanningChapterIndex:
+    chapter_number: int
+    scene_ids: list[str] = field(default_factory=list)
+    segment_ids: list[str] = field(default_factory=list)
+    scene_count: int = 0
+    segment_count: int = 0
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryPlanningChapterIndex":
+        return cls(
+            chapter_number=int(raw.get("chapter_number", 0) or 0),
+            scene_ids=list(raw.get("scene_ids", [])),
+            segment_ids=list(raw.get("segment_ids", [])),
+            scene_count=int(raw.get("scene_count", 0) or 0),
+            segment_count=int(raw.get("segment_count", 0) or 0),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryPlanningIndex:
+    chapter_count: int = 0
+    scene_count: int = 0
+    segment_count: int = 0
+    chapters: list[StoryMemoryPlanningChapterIndex] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryPlanningIndex":
+        return cls(
+            chapter_count=int(raw.get("chapter_count", 0) or 0),
+            scene_count=int(raw.get("scene_count", 0) or 0),
+            segment_count=int(raw.get("segment_count", 0) or 0),
+            chapters=[
+                StoryMemoryPlanningChapterIndex.from_dict(item)
+                for item in raw.get("chapters", [])
+            ],
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryGenerationNotes:
+    last_planned_chapter: int = 0
+    last_successful_stage: str = ""
+    planner_warnings: list[str] = field(default_factory=list)
+    continuity_risks: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryGenerationNotes":
+        return cls(
+            last_planned_chapter=int(raw.get("last_planned_chapter", 0) or 0),
+            last_successful_stage=str(raw.get("last_successful_stage", "") or ""),
+            planner_warnings=list(raw.get("planner_warnings", [])),
+            continuity_risks=list(raw.get("continuity_risks", [])),
+        )
+
+
+@dataclass(slots=True)
+class StoryMemoryPackage:
+    story_identity: StoryMemoryIdentity = field(default_factory=StoryMemoryIdentity)
+    global_story_bible: StoryMemoryGlobalBible = field(default_factory=StoryMemoryGlobalBible)
+    cast_bible: list[StoryMemoryCastEntry] = field(default_factory=list)
+    chapter_states: list[StoryMemoryChapterState] = field(default_factory=list)
+    continuity_state: StoryMemoryContinuityState = field(default_factory=StoryMemoryContinuityState)
+    planning_index: StoryMemoryPlanningIndex = field(default_factory=StoryMemoryPlanningIndex)
+    generation_notes: StoryMemoryGenerationNotes = field(default_factory=StoryMemoryGenerationNotes)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryMemoryPackage":
+        return cls(
+            story_identity=StoryMemoryIdentity.from_dict(raw.get("story_identity", {}) or {}),
+            global_story_bible=StoryMemoryGlobalBible.from_dict(
+                raw.get("global_story_bible", {}) or {}
+            ),
+            cast_bible=[
+                StoryMemoryCastEntry.from_dict(item)
+                for item in raw.get("cast_bible", [])
+            ],
+            chapter_states=[
+                StoryMemoryChapterState.from_dict(item)
+                for item in raw.get("chapter_states", [])
+            ],
+            continuity_state=StoryMemoryContinuityState.from_dict(
+                raw.get("continuity_state", {}) or {}
+            ),
+            planning_index=StoryMemoryPlanningIndex.from_dict(
+                raw.get("planning_index", {}) or {}
+            ),
+            generation_notes=StoryMemoryGenerationNotes.from_dict(
+                raw.get("generation_notes", {}) or {}
+            ),
+        )
+
+
+@dataclass(slots=True)
 class VideoProjectPackage:
     title: str
     character_profiles: list[CharacterVisualProfile]
@@ -456,6 +662,7 @@ class VideoProjectPackage:
     segments: list[VideoSegment]
     scene_images: list[SceneImageTask]
     seedance_manifest: SeedanceManifest
+    story_memory: StoryMemoryPackage | None = None
     workflow_trace: dict[str, Any] = field(default_factory=dict)
 
     @classmethod

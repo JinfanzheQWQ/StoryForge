@@ -47,6 +47,7 @@ class LangChainTextAgentBackend(AgentBackend):
         self,
         model_name: str,
         temperature: float = 0.7,
+        max_tokens: int = 8192,
         provider: str = "deepseek",
         base_url: str | None = None,
         api_key: str | None = None,
@@ -54,6 +55,7 @@ class LangChainTextAgentBackend(AgentBackend):
     ) -> None:
         self.model_name = model_name
         self.temperature = temperature
+        self.max_tokens = max(256, int(max_tokens))
         self.provider = provider
         self.base_url = base_url
         self.api_key = api_key
@@ -85,6 +87,10 @@ class LangChainTextAgentBackend(AgentBackend):
         from langchain_core.messages import HumanMessage, SystemMessage
 
         model = self._build_model()
+        messages = [
+            SystemMessage(content=request.system_prompt),
+            HumanMessage(content=request.user_prompt),
+        ]
         method = self._structured_output_method()
         structured_model = model.with_structured_output(
             schema,
@@ -97,12 +103,7 @@ class LangChainTextAgentBackend(AgentBackend):
             include_raw=True,
             strict=True,
         )
-        structured = structured_model.invoke(
-            [
-                SystemMessage(content=request.system_prompt),
-                HumanMessage(content=request.user_prompt),
-            ]
-        )
+        structured = structured_model.invoke(messages)
         if isinstance(structured, dict) and "parsed" in structured:
             parsed = structured.get("parsed")
             if parsed is not None:
@@ -116,23 +117,42 @@ class LangChainTextAgentBackend(AgentBackend):
 
             parsing_error = structured.get("parsing_error")
             raw_summary = self._summarize_structured_raw(raw, raw_text)
+            fallback_error: Exception | None = None
+            try:
+                return self._invoke_plain_json_fallback(
+                    model=model,
+                    request=request,
+                    schema=schema,
+                )
+            except Exception as exc:
+                fallback_error = exc
+
+            fallback_note = f" plain_json_fallback_error={fallback_error!s}." if fallback_error else ""
             if parsing_error is not None:
                 raise RuntimeError(
                     f"LangChain structured parsing failed for schema={schema.__name__}: "
-                    f"{parsing_error}. {raw_summary}"
+                    f"{parsing_error}. {raw_summary}.{fallback_note}"
                 )
             raise RuntimeError(
                 f"LangChain structured output was empty for schema={schema.__name__}: "
                 "the model did not return a tool call or valid JSON. "
-                f"{raw_summary}"
+                f"{raw_summary}.{fallback_note}"
             )
         if isinstance(structured, schema):
             return structured
         if structured is None:
-            raise RuntimeError(
-                f"LangChain structured output was empty for schema={schema.__name__}: "
-                "the model returned None."
-            )
+            try:
+                return self._invoke_plain_json_fallback(
+                    model=model,
+                    request=request,
+                    schema=schema,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"LangChain structured output was empty for schema={schema.__name__}: "
+                    "the model returned None. "
+                    f"plain_json_fallback_error={exc!s}"
+                ) from exc
         return schema.model_validate(structured)
 
     def _extract_text(self, raw: Any) -> str:
@@ -157,6 +177,7 @@ class LangChainTextAgentBackend(AgentBackend):
         kwargs: dict[str, Any] = {
             "model": self.model_name,
             "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
             "timeout": self.timeout_seconds,
         }
 
@@ -213,4 +234,50 @@ class LangChainTextAgentBackend(AgentBackend):
             if isinstance(additional_kwargs, dict):
                 tool_calls = additional_kwargs.get("tool_calls")
         tool_count = len(tool_calls) if isinstance(tool_calls, list) else 0
-        return f"raw_content={content!r}; tool_call_count={tool_count}"
+        response_metadata = getattr(raw, "response_metadata", {})
+        finish_reason = ""
+        if isinstance(response_metadata, dict):
+            finish_reason = str(response_metadata.get("finish_reason", "") or "")
+        return (
+            f"raw_content={content!r}; tool_call_count={tool_count}; "
+            f"finish_reason={finish_reason!r}"
+        )
+
+    def _invoke_plain_json_fallback(
+        self,
+        *,
+        model: Any,
+        request: PromptRequest,
+        schema: type[BaseModel],
+    ) -> BaseModel:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+        response = model.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        request.system_prompt
+                        + "\n\n"
+                        + "上一次结构化返回为空或不可解析。"
+                        + "现在不要使用 tool call，不要输出解释，不要输出 Markdown。"
+                        + "你必须只返回一个合法 JSON object，且字段严格符合给定 schema。"
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        request.user_prompt
+                        + "\n\n请只返回一个 JSON object。目标 schema 如下：\n"
+                        + schema_json
+                    )
+                ),
+            ]
+        )
+        raw_text = _message_to_text(response).strip()
+        raw_json = self._extract_json_object(raw_text)
+        if raw_json is None:
+            raise RuntimeError(
+                "plain JSON fallback did not return a valid JSON object. "
+                + self._summarize_structured_raw(response, raw_text)
+            )
+        return schema.model_validate(raw_json)

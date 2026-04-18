@@ -134,16 +134,29 @@ function withContinuityReviewMode(sourceTaskId, payload) {
   };
 }
 
-async function submitStoryAnalysisFromButton(button) {
+async function submitSceneStructureFromButton(button) {
   await submitStageFromButton(
     button,
-    "/v1/projects/story-analysis",
-    withContinuityReviewMode(button.dataset.generateStoryAnalysis, {
+    "/v1/projects/scene-structure",
+    withContinuityReviewMode(button.dataset.generateSceneStructure, {
       project_id: button.dataset.storySourceProject,
-      source_task_id: button.dataset.generateStoryAnalysis,
+      source_task_id: button.dataset.generateSceneStructure,
     }),
-    "结构化任务已创建",
-    "结构化任务提交失败。",
+    "场景结构任务已创建",
+    "场景结构任务提交失败。",
+  );
+}
+
+async function submitSegmentContractsFromButton(button) {
+  await submitStageFromButton(
+    button,
+    "/v1/projects/segment-contracts",
+    withContinuityReviewMode(button.dataset.generateSegmentContracts, {
+      project_id: button.dataset.storySourceProject,
+      source_task_id: button.dataset.generateSegmentContracts,
+    }),
+    "分段合同任务已创建",
+    "分段合同任务提交失败。",
   );
 }
 
@@ -266,9 +279,15 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
-  const analysisButton = event.target.closest("[data-generate-story-analysis]");
-  if (analysisButton) {
-    await submitStoryAnalysisFromButton(analysisButton);
+  const sceneStructureButton = event.target.closest("[data-generate-scene-structure]");
+  if (sceneStructureButton) {
+    await submitSceneStructureFromButton(sceneStructureButton);
+    return;
+  }
+
+  const segmentContractsButton = event.target.closest("[data-generate-segment-contracts]");
+  if (segmentContractsButton) {
+    await submitSegmentContractsFromButton(segmentContractsButton);
     return;
   }
 
@@ -335,6 +354,37 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const repairSceneButton = event.target.closest("[data-auto-repair-scene]");
+  if (repairSceneButton) {
+    await submitStageFromButton(
+      repairSceneButton,
+      "/v1/projects/continuity-repair",
+      withContinuityReviewMode(repairSceneButton.dataset.sourceTask, {
+        project_id: repairSceneButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: repairSceneButton.dataset.sourceTask,
+        scene_id: repairSceneButton.dataset.autoRepairScene,
+      }),
+      "场景修复规划任务已创建",
+      "场景修复规划任务提交失败。",
+    );
+    return;
+  }
+
+  const repairBatchButton = event.target.closest("[data-auto-repair-batch]");
+  if (repairBatchButton) {
+    await submitStageFromButton(
+      repairBatchButton,
+      "/v1/projects/continuity-repair-batch",
+      withContinuityReviewMode(repairBatchButton.dataset.sourceTask, {
+        project_id: repairBatchButton.dataset.projectId || state.selectedProjectId,
+        source_task_id: repairBatchButton.dataset.sourceTask,
+      }),
+      "批量合同修复任务已创建",
+      "批量合同修复任务提交失败。",
+    );
+    return;
+  }
+
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
     await submitStageFromButton(
@@ -376,8 +426,8 @@ async function handleProjectDetailClick(event) {
         source_task_id: repairSegmentButton.dataset.sourceTask,
         segment_id: repairSegmentButton.dataset.autoRepairSegment,
       }),
-      "智能修复任务已创建",
-      "智能修复任务提交失败。",
+      "片段修复规划任务已创建",
+      "片段修复规划任务提交失败。",
     );
     return;
   }
@@ -460,14 +510,19 @@ function syncStorySourceEditorChrome(container, sourceTaskId) {
       button.textContent = "保存正文";
     });
   container
-    .querySelectorAll(`[data-generate-story-analysis="${CSS.escape(sourceTaskId)}"]`)
+    .querySelectorAll(`[data-generate-scene-structure="${CSS.escape(sourceTaskId)}"]`)
+    .forEach((button) => {
+      button.disabled = true;
+    });
+  container
+    .querySelectorAll(`[data-generate-segment-contracts="${CSS.escape(sourceTaskId)}"]`)
     .forEach((button) => {
       button.disabled = true;
     });
   container
     .querySelectorAll(`[data-story-status-note="${CSS.escape(sourceTaskId)}"]`)
     .forEach((node) => {
-      node.textContent = "文本已修改，尚未保存。保存后再重新生成结构化信息。";
+      node.textContent = "文本已修改，尚未保存。保存后再重新生成场景结构和分段合同。";
     });
 }
 

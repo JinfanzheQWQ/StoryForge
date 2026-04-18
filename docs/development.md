@@ -148,6 +148,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - 默认推导、规划产物路径/读取与任务装配放 `planning.py`
 - pipeline facade 不要重新堆积辅助函数
 - `build_video_project()` 只保留主流程编排；角色 profile、voice map、runtime scene、runtime segment 这类物化逻辑应继续下沉到内部 helper
+- 已经退出运行态的默认规划 / fallback helper 不要继续留在 `planning.py` 里给测试复用；测试需要的静态构造逻辑应放回 `tests/`
 - 视频域的普通 structured retry 与 strict repair retry 应继续共用同一套重试执行 / retry request builder，不要再分叉出第三套重试模板
 
 ### 任务阶段处理维护约定
@@ -173,6 +174,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
   保留 prompt、schema、deterministic test builders、repair 的维护约定
 - `docs/status.md`
   保留当前状态、限制和路线图
+- 不再单独维护“技术栈 / Agent 定位”重复文档；这类信息收敛到 `README.md` 与对应正式文档中
 
 新增功能时，至少要同步：
 
@@ -268,7 +270,7 @@ scripts/clean-local-artifacts.sh --deep
 ## 已知实现约定
 
 - 结构化 LLM 输出仍然通过 LangChain 实现，但这里说的是生产主链路，不是整个 backend 都不用 `create_agent`。当前小说结构化阶段按 provider 区分：`DeepSeek` 使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `ChatModel.with_structured_output(method="json_schema", include_raw=True)`；优先消费 parsed 结果，必要时回收 raw JSON 文本，由 StoryForge 外层负责 3 次 structured retry；`create_agent()` 只保留给普通文本生成实现。
-- 阶段接口应尽量具备幂等保护；当前 `project.story_analysis` 会按 `source_task_id + story_source_revision` 复用已有 queued / running / completed 任务，避免重复结构化。
+- 阶段接口应尽量具备幂等保护；当前 `project.scene_structure`、`project.segment_contracts` 与兼容入口 `project.story_analysis` 都会按 `source_task_id + story_source_revision` 复用已有 queued / running / completed 任务，避免重复结构化。
 - `SeedanceManifest.title` 只能表示故事标题，不能写成 `segment_video_manifest` 这类文件用途名；读取旧产物时应优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - 任务失败原因必须写入 `TaskRecord.error` / MySQL `error_text`，前端依赖该字段展示失败信息。
 - 服务启动时会把残留 `running` 任务重新排回 `queued`；这只是开发期恢复策略，不等价于生产级幂等队列。

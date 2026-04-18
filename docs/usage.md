@@ -67,6 +67,7 @@ enabled = true
 provider = "deepseek"
 model = "deepseek-chat"
 available_providers = ["deepseek", "openai"]
+max_tokens = 8192
 
 [seedream]
 enabled = true
@@ -93,6 +94,7 @@ database = "storyforge"
 - 先把 `seedream.auto_submit = false`
 - 先把 `seedance.auto_submit = false`
 - 先确认 `.env` 里的密钥和 `base_url` 已正确配置
+- `llm.max_tokens` 当前默认建议保留 `8192`；如果结构化视频规划经常报 `finish_reason='length'`，不要再往下调
 - 页面默认走 `DeepSeek`；如果要换成 `ChatGPT 5.4`，需要先配置 `OPENAI_API_KEY`
 - 页面里的 `模型 ID` 现在是只读默认值，会随 provider 自动切换，不再支持手工输入
 - 创建页默认会把 `V2 连续性软审校` 设为 `auto`
@@ -117,11 +119,13 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 1. 创建项目并生成小说；在创建页可选 `DeepSeek` 或 `ChatGPT 5.4`，也可以预先设置 `V2 连续性软审校 = off / auto / on`
 2. 在项目详情页的“小说”标签页检查并按需修改正文
-3. 生成结构化信息；如需切换当前 run 的 `V2` 审校策略，可在项目详情页先改模式，再重新生成结构化信息
-4. 生成角色图
-5. 在项目详情页时间线里按 segment 逐段生成场景图
-6. 在同一条时间线里按 segment 逐段生成视频
-7. 如果某个 segment 被连续性审校标成高风险，可直接点“智能修复该段”，系统会只修这一个片段并自动重跑该段场景图与视频
+3. 先生成场景结构；如需切换当前 run 的 `V2` 审校策略，可在项目详情页先改模式，再继续下一步
+4. 检查 `chapter -> scene` 拆分后，再生成分段合同
+5. 生成角色图
+6. 在项目详情页时间线里按 segment 逐段生成场景图
+7. 在同一条时间线里按 segment 逐段生成视频
+8. 如果某个 scene 被连续性审校标成高风险，可先点 scene 头部的“智能修复场景”，系统会回写该 scene 的场景基线合同并刷新连续性报告，再提示你后续手动决定是否重生成场景母图、场景图和视频
+9. 如果某个 segment 被连续性审校标成高风险，可再点“智能修复该段”，系统会只更新这一段的修复合同；如果该段当前没有需要修的风险，会直接返回已完成的 `noop`
 
 这样可以逐阶段观察：
 
@@ -197,54 +201,87 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 这一步只生成可编辑正文，对应核心文件是 `story_source.json`
 - 页面会先展示标题、摘要和正文，你可以先人工改稿，再继续后续阶段
 
-### 2. 生成结构化信息
+### 2. 生成场景结构
 
-- 这一步会生成 `novel_package.json`、`novel_audit.json`、角色视觉档案、`scene_plan.json`、`segment_plan.json` 和各类 manifest
-- 同一份 `story_source` 已经有 queued / running / completed 的结构化任务时，后端会直接复用已有任务
+- 这一步会生成 `novel_package.json`、`novel_audit.json`、`story_memory.json`、`character_visual_bible.json` 与第一版 `scene_plan.json`
+- 这一版 `scene_plan.json` 只保存 `chapter -> scene` 结构、`scene_bible` 和 scene 母图相关字段，还不包含正式 `segment contracts`
+- 同一份 `story_source` 已经有 queued / running / completed 的 `project.scene_structure` 任务时，后端会直接复用已有任务
 - `Cast Analyzer` 要求每个角色槽位都带可在正文中定位的 `source_evidence`
 - `source_evidence` 仍然必须来自正文，但对带修饰语的人名或稳定称呼会做容错匹配
 - `Character Designer` 必须严格覆盖目标 slots，不能重复 `cast_slot_id`，也不能凭空补正文里没有证据的人
-- 视频规划也在这一步完成，后续角色图、场景图和视频阶段都只消费这些规划结果
-- 视频 segment 规划在 live LLM 模式下会最多自动重试 3 次；如果模型返回的是分析备注、伪分镜或空结构，而不是可执行的正式场景计划，这一步会直接失败并把原因写入任务，而不会静默生成坏掉的 `scene_plan.json`
+- `story_memory.json` 会在这一步初始化并逐章回写，用来把上一章退出状态、角色摘要和 continuity state 传给后续规划
+- 如果模型返回 `finish_reason='length'`，系统会自动保留更高的 completion token 预算、缩短章节摘录，并优先把规划收缩到更小的 `scene structure / segment contracts` 粒度，再在后续 retry 里强制要求更紧凑的 JSON 输出
 - 小说结构化主链路同样不再依赖本地模板静默兜底：如果 `Story Architect`、`Story Drafter`、`Chapter Planner` 或 `Editorial Reviewer` 返回空标题、缺章、空正文或空 beats，这一步会直接重试 / 失败
+- `scene_plan.json` 是当前场景级主规划文件；在这一步里它主要保存 `chapter -> scene` skeleton、`scene_bible` 与 `scene_master_frame` 相关字段
+- `scene_bible` 用来锁定地点、时间、天气、光线、背景锚点、固定道具、空间布局和角色调度，后续场景图与视频都会直接消费它
+- 每个 scene 还会带 `scene_master_frame_prompt / path / status / url`，用于同场景母图生成与复用
+- 如果旧 run 或弱规划里的 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，并补充固定道具 / 主色调线索，再回填到 `scene_bible` 后生成母图 prompt
+- `story_memory.json` 是项目级结构化状态文件，不是自由文本聊天记忆；当前主要用于章节级视频规划承接
+- 兼容接口 `POST /v1/projects/story-analysis` 仍存在，但它只是把“场景结构 + 分段合同”串成一步执行；新页面默认优先走分步接口
+
+### 3. 生成分段合同
+
+- 这一步依赖已经完成且未过期的 `project.scene_structure`
+- 它会在已有 scene skeleton 的基础上，补齐正式 `segment contracts`，并写出：
+  - `character_image_manifest.json`
+  - 最终版 `scene_plan.json`
+  - `segment_plan.json`
+  - `scene_image_manifest.json`
+  - `seedance_manifest.json`
+  - `continuity_report.json`
+- 同一份 `story_source` 已经有 queued / running / completed 的 `project.segment_contracts` 任务时，后端会直接复用已有任务
+- 视频规划内部已拆成三段式：
+  - 先按章节生成 `scene structure`
+  - 再按单个 `scene` 生成 `segment contracts`
+  - 最后本地富化成正式 `scene_plan.json / segment_plan.json`
+- 最终版 `scene_plan.json` 仍是场景级主规划文件，保存 `chapter -> scene -> segment`
+- scene 级字段优先只保留在 scene 层；segment 默认不再重复整套 `scene_title / scene_summary / scene_anchor / scene_bible`
+- segment planner 默认不再直接输出 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt`；这些字段由本地 `Segment Prompt Enricher` 统一补齐
+- `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
+- 视频 segment 规划在 live LLM 模式下会最多自动重试 3 次；如果模型返回的是分析备注、伪分镜或空结构，而不是可执行的正式场景计划，这一步会直接失败并把原因写入任务，而不会静默生成坏掉的 `scene_plan.json`
 - 这一步还会按 `continuity_review_mode` 写出连续性审校结果：
   - `off`：只保留 `V1` 规则校验
   - `auto`：按 run 复杂度与风险自动决定是否触发 `V2`
   - `on`：强制追加 `V2` LLM 软审校
-- `scene_plan.json` 是当前场景级主规划文件，保存 `chapter -> scene -> segment`，每个 scene 都带 `scene_bible`
-- `scene_bible` 用来锁定地点、时间、天气、光线、背景锚点、固定道具、空间布局和角色调度，后续场景图与视频都会直接消费它
-- 每个 scene 还会带 `scene_master_frame_prompt / path / status / url`，用于同场景母图生成与复用
-- 如果旧 run 或弱规划里的 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，再回填到 `scene_bible` 后生成母图 prompt
-- `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
 - `shot_state` 用来锁定该片段的景别、镜头推进、人物调度、动作推进、道具连续性和尾部承接状态
 - `continuity_link` 用来显式描述当前片段是否承接上一段、开场要对齐什么状态、哪些元素必须延续、哪些变化被允许
-- 同一步还会生成 `continuity_report.json`，其中包含 `V1` 规则审校，以及按模式决定是否追加 `V2` 软审校；它会检查场景母图、关键帧承接、帧级角色、对白时长预算和视频执行风险
+- 同一步还会生成 `continuity_report.json`，其中包含 `V1` 规则审校，以及按模式决定是否追加 `V2` 软审校；它会检查场景母图、场景基线强度、关键帧承接、帧级角色、对白时长预算和视频执行风险
+- `V1` 当前还会额外提示三类动作承接问题：`opening_match_weak`、`action_progression_stalled`、`adjacent_segment_duplicate`
 
-### 3. 生成角色图
+### 4. 生成角色图
 
 - 对应执行报告是 `seedream_character_execution.json`
 - 角色定妆图会统一使用白底三视图模板，只显示角色姓名，不再允许手工往模板里塞更多面板文字
 
-### 4. 生成场景图
+### 5. 生成场景图
 
 - 对应执行报告是 `seedream_scene_execution.json`
 - 页面会先按 `scene_plan.json` 展示按 scene 分组的时间线，再允许你按 segment 单独生成
 - 同一 scene 会先生成一张 `scene_master_frame`，再基于它继续生成该 scene 下各个 segment 的首帧 / 中段 / 尾帧
 - 时间线里每个 scene 头部都可以单独“重生成场景母图”；这个入口只会重跑该 scene 的 `scene_master_frame`，不会连带重跑其它 scene 或 segment
+- 如果某个问题已经被判定为 scene 级连续性风险，scene 头部还会放出“智能修复场景”入口；这一步会额外落盘 `continuity_repair_<scene_id>.json`，回写该 scene 的 `scene_anchor / scene_bible`、刷新 `continuity_report.json`，并写出 `selection_mode`、`affected_segment_ids` 与待执行媒体动作，但不会自动重跑 `scene_master_frame`、场景图或视频
 - 时间线头部现在会直接显示最近一次连续性校验时间、总体状态和 top issues
 - 时间线头部还会显示本次 run 请求的 `V2` 模式，以及 `V2` 是否实际执行
+- 时间线头部现在还提供“一键修复风险合同”；它会按连续性报告里的风险优先级，分批只回写 `scene` / `segment` 合同与报告，不会自动开始场景图或视频任务
 - 每个 scene 头部和每个 segment 卡片都会显示连续性风险；如果某个问题建议“重生成场景母图 / 场景图 / 视频”，对应按钮会被高亮
-- 如果某个 segment 已被判定为连续性高风险，时间线卡片还会放出“智能修复该段”入口；这一步会先让 LLM 重写该段执行合同，再只重跑该段场景图和视频
+- 如果某个 segment 已被判定为连续性高风险，时间线卡片还会放出“智能修复该段”入口；这一步会先让 LLM 重写该段执行合同，并提示你后续手动继续场景图或视频阶段
+- 如果你点了修复，但目标当前其实没有问题，这次修复任务会直接完成并显示 `noop`，不会再把“无事可修”当成失败
+- 智能修复卡片会实时根据你后续手动提交的场景图 / 视频任务，更新“剩余待执行动作”；如果动作已经手动提交或完成，提示会自动收敛
+- 批量合同修复同样只更新合同：它会返回本批修了多少个 scene / segment、还有多少风险留待下一批，但不会代替你自动执行媒体重跑
+- 如果某个 scene 正在执行场景修复，或该 scene 的母图正在重生成，前端会暂时锁住该 scene 下的局部修复、场景图、视频按钮，避免并发提交互相覆盖
 - `scene_master_frame` 现在是无角色空场景参考图，只负责锁背景环境、光线、固定道具和空间透视，不负责承载人物
-- 即使上游 `scene_bible` 很弱，`scene_master_frame` 也会优先回填地点、时间、光线、空间布局和背景锚点，避免母图退化成泛化场景
+- `scene_master_frame` prompt 现在会显式加入“场景基线锁定”，要求后续关键帧复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视
+- 即使上游 `scene_bible` 很弱，`scene_master_frame` 也会优先回填地点、时间、光线、空间布局和背景锚点，并尽量补固定道具与主色调，避免母图退化成泛化场景
 - 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
 - 同一 scene 下的多个 segment 会共享同一套 `scene_bible` 基线，场景图 prompt 会显式带入这组约束
+- scene 级连续性风险现在还会额外标记“场景基线过弱”，用于提示你先重生成 `scene_master_frame`
 - 同时也会显式带入该段自己的 `shot_state`，保证景别、调度和动作推进不只靠自然语言 prompt 碰运气
 - 如果 `continuity_link` 判定当前段应承接上一段，首帧会优先按这份承接关系复用或对齐上一段尾部状态
+- 连续承接段的 repair 现在也会自动补强更具体的 `opening_match` 和 `allowed_changes`，减少“只是写了承接，但画面还是像重开一段”的情况
 - 当前帧生成时还会优先引用 `scene_master_frame + 当前帧角色图`；连续承接段的首帧会再额外带上上一段尾帧
 - 场景生图阶段只负责纯画面关键帧，不允许把对白、字幕、聊天气泡或任何可见文字直接画进图片
 
-### 5. 生成视频
+### 6. 生成视频
 
 - 对应执行报告是 `seedance_execution.json`
 - 视频阶段也是按 segment 单独触发
@@ -253,7 +290,9 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 视频 prompt 也会复用该段 `shot_state`，把镜头景别、镜头推进、动作承接和尾部状态直接写进 Seedance 请求
 - 视频 prompt 还会复用该段 `continuity_link`，把它与上一段的开场承接要求直接写进 Seedance 请求
 - 只有对应片段场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
-- 如果视频来自“智能修复该段”任务，系统只会把目标 segment 的视频合同重置为 `planned` 后重跑，不会重置其它片段
+- 智能修复本身不会自动重跑视频；修复完成后需要你手动点击对应 segment 或 scene 的“生成视频”
+- 修复任务会继续归在当前制作版本下展示，不会额外长出一个新的版本块
+- 连续性修复器现在会更严格检查对白 / 旁白 / 硬字幕是否装得进当前时长；超预算时会优先压缩文本，而不是直接保留一份说不完的修复合同
 
 ### 6. 手动合并总片
 
@@ -280,6 +319,7 @@ outputs/<story-slug>/
 ├── story_source.json
 ├── novel_package.json
 ├── novel_audit.json
+├── story_memory.json
 ├── character_visual_bible.json
 ├── character_image_manifest.json
 ├── scene_plan.json
@@ -289,6 +329,7 @@ outputs/<story-slug>/
 ├── seedream_scene_execution.json
 ├── seedance_manifest.json
 ├── continuity_repair_<segment_id>.json
+├── continuity_repair_<scene_id>.json
 └── seedance_execution.json
 ```
 
@@ -325,6 +366,9 @@ outputs/<story-slug>/
   视频执行报告，记录提交状态、完成数量、失败数量和下载结果。
 - `continuity_repair_<segment_id>.json`
   单段智能修复报告，记录本次修复针对哪个 segment、修复摘要、触发它的连续性问题、修复前后差异和被改写的关键字段。
+- `continuity_repair_<scene_id>.json`
+  单场景智能修复报告，记录本次修复针对哪个 scene、触发它的 scene 级连续性问题、`selection_mode`、`affected_segment_ids`，以及后续建议执行的媒体动作。
+  批量合同修复不会新增新的文件类型，仍然只会回写既有的 `continuity_repair_<scene_id>.json` 或 `continuity_repair_<segment_id>.json`。
 - `assets/characters/*.png`
   实际生成出来的角色图文件。
 - `assets/frames/*.png`
@@ -341,7 +385,7 @@ outputs/<story-slug>/
 1. 配好 `DEEPSEEK_API_KEY`
 2. 先跑小说正文阶段
 3. 在页面检查并按需修改 `story_source.json`
-4. 再跑结构化信息阶段
+4. 依次跑“生成场景结构”和“生成分段合同”
 5. 检查 `novel_package.json` 和 `novel_audit.json` 是否符合预期
 
 ### 阶段二：验证角色和场景
@@ -366,8 +410,8 @@ outputs/<story-slug>/
 - 所有任务都会在接口和页面上返回 `error` 字段，前端会展示任务级和阶段级失败原因。
 - Seedance 视频任务如果提交阶段就被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和各次降级尝试，不再只显示 `failed_count=1`。
 - LLM 结构化输出失败会由 StoryForge 外层最多重试 3 次；仍失败会显式标记任务失败。
-- LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果返回空结构，会显示“模型没有返回结构化对象”这类明确原因。
-- 视频 segment 规划还会额外拒绝带有 `当前片段聚焦`、`结尾要保留`、`当前小段聚焦` 这类分析模板话术的伪分镜；看到这类错误时，应直接重跑“生成结构化信息”，不要继续拿该 run 去生成场景图和视频。
+- LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果第一次 structured 调用返回空结构，还会再走一次 LangChain 普通 JSON 回收；两次都拿不到合法 JSON 时，才会显示“模型没有返回结构化对象”这类明确原因。
+- 视频 segment 规划还会额外拒绝带有 `当前片段聚焦`、`结尾要保留`、`当前小段聚焦` 这类分析模板话术的伪分镜；看到这类错误时，应直接重跑“生成分段合同”；如果上游 scene skeleton 也已失效，再先重跑“生成场景结构”。
 - 服务重启时，残留的 `running` 任务会重新回到 `queued`，启动后会重新执行。
 - 如果任务已经进入 `failed`，推荐在页面重新点击对应阶段按钮，而不是手动修改数据库。
 - 视频长任务执行期间不要用 `--reload`。热重载会中断当前进程，即使现在会重排队，也可能造成重复提交或等待时间变长。

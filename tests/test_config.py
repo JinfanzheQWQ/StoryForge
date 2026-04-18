@@ -23,6 +23,7 @@ class ConfigTestCase(unittest.TestCase):
         self.assertEqual(config.llm.model, "deepseek-chat")
         self.assertEqual(config.llm.available_providers, ("deepseek", "openai"))
         self.assertTrue(config.llm.enabled)
+        self.assertEqual(config.llm.max_tokens, 8192)
         self.assertEqual(config.video.segment_duration_seconds, 5)
         self.assertEqual(config.video.character_image_provider, "seedream-4.5")
         self.assertEqual(config.video.scene_image_provider, "seedream-4.5")

@@ -64,6 +64,88 @@ class ContinuityLinkSchema(BaseModel):
     transition_reason: str = Field(default="", description="为什么是承接、切断或新起一段")
 
 
+class ChapterSceneSchema(BaseModel):
+    scene_id: str = Field(description="场景 ID")
+    chapter_number: int = Field(description="所属章节")
+    title: str = Field(description="场景标题")
+    summary: str = Field(description="场景摘要")
+    scene_anchor: str = Field(
+        default="",
+        description="场景连续性锚点，例如地点、时间、光线、固定背景物或空间关系",
+    )
+    involved_characters: list[str] = Field(
+        default_factory=list,
+        description="该场景整体涉及的角色集合",
+    )
+    scene_bible: SceneBibleSchema = Field(
+        default_factory=SceneBibleSchema,
+        description="该场景共享的轻量场景圣经",
+    )
+
+
+class ChapterSceneStructureSchema(BaseModel):
+    scenes: list[ChapterSceneSchema] = Field(description="当前章节的场景结构")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input_payload(cls, raw):
+        if isinstance(raw, list):
+            return {"scenes": _normalize_scene_structure_payloads(raw)}
+        if isinstance(raw, dict) and isinstance(raw.get("scenes"), list):
+            return {"scenes": _normalize_scene_structure_payloads(raw.get("scenes", []))}
+        return raw
+
+
+class SceneSegmentContractSchema(BaseModel):
+    segment_id: str = Field(description="片段 ID")
+    chapter_number: int = Field(description="所属章节")
+    scene_id: str = Field(description="所属场景 ID")
+    title: str = Field(description="片段标题")
+    summary: str = Field(description="片段摘要")
+    involved_characters: list[str] = Field(description="涉及角色")
+    start_frame_characters: list[str] = Field(default_factory=list, description="首帧实际出镜角色")
+    mid_frame_characters: list[str] = Field(default_factory=list, description="中段锚点帧实际出镜角色")
+    end_frame_characters: list[str] = Field(default_factory=list, description="尾帧实际出镜角色")
+    narration: str = Field(default="", description="该片段旁白")
+    dialogue_lines: list[str] = Field(default_factory=list, description="该片段对白")
+    subtitle_lines: list[str] = Field(default_factory=list, description="该片段硬字幕")
+    timed_beats: list[str] = Field(default_factory=list, description="该片段时间节拍")
+    duration_seconds: int = Field(description="建议时长")
+    requires_mid_frame: bool = Field(default=False, description="是否需要中段锚点帧")
+    transition_hint: str = Field(default="auto", description="continue / cut / auto")
+    shot_state: ShotStateSchema = Field(
+        default_factory=ShotStateSchema,
+        description="片段镜头与动作状态",
+    )
+    continuity_link: ContinuityLinkSchema = Field(
+        default_factory=ContinuityLinkSchema,
+        description="与上一片段的连续性关系",
+    )
+
+    @model_validator(mode="after")
+    def normalize_mid_frame_fields(self) -> "SceneSegmentContractSchema":
+        if not self.requires_mid_frame:
+            self.mid_frame_characters = []
+        return self
+
+
+class SceneSegmentContractBatchSchema(BaseModel):
+    scene_id: str = Field(default="", description="所属场景 ID")
+    chapter_number: int = Field(default=0, description="所属章节")
+    segments: list[SceneSegmentContractSchema] = Field(description="当前场景的片段合同")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input_payload(cls, raw):
+        if isinstance(raw, list):
+            return {"segments": _normalize_scene_segment_contracts(raw)}
+        if isinstance(raw, dict) and isinstance(raw.get("segments"), list):
+            payload = dict(raw)
+            payload["segments"] = _normalize_scene_segment_contracts(raw.get("segments", []))
+            return payload
+        return raw
+
+
 class VideoSegmentSchema(BaseModel):
     segment_id: str = Field(description="片段 ID")
     chapter_number: int = Field(description="所属章节")
@@ -192,6 +274,22 @@ class SegmentContinuityRepairSchema(BaseModel):
             self.mid_frame_prompt = ""
             self.mid_frame_characters = []
         return self
+
+
+class SceneContinuityRepairSchema(BaseModel):
+    scene_id: str = Field(description="需要被修复的目标场景 ID，必须与输入目标一致")
+    repair_summary: str = Field(
+        default="",
+        description="一句话说明本次场景修复打算解决什么连续性问题",
+    )
+    scene_anchor: str = Field(
+        default="",
+        description="修复后的场景锚点，应能概括同一 scene 的空间与连续性基准",
+    )
+    scene_bible: SceneBibleSchema = Field(
+        default_factory=SceneBibleSchema,
+        description="修复后的场景圣经，用于稳定同一 scene 的环境、空间与镜头基线",
+    )
 
 
 class VideoSceneSchema(BaseModel):
@@ -342,6 +440,91 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 "scene_master_frame_error": scene_master_frame_error,
                 "involved_characters": involved_characters,
                 "segments": normalized_segments,
+            }
+        )
+    return normalized
+
+
+def _normalize_scene_structure_payloads(raw_scenes: list[object]) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for index, raw_scene in enumerate(raw_scenes, start=1):
+        payload = _coerce_mapping(raw_scene)
+        if payload is None:
+            continue
+        chapter_number = int(payload.get("chapter_number") or 0)
+        scene_id = str(payload.get("scene_id") or "").strip()
+        if not scene_id:
+            if chapter_number > 0:
+                scene_id = f"ch{chapter_number:02d}-sc{index:02d}"
+            else:
+                scene_id = f"scene-{index:02d}"
+        title = str(payload.get("title") or payload.get("scene_title") or f"场景 {index}").strip()
+        summary = str(payload.get("summary") or payload.get("scene_summary") or title).strip()
+        scene_anchor = str(payload.get("scene_anchor") or "").strip()
+        normalized.append(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "title": title or f"场景 {index}",
+                "summary": summary or title or f"场景 {index}",
+                "scene_anchor": scene_anchor,
+                "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
+                "scene_bible": _normalize_scene_bible(
+                    payload.get("scene_bible"),
+                    default_summary=summary or title or f"场景 {index}",
+                    scene_anchor_default=scene_anchor,
+                ),
+            }
+        )
+    return normalized
+
+
+def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for index, raw_segment in enumerate(raw_segments, start=1):
+        payload = _coerce_mapping(raw_segment)
+        if payload is None:
+            continue
+        normalized.append(
+            {
+                "segment_id": str(payload.get("segment_id") or f"segment-{index:02d}").strip()
+                or f"segment-{index:02d}",
+                "chapter_number": int(payload.get("chapter_number") or 0),
+                "scene_id": str(payload.get("scene_id") or "").strip(),
+                "title": str(payload.get("title") or f"片段 {index}").strip() or f"片段 {index}",
+                "summary": str(payload.get("summary") or "").strip(),
+                "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
+                "start_frame_characters": _normalize_name_list(payload.get("start_frame_characters", [])),
+                "mid_frame_characters": _normalize_name_list(payload.get("mid_frame_characters", [])),
+                "end_frame_characters": _normalize_name_list(payload.get("end_frame_characters", [])),
+                "narration": str(payload.get("narration") or "").strip(),
+                "dialogue_lines": [
+                    str(item).strip()
+                    for item in payload.get("dialogue_lines", [])
+                    if str(item).strip()
+                ],
+                "subtitle_lines": [
+                    str(item).strip()
+                    for item in payload.get("subtitle_lines", [])
+                    if str(item).strip()
+                ],
+                "timed_beats": [
+                    str(item).strip()
+                    for item in payload.get("timed_beats", [])
+                    if str(item).strip()
+                ],
+                "duration_seconds": int(payload.get("duration_seconds") or 0),
+                "requires_mid_frame": bool(payload.get("requires_mid_frame", False)),
+                "transition_hint": str(payload.get("transition_hint") or "auto").strip() or "auto",
+                "shot_state": _normalize_shot_state(
+                    payload.get("shot_state"),
+                    default_summary=str(payload.get("summary") or ""),
+                    default_prompt="",
+                    scene_anchor_default="",
+                ),
+                "continuity_link": _normalize_continuity_link(
+                    payload.get("continuity_link"),
+                ),
             }
         )
     return normalized

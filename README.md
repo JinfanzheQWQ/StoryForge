@@ -33,19 +33,20 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
 - `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
-- 浏览器端五步式工作台、CLI 和 HTTP API 三种入口
+- 浏览器端六步式工作台、CLI 和 HTTP API 三种入口
 
 ## 核心工作流
 
-StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
+StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
 
 1. 生成小说正文
-2. 生成结构化信息
-3. 生成角色图
-4. 生成场景图
-5. 生成视频
+2. 生成场景结构
+3. 生成分段合同
+4. 生成角色图
+5. 生成场景图
+6. 生成视频
 
-在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`，再决定是否继续进入结构化与媒体阶段。
+在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`。视频合并仍然是可选的手动动作，不自动执行。
 
 ## 主要特性
 
@@ -55,8 +56,9 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，当前内置 `DeepSeek` 与 `ChatGPT 5.4`
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做规则校验、归一化与轻量 repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
-- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；不再用 `create_agent + ToolStrategy` 跑小说结构化输出
-- 结构化阶段具备后端幂等保护：同一故事正文修订已有 queued / running / completed 结构化任务时，不会重复创建任务
+- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；若第一次 structured 调用空返回，还会再做一次 plain JSON 回收；不再用 `create_agent + ToolStrategy` 跑小说结构化输出
+- LLM 配置已补 `llm.max_tokens`，当前默认 `8192`；视频分镜规划也已压缩 scene/segment 重复字段，降低 `finish_reason='length'` 导致的 JSON 截断
+- 分步结构化阶段具备后端幂等保护：`project.scene_structure`、`project.segment_contracts` 与兼容入口 `project.story_analysis` 都会按正文修订复用已有 queued / running / completed 任务
 - 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 LLM provider 配置，非 LLM 模式会直接报错
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - 视频规划已拆成场景主规划与执行索引两层：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 保留给逐段执行和重试
@@ -68,7 +70,7 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 - 镜头连续性链路：`shot_state` -> 场景图 prompt -> Seedance 视频 prompt
 - 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 场景图 prompt -> Seedance 视频 prompt
 - 连续性审校链路：`continuity_report.json` 同时汇总 `V1` 规则校验与可选 `V2` LLM 软审校，支持 `off / auto / on`
-- 连续性修复链路：时间线高风险片段可直接触发 `project.continuity_repair`，由 LLM 只重写目标 segment 合同，再局部重跑该段场景图与视频
+- 连续性修复链路：时间线高风险 scene 或 segment 可直接触发 `project.continuity_repair`，由 LLM 只重写目标范围合同，并返回后续建议执行的媒体动作，不会自动重跑媒体
 - 项目详情时间线按 `scene` 分组展示多个 `segment`，同场景连续片段会优先按 `scene_id` 复用前一段尾帧
 - 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
 - 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
@@ -111,7 +113,7 @@ StoryForge 默认采用五阶段后台任务流，而不是一键全跑：
 
 - 首页 / 品牌展示截图
 - 项目详情与资产页截图
-- 五步工作流或视频生产页截图
+- 六步工作流或视频生产页截图
 
 ## 快速开始
 
@@ -189,10 +191,11 @@ uv run storyforge api serve
 
 1. 在页面创建故事并生成小说
 2. 在“小说”标签页审阅并按需修改正文
-3. 手动触发结构化信息生成
-4. 查看 `scene` 分组后的时间线规划
-5. 在同一条 story run 上生成角色图
-6. 基于同一条 story run 逐段生成场景图与视频，并在需要时手动合并总片
+3. 手动触发场景结构生成
+4. 检查 `chapter -> scene` 结构后，再生成分段合同
+5. 查看 `scene` 分组后的时间线规划
+6. 在同一条 story run 上生成角色图
+7. 基于同一条 story run 逐段生成场景图与视频，并在需要时手动合并总片
 
 ## CLI 用法
 
@@ -231,6 +234,8 @@ uv run storyforge video plan \
 常用接口：
 
 - `POST /v1/projects/novel`
+- `POST /v1/projects/scene-structure`
+- `POST /v1/projects/segment-contracts`
 - `POST /v1/projects/story-analysis`
 - `POST /v1/projects/characters`
 - `POST /v1/projects/scenes`
@@ -259,6 +264,8 @@ uv run storyforge video plan \
 - `story_source.json`
 - `novel_package.json`
 - `novel_audit.json`
+- `story_memory.json`
+- `scene_plan.json`
 - `segment_plan.json`
 - `seedream_character_execution.json`
 - `seedream_scene_execution.json`
@@ -312,7 +319,6 @@ uv run pytest
 - [API 文档](docs/api.md)
 - [架构文档](docs/architecture.md)
 - [开发文档](docs/development.md)
-- [技术栈与 Agent 定位](docs/tech-stack.md)
 - [工程状态与路线图](docs/status.md)
 
 ## License

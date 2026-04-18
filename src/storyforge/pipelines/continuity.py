@@ -44,6 +44,9 @@ CONTINUITY_REPORT_FILENAME = "continuity_report.json"
 ACTION_REGENERATE_SCENE_MASTER = "regenerate_scene_master_frame"
 ACTION_REGENERATE_SCENE_IMAGES = "regenerate_scene_images"
 ACTION_REGENERATE_VIDEO = "regenerate_video"
+SCENE_BASELINE_MIN_BACKGROUND_ANCHORS = 2
+SCENE_BASELINE_MIN_FIXED_PROPS = 1
+SCENE_BASELINE_MIN_DOMINANT_PALETTE = 1
 ACTION_LABELS = {
     ACTION_REGENERATE_SCENE_MASTER: "重生成场景母图",
     ACTION_REGENERATE_SCENE_IMAGES: "重生成片段场景图",
@@ -52,6 +55,24 @@ ACTION_LABELS = {
 RISK_ORDER = {"high": 0, "medium": 1, "low": 2}
 FAILED_VIDEO_STATUSES = {"failed", "cancelled", "canceled", "rejected"}
 PENDING_VIDEO_STATUSES = {"submitted", "queued", "running", "processing", "pending", "timeout"}
+GENERIC_CONTINUITY_FILLER_TERMS = (
+    "开场",
+    "开头",
+    "继续",
+    "承接",
+    "延续",
+    "上一段",
+    "上一镜头",
+    "上一片段",
+    "尾部",
+    "尾帧",
+    "状态",
+    "镜头",
+    "画面",
+    "保持",
+    "一致",
+    "跟上",
+)
 
 
 @dataclass(slots=True)
@@ -235,6 +256,7 @@ def _build_v1_rule_review(output_dir: Path, project_package) -> ContinuityRuleRe
         ]
         scene_issues.extend(_build_scene_issues(output_dir, scene, related_tasks))
 
+    adjacent_previous_segment = None
     for segment in project_package.segments:
         scene = scenes_by_id.get(segment.scene_id)
         scene_task = scene_tasks_by_segment_id.get(segment.segment_id)
@@ -254,8 +276,10 @@ def _build_v1_rule_review(output_dir: Path, project_package) -> ContinuityRuleRe
                 clip_task=clip_task,
                 previous_segment=previous_segment,
                 previous_scene_task=previous_scene_task,
+                adjacent_previous_segment=adjacent_previous_segment,
             )
         )
+        adjacent_previous_segment = segment
 
     summary = _build_summary(scene_issues, segment_issues)
     return ContinuityRuleReview(
@@ -612,6 +636,27 @@ def _build_scene_issues(
                 details={"missing_keys": missing_scene_bible_keys},
             )
         )
+    baseline_gaps = _collect_scene_baseline_gaps(scene)
+    if baseline_gaps:
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_baseline_weak",
+                message=(
+                    "场景基线过弱，后续关键帧容易出现背景或空间漂移："
+                    + "、".join(baseline_gaps)
+                ),
+                scene_id=scene.scene_id,
+                recommended_action=ACTION_REGENERATE_SCENE_MASTER,
+                details={
+                    "baseline_gaps": baseline_gaps,
+                    "background_anchor_count": len(_normalized_string_list(scene.scene_bible.background_anchors)),
+                    "fixed_prop_count": len(_normalized_string_list(scene.scene_bible.fixed_props)),
+                    "dominant_palette_count": len(_normalized_string_list(scene.scene_bible.dominant_palette)),
+                },
+            )
+        )
 
     master_frame_exists = _path_exists(output_dir, scene.scene_master_frame_path)
     if scene.scene_master_frame_status == "failed":
@@ -682,6 +727,35 @@ def _build_scene_issues(
     return issues
 
 
+def _collect_scene_baseline_gaps(scene) -> list[str]:
+    gaps: list[str] = []
+    background_anchors = _normalized_string_list(scene.scene_bible.background_anchors)
+    fixed_props = _normalized_string_list(scene.scene_bible.fixed_props)
+    dominant_palette = _normalized_string_list(scene.scene_bible.dominant_palette)
+    spatial_layout = str(scene.scene_bible.spatial_layout or "").strip()
+    lighting = str(scene.scene_bible.lighting or "").strip()
+    scene_master_prompt = str(scene.scene_master_frame_prompt or "").strip()
+
+    if len(background_anchors) < SCENE_BASELINE_MIN_BACKGROUND_ANCHORS:
+        gaps.append("背景锚点不足")
+    if len(fixed_props) < SCENE_BASELINE_MIN_FIXED_PROPS:
+        gaps.append("固定道具不足")
+    if len(dominant_palette) < SCENE_BASELINE_MIN_DOMINANT_PALETTE:
+        gaps.append("主色调不足")
+    if not spatial_layout:
+        gaps.append("空间布局不足")
+    if not lighting:
+        gaps.append("光线信息不足")
+    if len(scene_master_prompt) < 80:
+        gaps.append("场景母图 prompt 过短")
+
+    return gaps
+
+
+def _normalized_string_list(values: list[str]) -> list[str]:
+    return [str(item or "").strip() for item in values if str(item or "").strip()]
+
+
 def _build_segment_issues(
     *,
     output_dir: Path,
@@ -691,6 +765,7 @@ def _build_segment_issues(
     clip_task: SeedanceClipTask | None,
     previous_segment,
     previous_scene_task: SceneImageTask | None,
+    adjacent_previous_segment,
 ) -> list[ContinuityIssue]:
     issues: list[ContinuityIssue] = []
 
@@ -727,6 +802,13 @@ def _build_segment_issues(
 
     issues.extend(_build_frame_character_issues(segment))
     issues.extend(_build_timing_issues(segment))
+    issues.extend(
+        _build_continuity_transition_issues(
+            segment=segment,
+            previous_segment=previous_segment,
+            adjacent_previous_segment=adjacent_previous_segment,
+        )
+    )
 
     if scene_task is not None:
         issues.extend(_build_scene_task_issues(output_dir, segment, scene_task))
@@ -764,6 +846,97 @@ def _build_segment_issues(
                 message="该片段找不到所属 scene 记录。",
                 scene_id=segment.scene_id,
                 segment_id=segment.segment_id,
+            )
+        )
+
+    return issues
+
+
+def _build_continuity_transition_issues(
+    *,
+    segment,
+    previous_segment,
+    adjacent_previous_segment,
+) -> list[ContinuityIssue]:
+    issues: list[ContinuityIssue] = []
+    transition_mode = segment.continuity_link.transition_mode.strip().lower()
+
+    if transition_mode == "continue" and previous_segment is not None:
+        opening_match = str(segment.continuity_link.opening_match or "").strip()
+        previous_end_state = str(
+            previous_segment.shot_state.end_state_lock
+            or previous_segment.shot_state.action_progression
+            or previous_segment.summary
+            or ""
+        ).strip()
+        opening_overlap = _text_overlap_ratio(opening_match, previous_end_state)
+        if (
+            not opening_match
+            or _continuity_text_too_generic(opening_match)
+            or opening_overlap < 0.22
+        ):
+            issues.append(
+                _issue(
+                    scope="segment",
+                    severity="medium",
+                    code="opening_match_weak",
+                    message="当前片段声明承接上一段，但 opening_match 没有明确复述上一段尾部的动作或站位状态。",
+                    scene_id=segment.scene_id,
+                    segment_id=segment.segment_id,
+                    recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                    details={
+                        "previous_segment_id": previous_segment.segment_id,
+                        "previous_end_state_lock": previous_end_state,
+                        "opening_match": opening_match,
+                        "overlap_ratio": round(opening_overlap, 3),
+                    },
+                )
+            )
+
+        current_action = str(
+            segment.shot_state.action_progression
+            or segment.summary
+            or ""
+        ).strip()
+        allowed_changes = str(segment.continuity_link.allowed_changes or "").strip()
+        if _action_progression_stalled(previous_end_state, current_action, allowed_changes):
+            issues.append(
+                _issue(
+                    scope="segment",
+                    severity="medium",
+                    code="action_progression_stalled",
+                    message="当前片段虽然承接上一段，但动作推进几乎没有前进，容易看起来像重新演了一遍。",
+                    scene_id=segment.scene_id,
+                    segment_id=segment.segment_id,
+                    recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                    details={
+                        "previous_segment_id": previous_segment.segment_id,
+                        "previous_end_state_lock": previous_end_state,
+                        "current_action_progression": current_action,
+                        "allowed_changes": allowed_changes,
+                    },
+                )
+            )
+
+    if (
+        adjacent_previous_segment is not None
+        and adjacent_previous_segment.scene_id == segment.scene_id
+        and _adjacent_segments_look_duplicate(adjacent_previous_segment, segment)
+    ):
+        issues.append(
+            _issue(
+                scope="segment",
+                severity="medium",
+                code="adjacent_segment_duplicate",
+                message="该片段与前一个相邻片段表达的事件过于重复，容易造成镜头顺序混乱或重复表演。",
+                scene_id=segment.scene_id,
+                segment_id=segment.segment_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                details={
+                    "previous_segment_id": adjacent_previous_segment.segment_id,
+                    "previous_summary": adjacent_previous_segment.summary,
+                    "current_summary": segment.summary,
+                },
             )
         )
 
@@ -1031,6 +1204,90 @@ def _build_timing_issues(segment) -> list[ContinuityIssue]:
             )
         )
     return issues
+
+
+def _adjacent_segments_look_duplicate(previous_segment, segment) -> bool:
+    if set(previous_segment.involved_characters) != set(segment.involved_characters):
+        return False
+    summary_score = _text_overlap_ratio(previous_segment.summary, segment.summary)
+    action_score = _text_overlap_ratio(
+        previous_segment.shot_state.action_progression or previous_segment.summary,
+        segment.shot_state.action_progression or segment.summary,
+    )
+    signature_score = _text_overlap_ratio(
+        " ".join(
+            [
+                previous_segment.summary,
+                previous_segment.shot_state.action_progression,
+                " ".join(previous_segment.timed_beats),
+            ]
+        ),
+        " ".join(
+            [
+                segment.summary,
+                segment.shot_state.action_progression,
+                " ".join(segment.timed_beats),
+            ]
+        ),
+    )
+    return signature_score >= 0.8 or (summary_score >= 0.74 and action_score >= 0.74)
+
+
+def _action_progression_stalled(
+    previous_end_state: str,
+    current_action: str,
+    allowed_changes: str,
+) -> bool:
+    if not previous_end_state or not current_action:
+        return False
+    overlap_ratio = _text_overlap_ratio(previous_end_state, current_action)
+    new_signal_count = len(_text_ngrams(current_action) - _text_ngrams(previous_end_state))
+    if overlap_ratio < 0.7 or new_signal_count > 2:
+        return False
+    if not allowed_changes:
+        return True
+    if _continuity_text_too_generic(allowed_changes):
+        return True
+    return _text_overlap_ratio(previous_end_state, allowed_changes) >= 0.78
+
+
+def _continuity_text_too_generic(text: str) -> bool:
+    normalized = _normalize_similarity_text(text)
+    if not normalized:
+        return True
+    reduced = normalized
+    for token in GENERIC_CONTINUITY_FILLER_TERMS:
+        reduced = reduced.replace(token, "")
+    return len(reduced) < 6
+
+
+def _normalize_similarity_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").strip().lower())
+
+
+def _text_ngrams(value: str) -> set[str]:
+    normalized = _normalize_similarity_text(value)
+    if not normalized:
+        return set()
+    if len(normalized) <= 3:
+        return {normalized}
+    grams: set[str] = set()
+    for size in (2, 3):
+        if len(normalized) < size:
+            continue
+        grams.update(
+            normalized[index : index + size]
+            for index in range(len(normalized) - size + 1)
+        )
+    return grams
+
+
+def _text_overlap_ratio(left: str, right: str) -> float:
+    left_grams = _text_ngrams(left)
+    right_grams = _text_ngrams(right)
+    if not left_grams or not right_grams:
+        return 0.0
+    return len(left_grams & right_grams) / min(len(left_grams), len(right_grams))
 
 
 def _scene_generation_started(

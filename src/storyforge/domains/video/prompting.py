@@ -4,10 +4,22 @@ import json
 import re
 
 from storyforge.domains.novel.contracts import CharacterVoiceProfile, NovelPackage
-from storyforge.domains.video.contracts import CharacterVisualProfile, VideoScene, VideoSegment
+from storyforge.domains.video.contracts import (
+    CharacterVisualProfile,
+    StoryMemoryPackage,
+    VideoScene,
+    VideoSegment,
+)
 
 
 class VideoPromptingMixin:
+    SEGMENT_PLANNER_TOTAL_EXCERPT_BUDGET = 3600
+    SEGMENT_PLANNER_MIN_EXCERPT_CHARS = 320
+    SEGMENT_PLANNER_MAX_EXCERPT_CHARS = 900
+    CHAPTER_SCENE_PLANNER_EXCERPT_CHARS = 1200
+    CHAPTER_SEGMENT_PLANNER_EXCERPT_CHARS = 1400
+    SCENE_SEGMENT_CONTRACT_EXCERPT_CHARS = 1000
+
     SCENE_NO_TEXT_PROMPT = (
         "画面中禁止出现任何可见文字、对白字幕、台词字卡、聊天气泡、漫画对话框、旁白框、"
         "屏幕贴字、海报文案、水印、Logo、片名字样或说明性排版。"
@@ -70,8 +82,13 @@ class VideoPromptingMixin:
 
     def _build_segment_planner_user_prompt(self, novel_package: NovelPackage) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
+        excerpt_max_chars = self._resolve_segment_planner_excerpt_budget(novel_package)
         chapter_blocks = "\n\n".join(
-            self._build_chapter_segment_directive(novel_package, chapter_number=item.number)
+            self._build_chapter_segment_directive(
+                novel_package,
+                chapter_number=item.number,
+                excerpt_max_chars=excerpt_max_chars,
+            )
             for item in novel_package.outline.chapters
         )
         return f"""
@@ -89,10 +106,12 @@ class VideoPromptingMixin:
 - `scene_anchor` 必须概括这个场景的连续性锚点，例如地点、时间、光线、天气、固定背景物、空间关系或反复出现的道具
 - `scene_bible` 是同一 scene 下所有片段共享的场景圣经，必须至少填写：`location`、`time_window`、`weather`、`lighting`、`dominant_palette`、`background_anchors`、`fixed_props`、`spatial_layout`、`character_blocking`、`continuity_notes`
 - `scene_bible` 要服务于场景连续性，内容必须稳定、可复用、偏视觉与调度，不要写成剧情摘要，不要把对白和字幕写进去
+- `scene_bible` 请尽量短写：`dominant_palette` 最多 3 个词，`background_anchors` 最多 4 项，`fixed_props` 最多 3 项，其余字符串字段尽量控制在 1 句内
 - 同一 scene 下的多个片段必须共享同一时空和连续性的视觉基线；如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene
 - 每章拆成几段必须由你根据该章正文内容自行判断，依据包括：事件推进、场景切换、时间跳跃、情绪转折、镜头密度、对白密度
 - 不要把章节硬压成固定段数，也不要为了凑平均数机械切段
 - 每个片段除画面字段外，还必须输出可直接给 Seedance 使用的旁白、角色对白、环境音、音乐方向和时间节拍
+- `segments` 里的每个片段不要重复输出父级 scene 已经提供的 `scene_title`、`scene_summary`、`scene_anchor`、`scene_bible`，系统会自动从父级 scene 继承这些字段
 - 每个片段必须判断是否需要额外的 `mid_frame_prompt` 中段锚点帧；若片段时长 >= 8 秒、多人同框、动作推进明显、情绪关系变化明显，`requires_mid_frame` 必须为 true
 - 当 `requires_mid_frame = true` 时，`mid_frame_prompt` 必须描述片段中段最关键的角色站位、姿态、关系和镜头状态；当不需要时，`mid_frame_prompt` 置空字符串
 - 每个片段的 `duration_seconds` 必须由你根据剧情密度自行判断，范围限定在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒
@@ -102,10 +121,10 @@ class VideoPromptingMixin:
 - 5 秒片段只能放极短句，总旁白 + 对白 + 硬字幕文案约 15 字以内；8 秒片段可放一句短对白加少量旁白，约 24 字以内；12 秒片段最多两句短对白，约 36 字以内
 - 如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段，不得硬塞进同一段
 - `subtitle_lines` 必须只写本片段实际能在音频里说完的文字，不能提前打印还没说完的句子
-- `timed_beats` 必须明确每一句旁白或对白在几秒到几秒说出，不能只写泛泛的镜头节奏
+- `timed_beats` 必须明确每一句旁白或对白在几秒到几秒说出，不能只写泛泛的镜头节奏；尽量控制在 2-4 条以内
 - 每个片段必须输出 `transition_hint`，取值只能是 `continue` / `cut` / `auto`
 - 片段必须覆盖全部章节，`chapter_number` 必须与来源章节一致
-- 片段里的 `scene_id`、`scene_title`、`scene_summary`、`scene_anchor`、`scene_bible` 必须与所属 scene 保持一致
+- 片段里的 `scene_id` 必须与所属 scene 保持一致；若你显式输出 `scene_title`、`scene_summary`、`scene_anchor`、`scene_bible`，也必须与父级 scene 完全一致，但默认不要重复这些字段
 - 必须严格复刻章节正文已经发生的事件、情绪和对白关系，不得自行改写关键情节、改变角色关系或新增冲突
 - 如果正文是告白、表白、对峙、争吵、谈判、审问、双人对话，`involved_characters` 必须同时包含对话/关系双方，不能只写一个角色
 - `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`
@@ -118,21 +137,285 @@ class VideoPromptingMixin:
 - `shot_state` 只写镜头、调度、动作、道具和承接状态，不要写成剧情摘要，也不要写对白台词
 - `continuity_link` 至少包含：`previous_segment_id`、`transition_mode`、`opening_match`、`carry_over_elements`、`allowed_changes`、`transition_reason`
 - 若当前片段是同场景连续承接上一段，`transition_mode` 必须为 `continue`，并明确开场要继承上一段尾部的哪些状态
+- 当 `transition_mode = continue` 时，`continuity_link.opening_match` 必须明确复述上一段尾部的至少两类信息：动作收束、角色站位/朝向、持物/服装状态、视线或运动方向；不能只写“承接上一段”这类空话
+- 当 `transition_mode = continue` 时，`continuity_link.allowed_changes` 必须明确写出“承接后推进到什么新动作/新关系/新信息”，不能只把上一段尾部换一种说法重复一遍
 - 若当前片段发生明确转场或切断承接，`transition_mode` 必须为 `cut`
 - 若当前片段是故事或场景起始段，可用 `transition_mode = start`
+- 同一 scene 下相邻 segment 必须发生可见推进，至少推进一拍动作、出入场、视线关系、情绪关系或信息揭示；不能只是重复上一段已经演过的同一拍
+- 禁止相邻 segment 在 `summary`、`shot_state.action_progression`、`timed_beats` 上表达同一事件，只是改写措辞
 - 这三个字段表示对应关键帧里真正出镜的人物，必须是 `involved_characters` 的子集
 - 如果首帧是单人等待、单人独白、单人回头、单人站立等镜头，不要把尚未出镜的人物写进 `start_frame_characters`
 - 如果尾帧仍然只有一个角色在镜头里，也不要把片段里稍后才出现或已经离场的人物写进 `end_frame_characters`
 - 若 `requires_mid_frame = true`，`mid_frame_characters` 必须准确对应中段锚点帧实际出镜人物；若不需要中段帧，则 `mid_frame_characters` 置空数组
 - `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt` 必须写清每个出镜角色的位置、动作和相互关系
+- `summary`、`narration`、`scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`、`shot_state.*` 都请尽量短写，优先 1 句完成，不要写成长段散文
 - `start_frame_prompt` / `mid_frame_prompt` / `end_frame_prompt` 必须与 `shot_state` 一致，不能一边说角色向左推进，一边又写成反方向收束
 - `start_frame_prompt` 必须与 `continuity_link.opening_match` 一致；如果要求承接上一段尾部，就不要把开场写成完全不同的站位和持物状态
 - `start_frame_prompt` / `mid_frame_prompt` / `end_frame_prompt` 必须与对应的帧角色列表一致，不要出现“帧角色列表只有 1 人，但 prompt 又要求另一人同框”的自相矛盾
 - 若正文明确同一片段里有人尚未入镜、稍后入镜或已经离场，允许帧级角色列表少于 `involved_characters`
+- 整体目标是生成“可执行且紧凑”的 JSON，避免为了修辞把字段写得过长，否则容易导致结构化输出被截断
 
 章节拆分依据：
 {chapter_blocks}
 """.strip()
+
+    def _build_chapter_scene_planner_user_prompt(
+        self,
+        novel_package: NovelPackage,
+        *,
+        chapter_number: int,
+        story_memory: StoryMemoryPackage,
+    ) -> str:
+        allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
+        memory_context = self._build_story_memory_prompt_context(
+            story_memory,
+            chapter_number=chapter_number,
+        )
+        chapter_block = self._build_chapter_segment_directive(
+            novel_package,
+            chapter_number=chapter_number,
+            excerpt_max_chars=self.CHAPTER_SCENE_PLANNER_EXCERPT_CHARS,
+        )
+        previous_exit = memory_context.get("previous_chapter_exit_state", {})
+        previous_exit_json = json.dumps(previous_exit, ensure_ascii=False, indent=2)
+        memory_json = json.dumps(memory_context, ensure_ascii=False, indent=2)
+        chapter_id_prefix = f"ch{chapter_number:02d}"
+        return f"""
+请只为当前章节生成场景结构，不要生成片段，不要生成任何图片 prompt。
+
+- 小说标题：{novel_package.outline.title}
+- 当前章节：第 {chapter_number} 章
+- 角色原名白名单：{allowed_names}
+- 只能使用小说中已存在的角色原名，不得改名，不得新增角色
+- 本次只允许输出第 {chapter_number} 章内容，不得把后续章节事件、关系进展或高潮提前写进本章
+- 你只需要输出 `scenes`
+- 当前章可以拆成 1 个或多个 `scene`，必须完全根据当前章节正文决定
+- `scene_id` 必须以 `{chapter_id_prefix}-sc` 开头，例如 `{chapter_id_prefix}-sc01`
+- 每个 scene 必须包含：`scene_id`、`chapter_number`、`title`、`summary`、`scene_anchor`、`involved_characters`、`scene_bible`
+- `scene_anchor` 必须概括这个 scene 的连续性锚点，例如地点、时间、光线、天气、固定背景物、空间关系或反复出现的道具
+- `scene_bible` 只保留轻量版，不要长写，至少填写：`location`、`time_window`、`weather`、`lighting`、`dominant_palette`、`background_anchors`、`fixed_props`、`spatial_layout`、`character_blocking`、`continuity_notes`
+- `scene_bible` 必须稳定、可复用、偏视觉与调度，不要写成剧情摘要，不要写对白和字幕
+- 如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene
+- 如果正文是告白、对峙、争吵、审问、双人对话，`involved_characters` 必须同时包含双方
+- 输出尽量短写，避免长段散文，尤其 `summary`、`scene_anchor`、`scene_bible` 字段都尽量压缩成短句
+- 不要输出 `segments`
+- 不要输出解释、分析备注或 Markdown 代码块，只返回结构化结果
+
+上一章退出状态：
+{previous_exit_json}
+
+story memory：
+{memory_json}
+
+当前章节拆分依据：
+{chapter_block}
+""".strip()
+
+    def _build_scene_segment_contract_user_prompt(
+        self,
+        novel_package: NovelPackage,
+        *,
+        chapter_number: int,
+        story_memory: StoryMemoryPackage,
+        scene_payload: dict[str, object],
+    ) -> str:
+        allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
+        memory_context = self._build_story_memory_prompt_context(
+            story_memory,
+            chapter_number=chapter_number,
+        )
+        chapter_block = self._build_chapter_segment_directive(
+            novel_package,
+            chapter_number=chapter_number,
+            excerpt_max_chars=self.SCENE_SEGMENT_CONTRACT_EXCERPT_CHARS,
+        )
+        scene_json = json.dumps(scene_payload, ensure_ascii=False, indent=2)
+        memory_json = json.dumps(memory_context, ensure_ascii=False, indent=2)
+        scene_id = str(scene_payload.get("scene_id", "")).strip()
+        return f"""
+请只为目标 scene 生成片段合同，不要生成场景 prompt，不要生成首帧/中段/尾帧 prompt。
+
+- 小说标题：{novel_package.outline.title}
+- 当前章节：第 {chapter_number} 章
+- 目标 scene：{scene_id}
+- 角色原名白名单：{allowed_names}
+- 只能使用小说中已存在的角色原名，不得改名，不得新增角色
+- 本次只允许输出 `segments`
+- 所有 `segment.chapter_number` 必须是 {chapter_number}
+- 所有 `segment.scene_id` 必须是 `{scene_id}`
+- 当前 scene 可以拆成 1 个或多个 segment，必须完全根据目标 scene 的正文事件、动作推进、对白密度和情绪转折决定
+- 每个 segment 必须包含：`segment_id`、`chapter_number`、`scene_id`、`title`、`summary`、`involved_characters`、`start_frame_characters`、`mid_frame_characters`、`end_frame_characters`、`narration`、`dialogue_lines`、`subtitle_lines`、`timed_beats`、`duration_seconds`、`requires_mid_frame`、`transition_hint`、`shot_state`、`continuity_link`
+- 不要输出 `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`
+- 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`
+- `segment_id` 必须使用 `{scene_id}-seg01` 这类格式
+- 如果正文是告白、对峙、争吵、审问、双人对话，`involved_characters` 必须同时包含双方
+- `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`
+- 帧级角色列表必须是 `involved_characters` 的子集，并且只包含该帧真正出镜的人物
+- 不允许把尚未出镜的人物硬塞进首帧，也不允许把已经离场的人物硬塞进尾帧
+- 若片段时长 >= 8 秒、多人同框、动作推进明显或情绪关系变化明显，`requires_mid_frame` 必须为 true
+- 若 `requires_mid_frame = false`，`mid_frame_characters` 必须为空数组
+- `duration_seconds` 必须根据剧情密度自行判断，范围限定在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒
+- 必须按中文自然口播语速估算音频长度，按每秒约 {self.SPEECH_CHARS_PER_SECOND} 个中文字计算可口播字数
+- 5 秒片段只能放极短句，总旁白 + 对白 + 硬字幕文案约 15 字以内；8 秒片段约 24 字以内；12 秒片段约 36 字以内
+- 如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段，不得硬塞进同一段
+- `subtitle_lines` 必须只写本片段实际能在音频里说完的文字
+- `timed_beats` 必须明确每句话在几秒到几秒发生，不能只写抽象镜头节奏
+- `shot_state` 只写镜头、调度、动作、道具和承接状态，不要写成长段散文
+- `continuity_link` 只负责片段承接关系；同一 scene 内相邻 segment 若连续承接，应写 `continue`
+- 相邻 segment 必须发生可见推进，不能让本段 `summary`、`shot_state.action_progression`、`timed_beats` 和上一段表达同一拍动作
+- 单个 segment 只能写这个 segment 当下真正发生的事件，不得把后续 scene、后续高潮或章节结尾结果提前塞进当前 segment
+- 不要输出解释、分析备注或 Markdown 代码块，只返回结构化结果
+
+story memory：
+{memory_json}
+
+目标 scene JSON：
+{scene_json}
+
+当前章节参考：
+{chapter_block}
+""".strip()
+
+    def _build_chapter_segment_planner_user_prompt(
+        self,
+        novel_package: NovelPackage,
+        *,
+        chapter_number: int,
+        story_memory: StoryMemoryPackage,
+    ) -> str:
+        allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
+        memory_context = self._build_story_memory_prompt_context(
+            story_memory,
+            chapter_number=chapter_number,
+        )
+        chapter_block = self._build_chapter_segment_directive(
+            novel_package,
+            chapter_number=chapter_number,
+            excerpt_max_chars=self.CHAPTER_SEGMENT_PLANNER_EXCERPT_CHARS,
+        )
+        previous_exit = memory_context.get("previous_chapter_exit_state", {})
+        previous_exit_json = json.dumps(previous_exit, ensure_ascii=False, indent=2)
+        memory_json = json.dumps(memory_context, ensure_ascii=False, indent=2)
+        chapter_id_prefix = f"ch{chapter_number:02d}"
+        return f"""
+请只为当前章节生成视频场景和片段规划。
+
+- 小说标题：{novel_package.outline.title}
+- 当前章节：第 {chapter_number} 章
+- 角色原名白名单：{allowed_names}
+- 只能使用小说中已存在的角色原名，不得改名，不得新增角色
+- 本次输出中所有 `scene.chapter_number` 与 `segment.chapter_number` 都必须是 {chapter_number}
+- 本次只允许输出第 {chapter_number} 章内容，不得把后续章节事件、情绪结果、关系进展或高潮提前写进本章
+- 你必须先输出 `scenes`，再在每个 scene 下输出 `segments`
+- 当前章可以拆成 1 个或多个 scene，每个 scene 又可以拆成 1 个或多个 segment，必须完全由当前章正文决定
+- 当前章 `scene_id` 必须以 `{chapter_id_prefix}-sc` 开头，例如 `{chapter_id_prefix}-sc01`
+- 当前章 `segment_id` 必须以 `{chapter_id_prefix}-sc01-seg01` 这类格式输出
+- 每个 scene 必须包含 `scene_id`、`chapter_number`、`title`、`summary`、`scene_anchor`、`scene_bible`、`involved_characters`、`segments`
+- `scene_bible` 必须服务于同一 scene 内多片段的时空连续性，至少填写：`location`、`time_window`、`weather`、`lighting`、`dominant_palette`、`background_anchors`、`fixed_props`、`spatial_layout`、`character_blocking`、`continuity_notes`
+- `segments` 里的片段默认不要重复输出父级 scene 已经给出的 `scene_title`、`scene_summary`、`scene_anchor`、`scene_bible`
+- 每个片段都必须输出 `shot_state`、`continuity_link`、`start_frame_characters`、`mid_frame_characters`、`end_frame_characters`
+- 如果正文是告白、对峙、争吵、审问、双人对话，`involved_characters` 必须同时包含双方
+- `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`
+- 帧级角色列表必须是 `involved_characters` 的子集，并且只包含该帧真正出镜的人物
+- 不允许把尚未出镜的人物硬塞进首帧，也不允许把已经离场的人物硬塞进尾帧
+- 每个片段都必须判断是否需要 `mid_frame_prompt`
+- 若片段时长 >= 8 秒、多人同框、动作推进明显或情绪关系变化明显，`requires_mid_frame` 必须为 true
+- `duration_seconds` 必须根据剧情密度自行判断，范围限定在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒
+- 必须按中文自然口播语速估算音频长度，按每秒约 {self.SPEECH_CHARS_PER_SECOND} 个中文字计算可口播字数
+- 5 秒片段只能放极短句，总旁白 + 对白 + 硬字幕文案约 15 字以内；8 秒片段约 24 字以内；12 秒片段约 36 字以内
+- 如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段，不得硬塞进同一段
+- `subtitle_lines` 必须只写本片段实际能在音频里说完的文字
+- `timed_beats` 必须明确每句话在几秒到几秒发生，不能只写抽象镜头节奏
+- `transition_hint` 只能是 `continue` / `cut` / `auto`
+- 如果本章开头需要承接上一章，请参考 story memory 里的上一章退出状态决定首段如何接入；否则明确用新的起始段，不要伪造承接
+- 当 `transition_hint = continue` 或你判断当前段与上一段同场景连续承接时，`continuity_link.opening_match` 必须明确复述上一段尾部的动作收束与站位状态，不能只写“承接上一段”
+- 相邻 segment 必须有明确推进，不能让本段 `summary`、`shot_state.action_progression`、`timed_beats` 和上一段表达同一拍动作
+- 如果上一段尾帧仍是等待、对视、举手未落下、转身未完成、本段开口前停顿等悬置状态，本段开场必须从该状态起步，再推进到新的结果
+- `summary`、`scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`、`shot_state.*` 都请尽量短写，优先 1 句完成
+- 不要输出解释、不要输出分析备注、不要输出 Markdown 代码块，只返回结构化结果
+
+上一章退出状态：
+{previous_exit_json}
+
+story memory：
+{memory_json}
+
+当前章节拆分依据：
+{chapter_block}
+""".strip()
+
+    def _build_story_memory_prompt_context(
+        self,
+        story_memory: StoryMemoryPackage,
+        *,
+        chapter_number: int,
+    ) -> dict[str, object]:
+        current_chapter_state = next(
+            (
+                item for item in story_memory.chapter_states
+                if item.chapter_number == chapter_number
+            ),
+            None,
+        )
+        previous_chapter_state = next(
+            (
+                item
+                for item in reversed(story_memory.chapter_states)
+                if item.chapter_number < chapter_number and item.generated_segment_ids
+            ),
+            None,
+        )
+        return {
+            "story_identity": {
+                "story_title": story_memory.story_identity.story_title,
+                "story_source_revision": story_memory.story_identity.story_source_revision,
+            },
+            "global_story_bible": {
+                "core_theme": story_memory.global_story_bible.core_theme,
+                "narrative_promise": story_memory.global_story_bible.narrative_promise,
+                "visual_motifs": story_memory.global_story_bible.visual_motifs,
+                "forbidden_deviations": story_memory.global_story_bible.forbidden_deviations,
+            },
+            "cast_bible": [
+                {
+                    "name": item.name,
+                    "gender": item.gender,
+                    "role": item.role,
+                    "appearance_summary": item.appearance_summary,
+                    "voice_summary": item.voice_summary,
+                    "hard_constraints": item.hard_constraints,
+                }
+                for item in story_memory.cast_bible
+            ],
+            "current_chapter_state": {
+                "chapter_number": current_chapter_state.chapter_number if current_chapter_state else chapter_number,
+                "chapter_title": current_chapter_state.chapter_title if current_chapter_state else "",
+                "chapter_summary": current_chapter_state.chapter_summary if current_chapter_state else "",
+                "entry_state": current_chapter_state.entry_state if current_chapter_state else {},
+                "unresolved_threads": (
+                    current_chapter_state.unresolved_threads if current_chapter_state else []
+                ),
+            },
+            "previous_chapter_exit_state": (
+                previous_chapter_state.exit_state if previous_chapter_state else {}
+            ),
+            "continuity_state": {
+                "current_time_context": story_memory.continuity_state.current_time_context,
+                "current_location_context": story_memory.continuity_state.current_location_context,
+                "active_props": story_memory.continuity_state.active_props,
+                "active_relationship_state": story_memory.continuity_state.active_relationship_state,
+                "carry_over_visuals": story_memory.continuity_state.carry_over_visuals,
+            },
+            "planning_index": {
+                "planned_chapters": [
+                    item.chapter_number
+                    for item in story_memory.planning_index.chapters
+                    if item.segment_count > 0
+                ],
+                "scene_count": story_memory.planning_index.scene_count,
+                "segment_count": story_memory.planning_index.segment_count,
+            },
+        }
 
     def _build_segment_continuity_repair_user_prompt(
         self,
@@ -144,6 +427,7 @@ class VideoPromptingMixin:
         previous_segment_payload: dict[str, object] | None,
         next_segment_payload: dict[str, object] | None,
         continuity_issues: list[dict[str, object]],
+        speech_budget_context: dict[str, object] | None = None,
     ) -> str:
         context = {
             "story_title": story_title,
@@ -162,6 +446,7 @@ class VideoPromptingMixin:
             "previous_segment": previous_segment_payload,
             "next_segment": next_segment_payload,
             "continuity_issues": continuity_issues,
+            "speech_budget_context": speech_budget_context or {},
         }
         allowed_names = "、".join(
             str(item.get("name", "")).strip()
@@ -200,8 +485,58 @@ class VideoPromptingMixin:
 - `start_frame_characters` / `mid_frame_characters` / `end_frame_characters` 必须是 `involved_characters` 的子集
 - 如果不需要中段帧，`requires_mid_frame=false`，并把 `mid_frame_prompt` 置空、`mid_frame_characters` 置空数组
 - 如果问题主要是对白超时，就优先缩短对白、拆短字幕、压缩旁白，而不是盲目拉满 12 秒
+- 如果 `speech_budget_context.required_duration_seconds` 已经大于 12，说明原文本本身塞不进单段视频；你必须主动删减或改写对白、旁白和字幕，让修复后的文本能在 12 秒内说完，不能试图保留原长文本
 - 如果问题主要是动作或站位不连贯，就优先修 `shot_state`、`continuity_link` 和帧 prompt
+- 如果目标片段承接上一段，`continuity_link.opening_match` 必须明确写出上一段尾部在当前段开场如何被复现
+- `continuity_link.allowed_changes` 必须明确写出这一段比上一段新增推进的动作或关系变化，不能只是重复上一段
 - 不要输出解释，不要输出 Markdown，只返回结构化结果
+
+上下文 JSON：
+{json.dumps(context, ensure_ascii=False, indent=2)}
+""".strip()
+
+    def _build_scene_continuity_repair_user_prompt(
+        self,
+        *,
+        story_title: str,
+        character_profiles: list[CharacterVisualProfile],
+        scene_payload: dict[str, object],
+        target_segment_payloads: list[dict[str, object]],
+        scene_issues: list[dict[str, object]],
+        related_segment_issues: list[dict[str, object]],
+        selection_mode: str,
+    ) -> str:
+        context = {
+            "story_title": story_title,
+            "character_profiles": [
+                {
+                    "name": item.name,
+                    "role": item.role,
+                    "gender": item.gender,
+                }
+                for item in character_profiles
+            ],
+            "target_scene": scene_payload,
+            "target_segments": target_segment_payloads,
+            "scene_issues": scene_issues,
+            "related_segment_issues": related_segment_issues,
+            "selection_mode": selection_mode,
+        }
+        return f"""
+请只修复目标 scene 的场景连续性基线，不要重写剧情，不要改章节结构，不要新增角色。
+
+- 小说标题：{story_title}
+- 只能修复 `target_scene`
+- 不能修改：`scene_id`、`chapter_number`、`title`、`summary`、`involved_characters`
+- 你只能调整这些字段：
+  - `scene_anchor`
+  - `scene_bible`
+- `scene_bible` 必须服务于同一 scene 下多个 segment 的稳定复用，写法要偏环境、空间、光线、固定道具和连续性，不要写对白，不要写剧情分析
+- 如果当前问题是“入口处”和“向内部漫步”的空间关系不稳定，就把场景锚点与场景圣经改写成能同时覆盖入口到内部花径的连续空间，而不是只盯死在入口一角
+- `background_anchors` 至少给 3 个稳定锚点，`fixed_props` 至少给 2 个，`dominant_palette` 至少给 2 个
+- `spatial_layout` 必须明确空间延展方向、可移动路径和镜头透视
+- `continuity_notes` 必须明确哪些场景元素在同一 scene 多个片段里不能漂移
+- 输出要短、稳、可复用，不要写 Markdown，不要解释，只返回结构化结果
 
 上下文 JSON：
 {json.dumps(context, ensure_ascii=False, indent=2)}
@@ -211,6 +546,7 @@ class VideoPromptingMixin:
         self,
         novel_package: NovelPackage,
         chapter_number: int,
+        excerpt_max_chars: int = 1400,
     ) -> str:
         chapter = next(
             item for item in novel_package.outline.chapters if item.number == chapter_number
@@ -221,7 +557,10 @@ class VideoPromptingMixin:
         )
         featured = "、".join(chapter.featured_characters) or "无"
         beats = "；".join(chapter.beats) or chapter.summary
-        excerpt = self._excerpt_text(draft.markdown if draft else chapter.summary, max_chars=1400)
+        excerpt = self._excerpt_text(
+            draft.markdown if draft else chapter.summary,
+            max_chars=excerpt_max_chars,
+        )
         return (
             f"- 第 {chapter.number} 章《{chapter.title}》\n"
             "  该章应由模型自行判断拆成几段\n"
@@ -231,6 +570,14 @@ class VideoPromptingMixin:
             f"  重点角色：{featured}\n"
             f"  场景节拍：{beats}\n"
             f"  正文摘录：{excerpt}"
+        )
+
+    def _resolve_segment_planner_excerpt_budget(self, novel_package: NovelPackage) -> int:
+        chapter_count = max(1, len(novel_package.outline.chapters))
+        budget = self.SEGMENT_PLANNER_TOTAL_EXCERPT_BUDGET // chapter_count
+        return max(
+            self.SEGMENT_PLANNER_MIN_EXCERPT_CHARS,
+            min(self.SEGMENT_PLANNER_MAX_EXCERPT_CHARS, budget),
         )
 
     def _excerpt_text(self, text: str, max_chars: int = 220) -> str:
@@ -400,6 +747,7 @@ class VideoPromptingMixin:
             "若 involved_characters 有 2 人或以上，则这些角色必须同时出镜，不要只画一个人，"
             "每个 involved_characters 都必须按对应参考设定图还原，"
             "若角色出镜，必须保持稳定年龄感、稳定体型、稳定肩宽、稳定四肢比例和稳定脸型轮廓，"
+            f"{self._scene_baseline_lock_context(segment.scene_bible)}"
             f"{scene_bible_context}"
             f"{self._shot_state_prompt_context(segment.shot_state)}"
             f"{self.SCENE_NO_TEXT_PROMPT}"
@@ -407,6 +755,10 @@ class VideoPromptingMixin:
         )
 
     def _build_scene_master_frame_prompt(self, scene: VideoScene) -> str:
+        scene_master_baseline_lock = self._scene_master_baseline_lock_context(
+            scene.scene_bible,
+            scene.involved_characters,
+        )
         scene_master_context = self._scene_master_frame_prompt_context(
             scene.scene_bible,
             scene.involved_characters,
@@ -417,6 +769,7 @@ class VideoPromptingMixin:
             "优先稳定锁定地点、时间、天气、光线、背景锚点、固定道具和空间布局，"
             "不要把它画成情绪过满、动作过强或表演瞬间过于具体的剧情镜头。"
             "尽量以环境和空间关系为主体，生成无角色的空场景板。"
+            f"{scene_master_baseline_lock}"
             f"{scene_master_context}"
             f"{self.SCENE_MASTER_FRAME_NO_PEOPLE_PROMPT}"
             f"{self.SCENE_NO_TEXT_PROMPT}"
@@ -439,6 +792,7 @@ class VideoPromptingMixin:
             f"{frame_type}，原创虚构电影分镜，风格化概念插画，非真人摄影，"
             f"当前帧出镜角色：{characters}，只画这一帧真正入镜的人物；若有双人或多人出镜要求则必须全部画出，且全部按对应参考设定图还原，{character_lock}，"
             f"保持场景连续性、稳定年龄感、稳定体型、稳定肩宽和稳定四肢比例，"
+            f"{self._scene_baseline_lock_context_from_context(scene_bible_context)}"
             f"{scene_bible_context}"
             f"{shot_state_context}"
             f"{continuity_link_context}"
@@ -476,6 +830,33 @@ class VideoPromptingMixin:
         if not line:
             return ""
         return f"场景圣经约束：{line}。"
+
+    def _scene_baseline_lock_context(self, scene_bible: object) -> str:
+        line = self._scene_baseline_prompt_line(scene_bible)
+        if not line:
+            return ""
+        return (
+            "场景基线锁定："
+            f"{line}。后续关键帧与视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
+        )
+
+    def _scene_master_baseline_lock_context(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> str:
+        line = self._scene_master_baseline_prompt_line(scene_bible, involved_characters)
+        if not line:
+            return ""
+        return (
+            "场景基线锁定："
+            f"{line}。后续关键帧与视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
+        )
+
+    def _scene_baseline_lock_context_from_context(self, scene_bible_context: str) -> str:
+        if not scene_bible_context:
+            return ""
+        return "场景基线必须优先服从 scene master frame 与当前 scene 的环境基线，不要自行替换背景、光线或固定道具。"
 
     def _scene_master_frame_prompt_context(
         self,
@@ -526,6 +907,66 @@ class VideoPromptingMixin:
         return "；".join(parts)
 
     def _scene_master_frame_prompt_line(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("地点", self._scene_bible_value(scene_bible, "location")),
+            ("时间", self._scene_bible_value(scene_bible, "time_window")),
+            ("天气", self._scene_bible_value(scene_bible, "weather")),
+            ("光线", self._scene_bible_value(scene_bible, "lighting")),
+            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized and not self._contains_scene_master_human_signal(
+                normalized,
+                involved_characters,
+            ):
+                parts.append(f"{label}：{normalized}")
+
+        for label, values in (
+            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
+            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
+            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+        ):
+            filtered_values = [
+                item
+                for item in values
+                if not self._contains_scene_master_human_signal(item, involved_characters)
+            ]
+            normalized_values = [str(item).strip() for item in filtered_values if str(item).strip()]
+            if normalized_values:
+                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
+
+        return "；".join(parts)
+
+    def _scene_baseline_prompt_line(self, scene_bible: object) -> str:
+        parts: list[str] = []
+        for label, value in (
+            ("地点", self._scene_bible_value(scene_bible, "location")),
+            ("时间", self._scene_bible_value(scene_bible, "time_window")),
+            ("天气", self._scene_bible_value(scene_bible, "weather")),
+            ("光线", self._scene_bible_value(scene_bible, "lighting")),
+            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
+        ):
+            normalized = str(value or "").strip()
+            if normalized:
+                parts.append(f"{label}：{normalized}")
+
+        for label, values in (
+            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
+            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
+            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+        ):
+            normalized_values = [str(item).strip() for item in values or [] if str(item).strip()]
+            if normalized_values:
+                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
+
+        return "；".join(parts)
+
+    def _scene_master_baseline_prompt_line(
         self,
         scene_bible: object,
         involved_characters: list[str],

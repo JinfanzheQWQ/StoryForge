@@ -303,14 +303,17 @@ class VideoRepairMixin:
             transition_mode = derived_mode
 
         opening_match = str(payload.get("opening_match", "") or "").strip()
-        if transition_mode == "continue" and not opening_match:
-            opening_match = (
-                "开场先承接上一段尾部："
-                + (
-                    previous_segment.shot_state.end_state_lock
-                    or previous_segment.summary
-                )
-            )
+        if transition_mode == "continue":
+            derived_opening_match = self._derive_opening_match(previous_segment)
+            if (
+                not opening_match
+                or self._continuity_statement_too_generic(opening_match)
+                or self._text_overlap_ratio(
+                    opening_match,
+                    previous_segment.shot_state.end_state_lock or previous_segment.summary,
+                ) < 0.22
+            ):
+                opening_match = derived_opening_match
 
         carry_over_elements = [
             str(item).strip()
@@ -321,15 +324,22 @@ class VideoRepairMixin:
             carry_over_elements = self._derive_carry_over_elements(previous_segment)
 
         allowed_changes = str(payload.get("allowed_changes", "") or "").strip()
-        if not allowed_changes:
+        if transition_mode == "continue":
+            derived_allowed_changes = self._derive_allowed_changes(segment, previous_segment)
+            if (
+                not allowed_changes
+                or self._continuity_statement_too_generic(allowed_changes)
+                or self._text_overlap_ratio(
+                    allowed_changes,
+                    previous_segment.shot_state.end_state_lock or previous_segment.summary,
+                ) >= 0.78
+            ):
+                allowed_changes = derived_allowed_changes
+        elif not allowed_changes:
             allowed_changes = (
-                f"承接开场后，允许把动作推进到：{segment.summary}"
-                if transition_mode == "continue"
-                else (
-                    "允许切换到新的时空、景别和动作状态。"
-                    if transition_mode == "cut"
-                    else "作为起始段建立新的连续性基线。"
-                )
+                "允许切换到新的时空、景别和动作状态。"
+                if transition_mode == "cut"
+                else "作为起始段建立新的连续性基线。"
             )
 
         transition_reason = str(payload.get("transition_reason", "") or "").strip()
@@ -406,9 +416,52 @@ class VideoRepairMixin:
             carry_over.append("关键道具与手部状态")
         if previous_segment.scene_bible.background_anchors:
             carry_over.append("背景锚点")
+        if previous_segment.shot_state.end_state_lock:
+            carry_over.append("上一段尾部动作定格")
         if not carry_over:
             carry_over.extend(["角色站位", "视线方向", "关键道具"])
         return carry_over
+
+    def _derive_opening_match(
+        self,
+        previous_segment: VideoSegmentSchema,
+    ) -> str:
+        previous_end = (
+            previous_segment.shot_state.end_state_lock
+            or previous_segment.shot_state.action_progression
+            or previous_segment.summary
+        )
+        parts = [f"开场先严格承接上一段尾部：{previous_end}"]
+        if previous_segment.shot_state.blocking:
+            parts.append(f"保留站位/朝向：{previous_segment.shot_state.blocking}")
+        if previous_segment.shot_state.prop_continuity:
+            parts.append(f"保留持物/服装状态：{previous_segment.shot_state.prop_continuity}")
+        if previous_segment.shot_state.screen_direction:
+            parts.append(f"维持运动与视线方向：{previous_segment.shot_state.screen_direction}")
+        return "；".join(part.strip() for part in parts if part.strip())
+
+    def _derive_allowed_changes(
+        self,
+        segment: VideoSegmentSchema,
+        previous_segment: VideoSegmentSchema,
+    ) -> str:
+        previous_end = (
+            previous_segment.shot_state.end_state_lock
+            or previous_segment.shot_state.action_progression
+            or previous_segment.summary
+        )
+        beat_descriptions = self._extract_beat_descriptions(segment.timed_beats)
+        target_progress = (
+            segment.shot_state.action_progression
+            or segment.summary
+            or (beat_descriptions[0] if beat_descriptions else "")
+        )
+        if self._text_overlap_ratio(previous_end, target_progress) >= 0.78:
+            target_progress = segment.summary or target_progress
+        return (
+            f"承接开场后，必须把动作从“{previous_end}”推进到“{target_progress}”，"
+            "不能只是重复上一段的同一拍。"
+        )
 
     def _group_segments_by_chapter(
         self,
@@ -489,6 +542,7 @@ class VideoRepairMixin:
                         "title": self._replace_character_aliases(segment.title, alias_map),
                         "involved_characters": resolved_names,
                         "start_frame_characters": self._normalize_frame_characters_for_segment(
+                            frame_position="start",
                             raw_names=segment.start_frame_characters,
                             prompt_text=segment.start_frame_prompt,
                             frame_context_text=self._frame_context_text(segment, "start"),
@@ -499,6 +553,7 @@ class VideoRepairMixin:
                             role_map=role_map,
                         ),
                         "mid_frame_characters": self._normalize_frame_characters_for_segment(
+                            frame_position="mid",
                             raw_names=segment.mid_frame_characters,
                             prompt_text=segment.mid_frame_prompt,
                             frame_context_text=self._frame_context_text(segment, "mid"),
@@ -509,6 +564,7 @@ class VideoRepairMixin:
                             role_map=role_map,
                         ),
                         "end_frame_characters": self._normalize_frame_characters_for_segment(
+                            frame_position="end",
                             raw_names=segment.end_frame_characters,
                             prompt_text=segment.end_frame_prompt,
                             frame_context_text=self._frame_context_text(segment, "end"),
@@ -734,6 +790,7 @@ class VideoRepairMixin:
     def _normalize_frame_characters_for_segment(
         self,
         *,
+        frame_position: str,
         raw_names: list[str],
         prompt_text: str,
         frame_context_text: str,
@@ -756,6 +813,8 @@ class VideoRepairMixin:
                 frame_names.append(resolved)
 
         context_names = self._extract_visible_frame_names(frame_context_text, resolved_names)
+        if frame_position != "mid" and frame_names:
+            return frame_names
         if context_names:
             return context_names
 
@@ -763,12 +822,9 @@ class VideoRepairMixin:
         if prompt_names:
             return prompt_names
 
-        if len(frame_names) == 1:
+        if frame_names:
             return frame_names
-        if len(frame_names) > 1 and self._frame_text_requires_group(
-            " ".join([prompt_text, frame_context_text])
-        ):
-            return frame_names
+
         if len(resolved_names) == 1:
             return list(resolved_names)
         return []
@@ -1014,3 +1070,55 @@ class VideoRepairMixin:
         if isinstance(value, list):
             return any(str(item).strip() for item in value)
         return value is not None
+
+    def _continuity_statement_too_generic(self, text: str) -> bool:
+        normalized = self._normalize_similarity_text(text)
+        if not normalized:
+            return True
+        reduced = normalized
+        for token in (
+            "开场",
+            "开头",
+            "继续",
+            "承接",
+            "延续",
+            "上一段",
+            "上一镜头",
+            "上一片段",
+            "尾部",
+            "尾帧",
+            "状态",
+            "镜头",
+            "画面",
+            "保持",
+            "一致",
+            "跟上",
+        ):
+            reduced = reduced.replace(token, "")
+        return len(reduced) < 6
+
+    def _normalize_similarity_text(self, value: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").strip().lower())
+
+    def _text_ngrams(self, value: str) -> set[str]:
+        normalized = self._normalize_similarity_text(value)
+        if not normalized:
+            return set()
+        if len(normalized) <= 3:
+            return {normalized}
+        grams: set[str] = set()
+        for size in (2, 3):
+            if len(normalized) < size:
+                continue
+            grams.update(
+                normalized[index : index + size]
+                for index in range(len(normalized) - size + 1)
+            )
+        return grams
+
+    def _text_overlap_ratio(self, left: str, right: str) -> float:
+        left_grams = self._text_ngrams(left)
+        right_grams = self._text_ngrams(right)
+        if not left_grams or not right_grams:
+            return 0.0
+        return len(left_grams & right_grams) / min(len(left_grams), len(right_grams))

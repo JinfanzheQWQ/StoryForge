@@ -13,6 +13,7 @@ class LLMConfig:
     model: str = "deepseek-chat"
     available_providers: tuple[str, ...] = ("deepseek", "openai")
     temperature: float = 0.7
+    max_tokens: int = 8192
     api_key_env: str = "DEEPSEEK_API_KEY"
     base_url: str = "https://api.deepseek.com/v1"
     timeout_seconds: int = 120
@@ -130,6 +131,7 @@ class AppConfig:
                 model=llm.get("model", "deepseek-chat"),
                 available_providers=tuple(llm.get("available_providers", ["deepseek", "openai"])),
                 temperature=llm.get("temperature", 0.7),
+                max_tokens=llm.get("max_tokens", 8192),
                 api_key_env=llm.get("api_key_env", "DEEPSEEK_API_KEY"),
                 base_url=llm.get("base_url", "https://api.deepseek.com/v1"),
                 timeout_seconds=llm.get("timeout_seconds", 120),

@@ -61,7 +61,7 @@ function renderProjectCard(project) {
   const progress = currentRun
     ? summarizeRunProgress(currentRun)
     : {
-        completedCount: project.completed_run_count ? 5 : 0,
+        completedCount: project.completed_run_count ? 6 : 0,
         percent: project.latest_status === "completed" ? 100 : 12,
         label: statusLabel(project.latest_status || "queued"),
       };
@@ -88,7 +88,7 @@ function renderProjectCard(project) {
             <div class="progress-card-bar" aria-hidden="true">
               <span style="width: ${progress.percent}%"></span>
             </div>
-            <strong>${progress.completedCount} / 5 阶段</strong>
+            <strong>${progress.completedCount} / 6 阶段</strong>
             <small>${escapeHtml(progress.label)}</small>
           </div>
           <p class="project-note">${escapeHtml(buildProjectSummary(project))}</p>
@@ -174,7 +174,8 @@ function renderRunSwitchCard(run) {
   const storySourceRevision = getStorySourceRevision(task);
   const stageStatuses = [
     task.status,
-    getRunStageStatus(run.latestAnalysisTask, storySourceRevision),
+    getRunStageStatus(run.latestSceneStructureTask, storySourceRevision),
+    getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision),
     getRunStageStatus(run.latestCharacterTask, storySourceRevision),
     getRunStageStatus(run.latestSceneTask, storySourceRevision),
     getRunStageStatus(run.latestVideoTask, storySourceRevision),
@@ -252,7 +253,7 @@ function renderProjectHero(detail, runs, selectedRun, artifacts) {
       <div class="project-hero-panel">
         ${renderProjectHeroPreview(artifacts)}
         <div class="project-hero-metrics">
-          ${metricCard("制作进度", `${progress.completedCount} / 5`)}
+          ${metricCard("制作进度", `${progress.completedCount} / 6`)}
           ${metricCard("最近更新", formatShortTime(detail.updated_at))}
           ${metricCard("角色图", String(artifacts?.character_images?.length || 0))}
           ${metricCard("场景帧", String(artifacts?.scene_frames?.length || 0))}

@@ -244,6 +244,7 @@ class ApiTestCase(unittest.TestCase):
                 provider = "deepseek"
                 model = "deepseek-chat"
                 temperature = 0.7
+                max_tokens = 8192
                 api_key_env = "DEEPSEEK_API_KEY"
                 base_url = "https://api.deepseek.com/v1"
                 timeout_seconds = 120
@@ -758,17 +759,29 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
+            scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
                 json={
                     "project_id": project_id,
                     "source_task_id": source_task_id,
                     "use_llm": True,
                 },
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+            self.assertEqual(scene_structure_response.status_code, 202)
+            scene_structure_task_id = scene_structure_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, scene_structure_task_id)["status"], "completed")
+
+            segment_contracts_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(segment_contracts_response.status_code, 202)
+            segment_contracts_task_id = segment_contracts_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, segment_contracts_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             segment_id = artifacts["planned_segments"][0]["segment_id"]
@@ -859,17 +872,29 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
+            scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
                 json={
                     "project_id": project_id,
                     "source_task_id": source_task_id,
                     "use_llm": True,
                 },
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+            self.assertEqual(scene_structure_response.status_code, 202)
+            scene_structure_task_id = scene_structure_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, scene_structure_task_id)["status"], "completed")
+
+            segment_contracts_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(segment_contracts_response.status_code, 202)
+            segment_contracts_task_id = segment_contracts_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, segment_contracts_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             scene_id = artifacts["planned_segments"][0]["scene_id"]
@@ -896,36 +921,15 @@ class ApiTestCase(unittest.TestCase):
 
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
-    @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
-    def test_continuity_repair_job_rewrites_single_segment_and_reruns_media(
+    def test_stage_jobs_accept_scene_id_and_run_single_scene(
         self,
-        mock_run_segment_continuity_repair_pipeline,
         mock_run_scene_image_pipeline,
         mock_run_video_render_pipeline,
     ) -> None:
-        def fake_repair_pipeline(*args, **kwargs):
-            output_dir = kwargs["output_root"]
-            segment_id = kwargs["segment_id"]
-            return SimpleNamespace(
-                output_dir=output_dir,
-                character_bible_path=output_dir / "character_visual_bible.json",
-                character_images_path=output_dir / "character_image_manifest.json",
-                scene_plan_path=output_dir / "scene_plan.json",
-                segment_plan_path=output_dir / "segment_plan.json",
-                scene_images_path=output_dir / "scene_image_manifest.json",
-                manifest_path=output_dir / "seedance_manifest.json",
-                continuity_report_path=output_dir / "continuity_report.json",
-                repair_report_path=output_dir / f"continuity_repair_{segment_id}.json",
-                project_package=SimpleNamespace(title="连续性修复测试"),
-                manifest=SimpleNamespace(clips=[]),
-                segment_id=segment_id,
-                repair_summary="已根据连续性问题重写片段，并准备重跑媒体阶段。",
-            )
-
         def fake_scene_pipeline(*args, **kwargs):
             output_dir = kwargs["output_root"]
             return SimpleNamespace(
-                project_package=SimpleNamespace(title="连续性修复测试"),
+                project_package=SimpleNamespace(title="单场景测试"),
                 output_dir=output_dir,
                 character_bible_path=output_dir / "character_visual_bible.json",
                 character_images_path=output_dir / "character_image_manifest.json",
@@ -938,7 +942,7 @@ class ApiTestCase(unittest.TestCase):
                 scene_seedream_execution_path=output_dir / "seedream_scene_execution.json",
                 seedream_execution=SimpleNamespace(
                     submitted=True,
-                    generated_count=3,
+                    generated_count=2,
                     failed_count=0,
                     note="ok",
                 ),
@@ -961,9 +965,124 @@ class ApiTestCase(unittest.TestCase):
                 ),
             )
 
-        mock_run_segment_continuity_repair_pipeline.side_effect = fake_repair_pipeline
         mock_run_scene_image_pipeline.side_effect = fake_scene_pipeline
         mock_run_video_render_pipeline.side_effect = fake_video_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "单场景任务测试",
+                        "idea": "凌晨的便利店门口，两人靠着自动贩卖机沉默告别。",
+                        "genre": "情感",
+                        "tone": "电影感",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1200,
+                        "must_include": ["便利店"],
+                        "style_keywords": ["凌晨", "路灯"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(scene_structure_response.status_code, 202)
+            scene_structure_task_id = scene_structure_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, scene_structure_task_id)["status"], "completed")
+
+            segment_contracts_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(segment_contracts_response.status_code, 202)
+            segment_contracts_task_id = segment_contracts_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, segment_contracts_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            scene_id = artifacts["planned_segments"][0]["scene_id"]
+
+            scene_response = client.post(
+                "/v1/projects/scenes",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "scene_id": scene_id,
+                },
+            )
+            self.assertEqual(scene_response.status_code, 202)
+            scene_task_id = scene_response.json()["task_id"]
+            scene_task = self._wait_for_completion(client, scene_task_id)
+            self.assertEqual(scene_task["status"], "completed")
+            self.assertEqual(scene_task["payload"]["scene_id"], scene_id)
+            self.assertEqual(scene_task["result"]["scene_id"], scene_id)
+            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["scene_id"], scene_id)
+            self.assertFalse(mock_run_scene_image_pipeline.call_args.kwargs.get("master_only", False))
+
+            video_response = client.post(
+                "/v1/projects/videos",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "scene_id": scene_id,
+                },
+            )
+            self.assertEqual(video_response.status_code, 202)
+            video_task_id = video_response.json()["task_id"]
+            video_task = self._wait_for_completion(client, video_task_id)
+            self.assertEqual(video_task["status"], "completed")
+            self.assertEqual(video_task["payload"]["scene_id"], scene_id)
+            self.assertEqual(video_task["result"]["scene_id"], scene_id)
+            self.assertEqual(mock_run_video_render_pipeline.call_args.kwargs["scene_id"], scene_id)
+
+    @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
+    @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
+    @patch("storyforge.application.task_handlers.run_video_render_pipeline")
+    def test_continuity_repair_job_rewrites_single_segment_without_rerunning_media(
+        self,
+        mock_run_video_render_pipeline,
+        mock_run_scene_image_pipeline,
+        mock_run_segment_continuity_repair_pipeline,
+    ) -> None:
+        def fake_repair_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            segment_id = kwargs["segment_id"]
+            return SimpleNamespace(
+                output_dir=output_dir,
+                character_bible_path=output_dir / "character_visual_bible.json",
+                character_images_path=output_dir / "character_image_manifest.json",
+                scene_plan_path=output_dir / "scene_plan.json",
+                segment_plan_path=output_dir / "segment_plan.json",
+                scene_images_path=output_dir / "scene_image_manifest.json",
+                manifest_path=output_dir / "seedance_manifest.json",
+                continuity_report_path=output_dir / "continuity_report.json",
+                repair_report_path=output_dir / f"continuity_repair_{segment_id}.json",
+                project_package=SimpleNamespace(title="连续性修复测试"),
+                manifest=SimpleNamespace(clips=[]),
+                segment_id=segment_id,
+                repair_summary="已根据连续性问题重写片段，等待人工决定是否重跑媒体阶段。",
+                repair_action="rewrite_segment_contract",
+            )
+
+        mock_run_segment_continuity_repair_pipeline.side_effect = fake_repair_pipeline
 
         config_path = self._create_test_config()
         app = create_app(project_root=ROOT, config_path=config_path)
@@ -996,7 +1115,6 @@ class ApiTestCase(unittest.TestCase):
                     "project_id": project_id,
                     "source_task_id": source_task_id,
                     "use_llm": True,
-                    "continuity_review_mode": "on",
                 },
             )
             self.assertEqual(analysis_response.status_code, 202)
@@ -1022,25 +1140,451 @@ class ApiTestCase(unittest.TestCase):
 
             self.assertEqual(task["status"], "completed")
             self.assertEqual(task["payload"]["segment_id"], segment_id)
+            self.assertEqual(task["payload"]["pipeline_root_task_id"], source_task_id)
             self.assertEqual(task["payload"]["continuity_review_mode"], "on")
             self.assertEqual(task["result"]["segment_id"], segment_id)
-            self.assertEqual(task["result"]["pipeline_stage"], "continuity_repair_completed")
+            self.assertEqual(task["result"]["pipeline_stage"], "continuity_repair_plan_completed")
+            self.assertEqual(task["result"]["repair_execution_mode"], "plan_only")
+            self.assertTrue(task["result"]["media_regeneration_required"])
+            self.assertEqual(
+                task["result"]["pending_media_actions"],
+                ["regenerate_scene_images", "regenerate_video"],
+            )
             self.assertEqual(
                 task["result"]["repair_summary"],
-                "已根据连续性问题重写片段，并准备重跑媒体阶段。",
+                "已根据连续性问题重写片段，等待人工决定是否重跑媒体阶段。",
             )
             self.assertEqual(
                 mock_run_segment_continuity_repair_pipeline.call_args.kwargs["segment_id"],
                 segment_id,
             )
-            self.assertEqual(
-                mock_run_scene_image_pipeline.call_args.kwargs["segment_id"],
-                segment_id,
+            mock_run_scene_image_pipeline.assert_not_called()
+            mock_run_video_render_pipeline.assert_not_called()
+
+    @patch("storyforge.application.task_handlers.run_scene_continuity_repair_pipeline")
+    @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
+    @patch("storyforge.application.task_handlers.run_video_render_pipeline")
+    def test_continuity_repair_job_plans_single_scene_fix_without_rerunning_media(
+        self,
+        mock_run_video_render_pipeline,
+        mock_run_scene_image_pipeline,
+        mock_run_scene_continuity_repair_pipeline,
+    ) -> None:
+        def fake_scene_repair_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            scene_id = kwargs["scene_id"]
+            affected_segment_ids = ("localized-seg-1",)
+            return SimpleNamespace(
+                output_dir=output_dir,
+                character_bible_path=output_dir / "character_visual_bible.json",
+                character_images_path=output_dir / "character_image_manifest.json",
+                scene_plan_path=output_dir / "scene_plan.json",
+                segment_plan_path=output_dir / "segment_plan.json",
+                scene_images_path=output_dir / "scene_image_manifest.json",
+                manifest_path=output_dir / "seedance_manifest.json",
+                continuity_report_path=output_dir / "continuity_report.json",
+                repair_report_path=output_dir / f"continuity_repair_{scene_id}.json",
+                project_package=SimpleNamespace(title="场景智能修复测试"),
+                manifest=SimpleNamespace(clips=[]),
+                segment_id="",
+                scene_id=scene_id,
+                repair_summary="已识别 scene 级连续性问题，并完成修复规划。当前只更新修复方案，不会自动重生成场景母图或重跑受影响片段，后续需要人工决定是否执行。",
+                repair_action="regenerate_scene_master_frame",
+                selection_mode="localized_segments",
+                affected_segment_ids=affected_segment_ids,
             )
-            self.assertEqual(
-                mock_run_video_render_pipeline.call_args.kwargs["segment_id"],
-                segment_id,
+
+        mock_run_scene_continuity_repair_pipeline.side_effect = fake_scene_repair_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "场景智能修复任务测试",
+                        "idea": "雨夜的旧剧场后台，一张海报被风吹得不断拍打墙面。",
+                        "genre": "情感",
+                        "tone": "冷静、电影感",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1400,
+                        "must_include": ["旧剧场", "海报"],
+                        "style_keywords": ["雨夜", "后台", "风声"],
+                    },
+                    "use_llm": True,
+                },
             )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            scene_id = artifacts["planned_segments"][0]["scene_id"]
+
+            response = client.post(
+                "/v1/projects/continuity-repair",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "scene_id": scene_id,
+                    "use_llm": True,
+                    "continuity_review_mode": "on",
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            task_id = response.json()["task_id"]
+            task = self._wait_for_completion(client, task_id)
+
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["payload"]["scene_id"], scene_id)
+            self.assertEqual(task["payload"]["pipeline_root_task_id"], source_task_id)
+            self.assertEqual(task["result"]["scene_id"], scene_id)
+            self.assertEqual(task["result"]["pipeline_stage"], "continuity_repair_plan_completed")
+            self.assertEqual(task["result"]["repair_execution_mode"], "plan_only")
+            self.assertTrue(task["result"]["media_regeneration_required"])
+            self.assertEqual(
+                task["result"]["pending_media_actions"],
+                [
+                    "regenerate_scene_master_frame",
+                    "regenerate_scene_images",
+                    "regenerate_video",
+                ],
+            )
+            self.assertEqual(task["result"]["selection_mode"], "localized_segments")
+            self.assertEqual(task["result"]["affected_segment_ids"], ["localized-seg-1"])
+            self.assertEqual(
+                mock_run_scene_continuity_repair_pipeline.call_args.kwargs["scene_id"],
+                scene_id,
+            )
+            mock_run_scene_image_pipeline.assert_not_called()
+            mock_run_video_render_pipeline.assert_not_called()
+
+    @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
+    def test_continuity_repair_job_returns_completed_noop_when_segment_has_no_issues(
+        self,
+        mock_run_segment_continuity_repair_pipeline,
+    ) -> None:
+        mock_run_segment_continuity_repair_pipeline.side_effect = ValueError(
+            "Segment ch01-sc01-seg01 has no continuity issues to repair."
+        )
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "连续性无问题 noop 测试",
+                        "idea": "两人在毕业季的校园花园里平静散步。",
+                        "genre": "情感",
+                        "tone": "温柔",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1000,
+                        "must_include": ["花园"],
+                        "style_keywords": ["毕业季"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            segment_id = artifacts["planned_segments"][0]["segment_id"]
+
+            response = client.post(
+                "/v1/projects/continuity-repair",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "segment_id": segment_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            task_id = response.json()["task_id"]
+            task = self._wait_for_completion(client, task_id)
+
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["result"]["repair_execution_mode"], "noop")
+            self.assertFalse(task["result"]["media_regeneration_required"])
+            self.assertEqual(task["result"]["pending_media_actions"], [])
+            self.assertEqual(task["result"]["segment_id"], segment_id)
+            self.assertIn("当前没有需要修复的连续性问题", task["result"]["repair_summary"])
+
+    @patch("storyforge.application.task_handlers.run_scene_continuity_repair_pipeline")
+    def test_continuity_repair_job_returns_completed_noop_when_scene_has_no_issues(
+        self,
+        mock_run_scene_continuity_repair_pipeline,
+    ) -> None:
+        mock_run_scene_continuity_repair_pipeline.side_effect = ValueError(
+            "Scene ch01-sc01 has no continuity issues to repair."
+        )
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "scene noop 测试",
+                        "idea": "两人在校园傍晚平静道别。",
+                        "genre": "情感",
+                        "tone": "克制",
+                        "target_audience": "成年读者",
+                        "chapter_count": 1,
+                        "total_word_target": 1000,
+                        "must_include": ["校园"],
+                        "style_keywords": ["傍晚"],
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            source_task_id = story_response.json()["task_id"]
+            project_id = story_response.json()["project_id"]
+            self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+
+            analysis_response = client.post(
+                "/v1/projects/story-analysis",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(analysis_response.status_code, 202)
+            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
+
+            artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
+            scene_id = artifacts["planned_segments"][0]["scene_id"]
+
+            response = client.post(
+                "/v1/projects/continuity-repair",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "scene_id": scene_id,
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(response.status_code, 202)
+            task_id = response.json()["task_id"]
+            task = self._wait_for_completion(client, task_id)
+
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["result"]["repair_execution_mode"], "noop")
+            self.assertFalse(task["result"]["media_regeneration_required"])
+            self.assertEqual(task["result"]["pending_media_actions"], [])
+            self.assertEqual(task["result"]["scene_id"], scene_id)
+            self.assertIn("当前没有需要修复的连续性问题", task["result"]["repair_summary"])
+
+    @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
+    @patch("storyforge.application.task_handlers.run_scene_continuity_repair_pipeline")
+    def test_continuity_repair_batch_job_repairs_scene_and_segment_contracts(
+        self,
+        mock_run_scene_continuity_repair_pipeline,
+        mock_run_segment_continuity_repair_pipeline,
+    ) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {
+                "title_hint": "批量合同修复测试",
+                "idea": "两人在毕业季校园里反复错过，直到镜湖边告白。",
+                "genre": "情感",
+                "tone": "温柔",
+                "target_audience": "成年读者",
+                "chapter_count": 1,
+                "total_word_target": 1200,
+                "must_include": ["镜湖"],
+                "style_keywords": ["校园", "傍晚"],
+            }
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                scene_id = "ch01-sc01"
+                segment_id = "ch01-sc01-seg01"
+                for filename, payload in (
+                    ("character_visual_bible.json", {}),
+                    ("character_image_manifest.json", []),
+                    ("scene_plan.json", {"scenes": []}),
+                    ("segment_plan.json", []),
+                    ("scene_image_manifest.json", []),
+                    ("seedance_manifest.json", {"clips": []}),
+                ):
+                    (output_dir / filename).write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+
+                report_path = output_dir / "continuity_report.json"
+                report_path.write_text(
+                    json.dumps(
+                        {
+                            "scene_issues": [
+                                {
+                                    "scope": "scene",
+                                    "severity": "high",
+                                    "code": "scene_baseline_weak",
+                                    "message": "场景基线太弱。",
+                                    "scene_id": scene_id,
+                                    "segment_id": "",
+                                    "recommended_action": "regenerate_scene_master_frame",
+                                    "recommended_action_label": "重生成场景母图",
+                                    "details": {},
+                                }
+                            ],
+                            "segment_issues": [
+                                {
+                                    "scope": "segment",
+                                    "severity": "medium",
+                                    "code": "opening_match_weak",
+                                    "message": "开场承接偏弱。",
+                                    "scene_id": scene_id,
+                                    "segment_id": segment_id,
+                                    "recommended_action": "regenerate_scene_images",
+                                    "recommended_action_label": "重生成片段场景图",
+                                    "details": {},
+                                }
+                            ],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={
+                        "project_id": project_id,
+                        "brief": brief,
+                        "use_llm": True,
+                    },
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "批量合同修复测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "segment_contracts_completed",
+                    "task_stage": "story",
+                    "pipeline_root_task_id": source_record.task_id,
+                    "source_task_id": source_record.task_id,
+                    "artifact_revision": utc_now(),
+                    "continuity_review_mode": "auto",
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                def remove_scene_issue(*, output_root, scene_id, **kwargs):
+                    payload = json.loads(report_path.read_text(encoding="utf-8"))
+                    payload["scene_issues"] = [
+                        item for item in payload.get("scene_issues", [])
+                        if str(item.get("scene_id", "")) != str(scene_id)
+                    ]
+                    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return SimpleNamespace(
+                        character_bible_path=output_dir / "character_visual_bible.json",
+                        character_images_path=output_dir / "character_image_manifest.json",
+                        scene_plan_path=output_dir / "scene_plan.json",
+                        segment_plan_path=output_dir / "segment_plan.json",
+                        scene_images_path=output_dir / "scene_image_manifest.json",
+                        manifest_path=output_dir / "seedance_manifest.json",
+                        continuity_report_path=report_path,
+                        repair_action="regenerate_scene_master_frame",
+                    )
+
+                def remove_segment_issue(*, output_root, segment_id, **kwargs):
+                    payload = json.loads(report_path.read_text(encoding="utf-8"))
+                    payload["segment_issues"] = [
+                        item for item in payload.get("segment_issues", [])
+                        if str(item.get("segment_id", "")) != str(segment_id)
+                    ]
+                    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    return SimpleNamespace(
+                        character_bible_path=output_dir / "character_visual_bible.json",
+                        character_images_path=output_dir / "character_image_manifest.json",
+                        scene_plan_path=output_dir / "scene_plan.json",
+                        segment_plan_path=output_dir / "segment_plan.json",
+                        scene_images_path=output_dir / "scene_image_manifest.json",
+                        manifest_path=output_dir / "seedance_manifest.json",
+                        continuity_report_path=report_path,
+                        repair_action="rewrite_segment_contract",
+                    )
+
+                mock_run_scene_continuity_repair_pipeline.side_effect = remove_scene_issue
+                mock_run_segment_continuity_repair_pipeline.side_effect = remove_segment_issue
+
+                response = client.post(
+                    "/v1/projects/continuity-repair-batch",
+                    json={
+                        "project_id": project_id,
+                        "source_task_id": source_record.task_id,
+                        "max_units_per_batch": 2,
+                    },
+                )
+                self.assertEqual(response.status_code, 202)
+                task_id = response.json()["task_id"]
+                task = self._wait_for_completion(client, task_id)
+
+                self.assertEqual(task["status"], "completed")
+                self.assertEqual(task["task_type"], "project.continuity_repair_batch")
+                self.assertEqual(task["result"]["repair_execution_mode"], "plan_only")
+                self.assertEqual(task["result"]["processed_unit_count"], 2)
+                self.assertEqual(task["result"]["repaired_unit_count"], 2)
+                self.assertEqual(task["result"]["repaired_scene_ids"], [scene_id])
+                self.assertEqual(task["result"]["repaired_segment_ids"], [segment_id])
+                self.assertFalse(task["result"]["has_more_batches"])
+                self.assertEqual(task["result"]["remaining_repairable_count"], 0)
+                self.assertEqual(
+                    task["result"]["pending_media_actions"],
+                    [
+                        "regenerate_scene_master_frame",
+                        "regenerate_scene_images",
+                        "regenerate_video",
+                    ],
+                )
 
     def test_scene_stage_job_rejects_invalid_master_only_scope(self) -> None:
         config_path = self._create_test_config()
@@ -1054,6 +1598,36 @@ class ApiTestCase(unittest.TestCase):
                     "segment_id": "seg-01",
                     "scene_id": "scene-01",
                     "master_only": True,
+                },
+            )
+            self.assertEqual(response.status_code, 422)
+
+    def test_continuity_repair_job_rejects_invalid_scope(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/continuity-repair",
+                json={
+                    "project_id": "demo-project",
+                    "source_task_id": "demo-task",
+                    "segment_id": "seg-01",
+                    "scene_id": "scene-01",
+                },
+            )
+            self.assertEqual(response.status_code, 422)
+
+    def test_video_merge_job_rejects_scope_arguments(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/projects/videos",
+                json={
+                    "project_id": "demo-project",
+                    "source_task_id": "demo-task",
+                    "scene_id": "scene-01",
+                    "merge_only": True,
                 },
             )
             self.assertEqual(response.status_code, 422)
@@ -1373,37 +1947,73 @@ class ApiTestCase(unittest.TestCase):
             story_source_payload = story_source_response.json()
             self.assertTrue(story_source_payload["chapters"])
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
+            scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
                 json={
                     "project_id": project_id,
                     "source_task_id": story_task_id,
                 },
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
+            self.assertEqual(scene_structure_response.status_code, 202)
+            scene_structure_task_id = scene_structure_response.json()["task_id"]
 
-            analysis_payload = self._wait_for_completion(client, analysis_task_id)
-            self.assertEqual(analysis_payload["status"], "completed")
-            self.assertEqual(analysis_payload["result"]["task_stage"], "story_analysis")
-            self.assertIn("novel_package_path", analysis_payload["result"])
-            self.assertIn("novel_audit_path", analysis_payload["result"])
-            self.assertIn("character_bible_path", analysis_payload["result"])
-            self.assertIn("scene_plan_path", analysis_payload["result"])
-            self.assertIn("segment_plan_path", analysis_payload["result"])
-            self.assertIn("scene_images_path", analysis_payload["result"])
-            self.assertIn("seedance_manifest_path", analysis_payload["result"])
+            scene_structure_payload = self._wait_for_completion(client, scene_structure_task_id)
+            self.assertEqual(scene_structure_payload["status"], "completed")
+            self.assertEqual(scene_structure_payload["result"]["task_stage"], "scene_structure")
+            self.assertIn("novel_package_path", scene_structure_payload["result"])
+            self.assertIn("novel_audit_path", scene_structure_payload["result"])
+            self.assertIn("character_bible_path", scene_structure_payload["result"])
+            self.assertIn("scene_plan_path", scene_structure_payload["result"])
+            self.assertIsNone(scene_structure_payload["result"].get("segment_plan_path"))
+            self.assertIsNone(scene_structure_payload["result"].get("scene_images_path"))
+            self.assertIsNone(scene_structure_payload["result"].get("seedance_manifest_path"))
 
-            duplicate_analysis_response = client.post(
-                "/v1/projects/story-analysis",
+            duplicate_scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
                 json={
                     "project_id": project_id,
                     "source_task_id": story_task_id,
                 },
             )
-            self.assertEqual(duplicate_analysis_response.status_code, 202)
-            self.assertEqual(duplicate_analysis_response.json()["task_id"], analysis_task_id)
-            self.assertEqual(duplicate_analysis_response.json()["status"], "completed")
+            self.assertEqual(duplicate_scene_structure_response.status_code, 202)
+            self.assertEqual(
+                duplicate_scene_structure_response.json()["task_id"],
+                scene_structure_task_id,
+            )
+            self.assertEqual(duplicate_scene_structure_response.json()["status"], "completed")
+
+            segment_contracts_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                },
+            )
+            self.assertEqual(segment_contracts_response.status_code, 202)
+            segment_contracts_task_id = segment_contracts_response.json()["task_id"]
+
+            segment_contracts_payload = self._wait_for_completion(client, segment_contracts_task_id)
+            self.assertEqual(segment_contracts_payload["status"], "completed")
+            self.assertEqual(segment_contracts_payload["result"]["task_stage"], "segment_contracts")
+            self.assertIn("character_images_path", segment_contracts_payload["result"])
+            self.assertIn("scene_plan_path", segment_contracts_payload["result"])
+            self.assertIn("segment_plan_path", segment_contracts_payload["result"])
+            self.assertIn("scene_images_path", segment_contracts_payload["result"])
+            self.assertIn("seedance_manifest_path", segment_contracts_payload["result"])
+
+            duplicate_segment_contracts_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                },
+            )
+            self.assertEqual(duplicate_segment_contracts_response.status_code, 202)
+            self.assertEqual(
+                duplicate_segment_contracts_response.json()["task_id"],
+                segment_contracts_task_id,
+            )
+            self.assertEqual(duplicate_segment_contracts_response.json()["status"], "completed")
 
             character_response = client.post(
                 "/v1/projects/characters",
@@ -1497,7 +2107,18 @@ class ApiTestCase(unittest.TestCase):
             detail_response = client.get(f"/v1/projects/{project_id}")
             self.assertEqual(detail_response.status_code, 200)
             detail = detail_response.json()
-            self.assertEqual(len(detail["tasks"]), 6)
+            self.assertEqual(len(detail["tasks"]), 7)
+            self.assertEqual(
+                {task["task_type"] for task in detail["tasks"]},
+                {
+                    "project.story",
+                    "project.scene_structure",
+                    "project.segment_contracts",
+                    "project.characters",
+                    "project.scenes",
+                    "project.videos",
+                },
+            )
             self.assertEqual(
                 {task["result"]["pipeline_root_task_id"] for task in detail["tasks"] if task["result"]},
                 {story_task_id},

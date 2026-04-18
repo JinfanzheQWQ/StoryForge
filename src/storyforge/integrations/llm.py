@@ -35,6 +35,7 @@ def build_agent_backend(
     return LangChainTextAgentBackend(
         model_name=resolved_llm.model,
         temperature=resolved_llm.temperature,
+        max_tokens=resolved_llm.max_tokens,
         provider=resolved_llm.provider,
         base_url=_resolve_base_url(resolved_llm),
         api_key=api_key,

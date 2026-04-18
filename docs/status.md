@@ -1,6 +1,6 @@
 # 工程状态
 
-> 截至 `2026-04-17`
+> 截至 `2026-04-18`
 
 这份文档只回答三件事：
 
@@ -24,10 +24,12 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 小说生成
 
 - 结构化多 Agent 小说工作流
-- 小说链路已拆成 `project.story` 与 `project.story_analysis`
+- 小说链路已拆成 `project.story / project.scene_structure / project.segment_contracts`
 - `project.story` 先生成整部小说草稿，并落为 `story_source.json`
 - Web 端已经支持直接展示、编辑并保存小说正文
-- `project.story_analysis` 再基于当前 `story_source` 做 cast / 角色 / 分章结构化
+- `project.scene_structure` 再基于当前 `story_source` 做 cast / 角色 / 分章结构化，并落第一版 scene skeleton
+- `project.segment_contracts` 再基于 scene skeleton 生成正式 segment contracts、manifest 与连续性审校结果
+- `project.story_analysis` 仍保留兼容入口，内部串行执行上述两步
 - `story_pipeline`、`video_planning`、`video_pipeline` 与 `orchestrator` 的运行入口默认值已统一为 `use_llm=True`
 - `build_agent_backend()` 默认值也已统一为 `use_llm=True`；运行态代码里已没有 `use_llm=False` 默认入口残留
 - 运行态 service 已移除 `DryRun` / 结构化静默兜底分支；live LLM 输出不合格时只会 retry / fail-fast
@@ -44,6 +46,8 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - `Character Designer` prompt 已改成固定索引合同：会明确列出 `characters[0]`、`characters[1]` 分别必须对应哪个 `cast_slot_id`，数量不匹配时重试也会重复下发这份合同
 - 如果 `Character Designer` 首次只返回了部分角色，系统会对缺失 slot 再发一次结构化补生请求，再合并回完整角色表
 - LangChain structured output 已开启 raw 响应回收：如果 DeepSeek 没有触发 tool call 但返回了 JSON 文本，会提取 JSON 后再校验；如果返回空结构，会给出明确失败原因，不再暴露 Pydantic 的 `input_value=None`
+- LangChain structured output 现在还会在“parsed 为空、raw 也没有可用 JSON”时，再走一次 LangChain 普通 JSON 回收；若第二次能拿到合法 JSON，就继续校验，减少 provider 偶发空 structured 响应直接导致任务失败
+- LLM 配置已补 `llm.max_tokens`，默认 `8192`，会透传到底层 LangChain chat model，减少长结构化 JSON 被默认 completion 上限截断
 - `Cast Analyzer` 输出现在要求 `source_evidence` 必须能在小说正文中定位，减少“正文没出现的人却被补进角色表”的情况；同时对“女学生林栀 / 年轻监考老师周骁”这类带修饰语证据增加了姓名 / 稳定称呼容错匹配，避免误判
 - Web 创建页的 `模型 ID` 已改为只读默认值，不再允许手工输入，避免前端表单与后端支持矩阵脱节
 - 已删除旧配置残留 `major_character_count` 与 `review_passes`，角色数量改由小说正文、cast slots 和结构化校验共同约束
@@ -51,22 +55,37 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 视频规划与媒体链路
 
 - 角色视觉档案生成
-- 视频规划文件已前移到 `project.story_analysis` 阶段生成，不再等到角色图阶段才拆分视频
+- 视频规划文件已前移到结构化阶段生成，不再等到角色图阶段才拆分视频
 - 视频结构已经从纯 `chapter -> segment` 升级为 `chapter -> scene -> segment`
 - 已新增 `scene_plan.json` 作为场景级主规划文件
+- 已新增 `story_memory.json` 作为项目级结构化 story state
+- `project.scene_structure` 现在先生成 `novel_package.json`、`novel_audit.json`、`story_memory.json`、`character_visual_bible.json` 与第一版 `scene_plan.json`
+- `project.segment_contracts` 再生成 `character_image_manifest.json`、最终版 `scene_plan.json`、`segment_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 与 `continuity_report.json`
 - 视频 segment 结构化规划在 live LLM 模式下已改为 fail-fast：坏结构最多自动重试 3 次，仍失败就显式终止，不再静默回退成伪规划
+- 视频规划主链路已拆成三段式：
+  - `video-chapter-scene-planner` 先按章节生成 `scene structure`
+  - `video-scene-segment-planner` 再按单个 `scene` 生成 `segment contracts`
+  - 本地 `Segment Prompt Enricher` 最后补齐 prompt、音效与音乐方向并落为正式 `scene_plan.json / segment_plan.json`
+- 新链路会按章节数动态压缩正文摘录预算，降低长 prompt 触发空 structured 返回的概率
+- 新链路会进一步压缩 LLM 主输出体积：scene 级字段只保留在 scene 层，segment planner 不再默认输出 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt`，也不再重复 `scene_bible / scene_summary / scene_anchor`
 - 视频 segment 规划已增加模板污染校验：如果 `summary / narration / prompt / timed_beats` 混入 `当前片段聚焦`、`结尾要保留`、`当前小段聚焦` 等分析话术，会直接触发 structured retry
-- `video-character-bible` 与 `video-segment-planner` 现在都要求完整覆盖小说角色表与章节；缺角色、缺章节或缺片段会直接 retry / fail-fast
+- `video-character-bible`、`video-chapter-scene-planner` 与 `video-scene-segment-planner` 现在都要求完整覆盖小说角色表、章节、scene 与 segment；缺项会直接 retry / fail-fast
 - `scene_bible` 已接入结构化规划主链路，并真实进入场景图 / 视频 prompt
 - `scene_master_frame` 已接入结构化规划、运行时合同、场景图执行链路、Seedance 参考图链路和前端时间线索引
 - `scene_master_frame` 现在是严格的无角色空场景参考图，只锁环境与空间，不再允许人物、背影或角色调度进入母图 prompt
-- 当 `scene_bible` 太弱时，`scene_master_frame` 现在会自动从同一 `scene` 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 中提炼无角色环境锚点，回填地点、时间、光线、空间布局和背景锚点，再生成母图 prompt
+- `scene_master_frame` prompt 现在会额外加入“场景基线锁定”，明确锁定地点、时间、光线、主色、背景锚点、固定道具和空间透视
+- 当 `scene_bible` 太弱时，`scene_master_frame` 现在会自动从同一 `scene` 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 中提炼无角色环境锚点，并进一步从整组 scene 源文本里提取固定道具与主色调线索，再回填到 `scene_bible` 后生成母图 prompt
 - `shot_state` 已接入结构化规划主链路，并真实进入场景图 / 视频 prompt
 - `continuity_link` 已接入结构化规划主链路，并真实进入首帧承接判断、场景图 prompt 与 Seedance prompt
 - 已新增规则型连续性校验器 `V1`
 - 已新增可选的 `V2` 连续性软审校层
 - 当前会自动落盘 `continuity_report.json`
 - `continuity_report.json` 目前会基于 `scene_plan.json`、`scene_image_manifest.json`、`seedance_manifest.json` 和本地视频输出，输出 `V1` 规则审校以及按模式触发的 `V2` LLM 软审校，检查场景母图状态、关键帧缺失、跨段承接、帧级角色、对白时长预算和视频执行状态
+- `continuity_report.json` 当前还会额外标记 `scene_baseline_weak`，用于识别“场景基线过弱、后续关键帧容易漂移”的 scene 风险
+- `continuity_report.json` 的 `V1` 现在还会额外标记：
+  - `opening_match_weak`：承接段开场没有明确复述上一段尾部状态
+  - `action_progression_stalled`：当前段虽然承接，但动作推进几乎没有前进
+  - `adjacent_segment_duplicate`：同一 scene 相邻片段表达的事件高度重复
 - `segment_plan.json` 现在保留为执行层 flat 索引，便于逐段生成与重试
 - 角色定妆卡任务生成与真实调用
 - 章节到视频段的拆分规划
@@ -82,6 +101,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 同一 scene 下的片段现在共享 `scene_bible`，repair 会在字段缺失时自动补齐地点、时间、天气、光线、背景锚点和连续性说明
 - 每个 segment 现在共享正式 `shot_state`，repair 会在字段缺失时自动补齐景别、镜头推进、调度、动作推进、道具连续性和尾部承接状态
 - 每个 segment 现在共享正式 `continuity_link`，repair 会在字段缺失时自动补齐上一段承接关系、开场匹配要求、延续元素与允许变化
+- 连续承接段的 `continuity_link` repair 现在还会主动补强更具体的 `opening_match`、更明确的 `allowed_changes`，并把“上一段尾部动作定格”加入 carry-over 元素
 - 场景图阶段改为按帧选择角色参考图，不再按整段 `involved_characters` 把所有角色图都塞进首帧、尾帧和中段
 - 帧级角色归一化会优先参考对应时间节拍：如果中段节拍只是“男主等待女主”，中段帧只绑定男主参考图，不会因为整段涉及两人就把女主塞进画面
 - 场景生图 prompt 现在显式禁止任何字幕、对白字卡、聊天气泡、旁白框和其它可见文字；对白与硬字幕只留到视频阶段烧录
@@ -94,12 +114,23 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - Seedance pending / timeout 片段支持重跑恢复：复用 `remote_task_id` 查询远程状态，成功后补下载
 - 总片合并已改成手动触发；用户可在页面点击“合并已生成片段”，由 ffmpeg 生成 `full_story.mp4`
 - Seedance manifest 标题会继承真实小说标题，旧产物重载时会从 `novel_package.json` / `story_source.json` 恢复标题，避免显示成 `segment_video_manifest`
-- 已新增 `project.continuity_repair` 首版自动回改闭环：会基于 `continuity_report.json` 里的 `segment` 级问题，让 LLM 只重写目标片段合同，再只重跑该段场景图与视频
+- 已新增 `project.continuity_repair` 合同修复链路：会基于 `continuity_report.json` 里的 `segment` 或 `scene` 级问题，让 LLM 只重写目标范围的修复合同
 - 智能修复阶段会额外落盘 `continuity_repair_{segment_id}.json`，保存修复摘要、触发问题、前后差异和改动字段
+- `project.continuity_repair` 现已支持 `scene` 级修复：可直接接收 `scene_id`，并基于 `continuity_report.json` 输出 `selection_mode` 与 `affected_segment_ids`
+- 场景级智能修复会额外落盘 `continuity_repair_{scene_id}.json`
+- 场景级修复现在不再只是写报告：会真实回写 `scene_anchor / scene_bible`，同步刷新 `continuity_report.json`，并把受影响片段的场景图 / 视频合同重置为待重新执行
+- 场景级修复报告现在会额外记录 `selection_mode` 与 `affected_segment_ids`
+- 已新增 `project.continuity_repair_batch`：会按连续性报告里的风险优先级分批修复多个 `scene` / `segment` 合同
+- 智能修复当前统一为 `plan-only`
+- 修复任务完成后只会更新合同与修复报告，不会自动重跑场景母图、场景图和视频
+- 批量合同修复同样只更新合同与 `continuity_report.json`，不会自动触发生图、生视频或合并
+- 任务结果会额外返回 `repair_execution_mode = "plan_only"`、`media_regeneration_required = true` 和 `pending_media_actions`
+- 如果目标当前没有任何连续性问题，修复任务会以 `completed noop` 结束，不再报错
+- `segment` 修复的 structured retry 已补对白 / 旁白 / 硬字幕压缩约束，减少“修完还是说不完”的合同
 
 ### Web / API / 数据
 
-- 五阶段 Web 工作台
+- 六阶段 Web 工作台：`小说 -> 场景结构 -> 分段合同 -> 角色图 -> 场景图 -> 视频`
 - FastAPI HTTP 接口
 - 项目级 `project_id`
 - 项目 / 任务元数据持久化
@@ -112,19 +143,26 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 任务产物接口现在还会返回 `continuity_report` 与 `continuity_summary`
 - 任务产物接口现在还会返回按 `scene` / `segment` 聚合的连续性问题明细，供时间线直接消费
 - `continuity_summary` 当前会额外返回 `review_mode_requested / review_mode_effective / v2_review_status / v2_issue_count / v2_note`
+- 项目详情页“小说”标签已拆出 `生成场景结构 / 生成分段合同` 两个主按钮，顶部步骤条也已与后端任务边界对齐
 - 前端时间线现在可在 scene 头部单独触发“重生成场景母图”，并直接展示该任务的状态与失败原因
+- 前端时间线现在也可在 scene 头部直接触发“智能修复场景”
+- `project.scenes` / `project.videos` 的运行时入口现已支持 `scene_id` scope，用于单 scene 重跑
 - 前端时间线现在会直接展示连续性风险：
   - 时间线头部显示最近一次校验时间、总体状态和 top issues
   - scene 头部显示 scene 级风险摘要
   - segment 卡片显示 segment 级风险列表，并把推荐重跑的按钮高亮
 - 前端时间线现在可对高风险 segment 直接触发“智能修复该段”
+- 智能修复卡片现在会根据后续手动提交的场景图 / 视频任务，动态收敛 `pending_media_actions` 提示，不再长期停留在“待执行”旧状态
+- scene 修复运行中或 scene 母图运行中时，前端会锁住同 scene 下的局部修复、场景图、视频按钮，避免用户在修复合同更新期间并发触发冲突任务
+- 修复按钮文案已统一成“修复规划 / 合同已更新”语义，不再把 plan-only 修复误导成媒体已自动重跑
 - 创建页和项目详情页现在都可以为当前 run 选择 `V2` 软审校模式：`off / auto / on`
 - 前端已提供手动合并总片入口，不再在视频任务完成后自动生成 `full_story.mp4`
 - 资产页视频预览轮询稳定性修复
 - 故事正文保存后自动清理旧的结构化和媒体派生产物
 - 支持删除项目：删除项目元数据、任务记录和安全范围内的关联输出目录；项目有 queued / running 任务时返回 409
 - 服务启动时残留的 `running` 任务会重新排回 `queued`，不再因为一次重启直接标记为失败
-- `project.story_analysis` 已增加后端幂等保护：同一故事正文修订已经存在 queued / running / completed 结构化任务时，不再重复创建新任务
+- `project.scene_structure`、`project.segment_contracts` 与兼容入口 `project.story_analysis` 都已增加后端幂等保护：同一故事正文修订已经存在 queued / running / completed 任务时，不再重复创建新任务
+- 阶段任务在提交时就会继承 `pipeline_root_task_id`，queued / running 的局部场景任务、视频任务和智能修复任务都会稳定归到当前制作版本
 - 任务详情页已按 `pipeline_root_task_id` 聚合同一版本阶段状态，结构化完成后按钮会禁用；提交按钮逻辑已抽成共用 helper，避免重复 try/catch 和双击重复提交
 
 ### 代码结构
@@ -132,30 +170,18 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 - 应用层已拆分为 container / runtime / handlers / support / persistence
 - 视频域已拆分为 facade / prompting / repair / planning
 - 小说域已拆分为 service / prompts / schemas / repair / rules；测试侧 deterministic 夹具已迁出运行时源码
+- 视频域旧的默认规划 helper 已从运行时代码移除；这类仅供测试的静态构造逻辑已回收到 `tests/`
 
 ## 当前验证基线
 
 最近一次本地校验结果：
 
-- `uv run ruff check src/storyforge tests`
+- `.venv/bin/ruff check src/storyforge tests`
   - `All checks passed!`
-- `uv run pytest`
-  - `74 passed`
-- `uv run pytest tests/test_config.py tests/test_mysql_store.py tests/test_api.py`
-  - `18 passed`
-- `uv run pytest tests/test_pipelines.py tests/test_api.py -k 'continuity or bootstrap or openai_selection or artifacts or scene_master or master_only or selected_segment or selected_scene'`
-  - `17 passed`
-- `uv run pytest tests/test_pipelines.py -k 'runtime_fallback or does_not_resolve_fallback or build_default_segment_plan or deterministic_character_roster or deterministic_cast_analysis or missing_chapters or dual_lead_chapter_repair_does_not_append_missing_counterpart or dual_lead_repair_does_not_synthesize_missing_second_character'`
-  - `9 passed`
-- `uv run ruff check src/storyforge/domains/novel/service.py src/storyforge/domains/video/planning.py src/storyforge/domains/video/repair.py src/storyforge/domains/video/prompting.py src/storyforge/domains/video/schemas.py src/storyforge/api/artifacts.py tests/_deterministic_novel_builders.py tests/test_pipelines.py`
-  - `All checks passed!`
-
-本轮针对视频规划污染问题补充校验：
-
-- `uv run pytest tests/test_pipelines.py -k "story_and_video_pipeline or video_segment_plan_meta_template_phrases_trigger_retry or video_segment_planner_live_failure_raises_clear_error or load_video_planning_artifacts_restores_story_title_from_novel_package"`
-  - `4 passed`
-- `uv run ruff check src/storyforge/domains/video src/storyforge/pipelines tests/test_pipelines.py`
-  - `All checks passed!`
+- `.venv/bin/pytest tests/test_pipelines.py`
+  - `71 passed`
+- `.venv/bin/pytest`
+  - `133 passed`
 
 当前已知运行建议：
 
@@ -168,6 +194,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 - 执行队列仍是进程内异步队列
 - 重启恢复只是重新排队，不是严格幂等执行队列
+- 视频规划虽然已拆成 `scene_structure -> segment_contracts`，但 scene 内更细粒度的分块规划与恢复还没做
 - 还没有对象存储
 - 还没有认证与权限系统
 - 还没有 webhook / 回调机制
@@ -175,15 +202,17 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 媒体质量
 
 - 角色一致性仍以“参考图 + prompt 锁定”为主
-- `V2` 连续性软审校已经上线，且已补上首版 `segment` 级自动回改闭环；但 `scene_master_frame` / scene 级自动修复还没做
+- `V2` 连续性软审校已经上线，且已补上 `segment` 级合同修复闭环与 `scene_master_frame / scene` 级修复；scene 修复现在已经可以按报告定位结果缩小到 scene 内部分 segment
+- 动作连贯性第一轮强化已完成，`V1` 也能直接识别“承接写得太虚 / 动作没推进 / 相邻片段重复”，但当前还只是规则 + prompt + repair 联动，不是基于真实生成视频的动作理解模型
 - `scene_master_frame` 的环境回填目前仍是规则型环境推导，不是独立的环境一致性评估器；输入文本特别弱时，仍可能拿不到足够细的固定道具与空间布局
+- 当前“场景基线过弱”仍是文本与规则级判定，不是对真实生成图片做视觉评估
 - Seedream 场景帧默认参考图策略已显式固定：优先 `时间承接帧 -> scene anchor / scene_master_frame -> 当前帧实际出镜角色图`，单帧总参考图最多 4 张，角色参考图最多 2 张，不再把未出镜角色硬塞进单人帧
 - 最近一次 4 样本真实批量对比也支持这条默认策略：单人帧以 `3 refs` 最稳，额外塞入未出镜角色会直接污染画面；双人帧则明显更适合 `4 refs`
 - 角色定妆图已简化为 `SF-TURN-01` 横版 16:9 白底三视图 prompt，只保留角色姓名和人物描述，输出正面、左侧面、背面；不再要求信息格、色卡、材质块或灰底设计板
 - 声音一致性仍是 prompt 级，不是声纹级
 - 硬字幕主要依赖模型生成，缺少稳定的后处理兜底
 - 虽然已经支持按 segment 逐段重跑，但暂时还没有“按 segment 自动生成后再异步串行下一段”的工作流编排
-- 连续性问题已经接到前端时间线，且已支持“发现问题 -> 单段生成修复方案 -> 局部回改”的首版闭环；但还没有覆盖 `scene_master_frame`、scene 级结构漂移和跨段批量协同修复
+- 连续性问题已经接到前端时间线，且已支持“发现问题 -> scene 级联动修复 / 单段合同修复 -> 局部回改”的闭环；但还没有覆盖跨段批量协同修复和更智能的修复策略自动分流
 
 ### 小说理解
 
@@ -192,7 +221,7 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 ### 内容与上下文
 
 - 内容合规当前完全依赖接入的 LLM / Seed 模型供应商策略，后端不再做本地规则拦截
-- 长篇上下文仍主要依赖阶段输入和最近章节摘要，不是长期记忆式写作
+- 长篇上下文现在已有 `story_memory.json` 作为章节级结构化承接，但它仍不是长期写作 memory，也还没有覆盖更细的场景一致性评分与自动纠偏
 
 ### 生产可用性
 
@@ -212,11 +241,13 @@ StoryForge 当前是一个“结构化小说生成 + 小说转视频”的工程
 
 ### 第二优先级
 
-1. 把当前 `segment` 级智能修复扩展到 `scene_master_frame` / scene 级自动修复
-2. 给 `V2` 增加更细的触发阈值、成本控制与 reviewer prompt 迭代
-3. 在已打通的 1-4 图兼容基础上，继续用更大样本校准 `Seedream 4.5` 的最佳参考图顺序、图数上限与画质稳定性
-4. 增加硬字幕 ffmpeg 兜底
-5. 增加失败任务重放与手动重试
+1. 在现有局部修复基础上，继续补“按问题类型自动分流 scene / segment 修复策略”和跨段批量协同修复
+2. 把 `scene_master_frame` 从“可生成”推进到“可评估、可重生成、可作为稳定场景基线”
+3. 继续做动作连贯性第二轮，让 LLM 修复器能更主动重写坏掉的连续承接链，而不只是在报告里提示风险
+4. 继续把过长规划拆到章节批次 / scene 批次粒度，并把 `finish_reason='length'` 一类错误提升到章节 / scene 粒度
+5. 在已打通的 1-4 图兼容基础上，继续用更大样本校准 `Seedream 4.5` 的最佳参考图顺序、图数上限与画质稳定性
+6. 增加硬字幕 ffmpeg 兜底
+7. 增加失败任务重放与手动重试
 
 ### 第三优先级
 

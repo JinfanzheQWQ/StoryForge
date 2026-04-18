@@ -139,7 +139,7 @@ export async function saveStorySourceDraft(projectId, sourceTaskId) {
     state.storySources.set(key, saved);
     state.storySourceDrafts.set(key, cloneStorySource(saved));
     state.storySourceDirtyKeys.delete(key);
-    state.storySourceMessages.set(key, "故事文本已保存，后续结构化信息和媒体资产需要按新文本重新生成。");
+    state.storySourceMessages.set(key, "故事文本已保存，后续场景结构、分段合同和媒体资产需要按新文本重新生成。");
     return saved;
   } catch (error) {
     state.storySourceMessages.set(key, error.message || "故事文本保存失败。");

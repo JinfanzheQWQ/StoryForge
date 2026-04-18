@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from math import ceil
+from pathlib import Path
 import re
 
 from storyforge.domains.novel.contracts import NovelPackage
@@ -11,6 +13,15 @@ from storyforge.domains.video.contracts import (
     SceneImageTask,
     SeedanceClipTask,
     SeedanceManifest,
+    StoryMemoryCastEntry,
+    StoryMemoryChapterState,
+    StoryMemoryContinuityState,
+    StoryMemoryGenerationNotes,
+    StoryMemoryGlobalBible,
+    StoryMemoryIdentity,
+    StoryMemoryPackage,
+    StoryMemoryPlanningChapterIndex,
+    StoryMemoryPlanningIndex,
     VideoScene,
     VideoSegment,
 )
@@ -155,163 +166,394 @@ class VideoPlanningMixin:
         "课桌",
         "答题卡",
     ]
+    SCENE_MASTER_PROP_KEYWORDS = [
+        "长椅",
+        "路灯",
+        "栏杆",
+        "课桌",
+        "讲台",
+        "黑板",
+        "答题卡",
+        "试卷",
+        "伞",
+        "雨伞",
+        "对讲机",
+        "广播喇叭",
+        "磁带机",
+        "控制台",
+        "路牌",
+        "石桥",
+        "花架",
+        "藤蔓",
+        "铁轨",
+        "行李箱",
+        "书包",
+        "纪念册",
+        "手机",
+        "台灯",
+        "窗帘",
+        "桌椅",
+    ]
+    SCENE_MASTER_PALETTE_KEYWORDS = [
+        "暖金",
+        "暖黄",
+        "橙红",
+        "深蓝",
+        "灰蓝",
+        "冷蓝",
+        "墨绿",
+        "青绿",
+        "藤紫",
+        "米白",
+        "银灰",
+        "炭黑",
+        "霓虹粉",
+        "猩红",
+        "琥珀",
+    ]
 
-    def _build_default_character_visual_bible(
-        self,
-        novel_package: NovelPackage,
-    ) -> CharacterVisualBibleSchema:
-        return CharacterVisualBibleSchema.model_validate(
-            {
-                "characters": [
-                    {
-                        "name": item.name,
-                        "role": item.role,
-                        "gender": item.gender,
-                        "appearance": (
-                            f"{item.gender}，具有明确轮廓、情绪感和电影感的角色外观，"
-                            "年龄段和体态稳定"
-                        ),
-                        "outfit": "带有故事气味的功能性服装，适合持续出镜",
-                        "color_palette": item.visual_signature or novel_package.outline.visual_motifs[:2],
-                        "portrait_prompt": self._stylize_character_prompt(
-                            item.image_prompt
-                            or f"{item.name}，{item.role}，电影级肖像，{novel_package.brief.tone}"
-                        ),
-                    }
-                    for item in novel_package.outline.characters
-                ]
-            }
-        )
-
-    def _build_default_segment_plan(
+    def _build_story_memory(
         self,
         novel_package: NovelPackage,
         visual_bible: CharacterVisualBibleSchema,
-    ) -> VideoSegmentPlanSchema:
-        scenes: list[dict[str, object]] = []
-        references = {item.name: item for item in visual_bible.characters}
+        output_dir: str,
+    ) -> StoryMemoryPackage:
+        visual_map = {item.name: item for item in visual_bible.characters}
+        chapter_states = [
+            StoryMemoryChapterState(
+                chapter_number=item.number,
+                chapter_title=item.title,
+                chapter_summary=item.summary,
+                new_facts=list(item.beats[:3]),
+                resolved_threads=[item.goal] if item.goal else [],
+                unresolved_threads=[item.cliffhanger] if item.cliffhanger else [],
+            )
+            for item in novel_package.outline.chapters
+        ]
+        planning_chapters = [
+            StoryMemoryPlanningChapterIndex(chapter_number=item.number)
+            for item in novel_package.outline.chapters
+        ]
+        return StoryMemoryPackage(
+            story_identity=StoryMemoryIdentity(
+                project_id=Path(output_dir).name,
+                story_title=novel_package.outline.title,
+                story_source_revision=self._build_story_source_revision(novel_package),
+            ),
+            global_story_bible=StoryMemoryGlobalBible(
+                core_theme=novel_package.outline.theme or novel_package.brief.tone,
+                world_rules=[
+                    f"类型气质：{novel_package.brief.genre}",
+                    "角色、事件与关系必须以当前小说正文为准",
+                    "跨章节规划必须保持角色身份、场景时空和事件先后顺序稳定",
+                ],
+                narrative_promise=(
+                    novel_package.outline.premise
+                    or novel_package.brief.idea
+                ),
+                forbidden_deviations=[
+                    "不得改名或新增正文里不存在的核心角色",
+                    "不得把后续章节事件提前到当前章节",
+                    "不得改写关键关系、关键对白和章节既定结果",
+                ],
+                visual_motifs=list(novel_package.outline.visual_motifs),
+                ending_direction=(
+                    novel_package.outline.chapters[-1].cliffhanger
+                    if novel_package.outline.chapters
+                    else ""
+                ),
+            ),
+            cast_bible=[
+                StoryMemoryCastEntry(
+                    name=item.name,
+                    gender=item.gender,
+                    role=item.role,
+                    relationships=[],
+                    appearance_summary=self._compact_story_memory_text(
+                        "；".join(
+                            part
+                            for part in (
+                                getattr(visual_map.get(item.name), "appearance", ""),
+                                getattr(visual_map.get(item.name), "outfit", ""),
+                            )
+                            if part
+                        ),
+                        limit=120,
+                    ),
+                    voice_summary=self._compact_story_memory_text(
+                        item.voice_profile.resolved_voice_style(),
+                        limit=80,
+                    ),
+                    personality_summary=self._compact_story_memory_text(
+                        "；".join(
+                            part
+                            for part in (
+                                item.desire,
+                                item.conflict,
+                                item.arc,
+                            )
+                            if part
+                        ),
+                        limit=140,
+                    ),
+                    hard_constraints=[
+                        f"角色名固定为 {item.name}",
+                        f"性别固定为 {item.gender or '未指定'}",
+                        "镜头中维持稳定年龄感、体态和服装轮廓",
+                    ],
+                )
+                for item in novel_package.outline.characters
+            ],
+            chapter_states=chapter_states,
+            continuity_state=StoryMemoryContinuityState(
+                carry_over_visuals=list(novel_package.outline.visual_motifs[:3]),
+            ),
+            planning_index=StoryMemoryPlanningIndex(
+                chapter_count=len(novel_package.outline.chapters),
+                chapters=planning_chapters,
+            ),
+            generation_notes=StoryMemoryGenerationNotes(
+                last_successful_stage="video-character-bible",
+            ),
+        )
 
-        for chapter in novel_package.outline.chapters:
-            for scene_index, beat in enumerate(chapter.beats, start=1):
-                scene_id = f"ch{chapter.number:02d}-sc{scene_index:02d}"
-                scene_title = f"{chapter.title} / 场景 {scene_index}"
-                focus_characters = chapter.featured_characters or [
-                    item.name for item in novel_package.outline.characters[:2]
-                ]
-                scene_anchor = (
-                    f"章节 {chapter.number} 的同一场景基线，"
-                    f"重点保持 {beat} 的地点、光线与角色空间关系。"
-                )
-                scene_bible = self._derive_scene_bible_defaults(
-                    novel_package=novel_package,
-                    chapter_number=chapter.number,
-                    scene_title=scene_title,
-                    scene_summary=beat,
-                    scene_anchor=scene_anchor,
-                    focus_characters=focus_characters,
-                )
-                shot_state = self._derive_shot_state_defaults(
-                    summary=beat,
-                    scene_anchor=scene_anchor,
-                    scene_bible=scene_bible,
-                    focus_characters=focus_characters,
-                )
-                prompt_suffix = "、".join(
-                    references[name].color_palette[0]
-                    for name in focus_characters
-                    if name in references and references[name].color_palette
-                )
-                narration = f"{beat}。"
-                dialogue_lines: list[str] = []
-                sound_effects = [
-                    "环境底噪保持低频压迫感",
-                    f"突出 {'、'.join(novel_package.outline.visual_motifs[:2])} 对应的环境音",
-                ]
-                timed_beats = self._build_default_timed_beats(
-                    beat=beat,
-                    chapter_summary=chapter.summary,
-                    narration=narration,
-                    dialogue_lines=dialogue_lines,
-                    sound_effects=sound_effects,
-                )
-                scenes.append(
-                    {
-                        "scene_id": scene_id,
-                        "chapter_number": chapter.number,
-                        "title": scene_title,
-                        "summary": beat,
-                        "scene_anchor": scene_anchor,
-                        "scene_bible": scene_bible,
-                        "involved_characters": focus_characters,
-                        "segments": [
-                            {
-                                "segment_id": f"{scene_id}-seg01",
-                                "chapter_number": chapter.number,
-                                "scene_id": scene_id,
-                                "scene_title": scene_title,
-                                "scene_summary": beat,
-                                "scene_anchor": scene_anchor,
-                                "scene_bible": scene_bible,
-                                "shot_state": shot_state,
-                                "continuity_link": {
-                                    "previous_segment_id": "",
-                                    "transition_mode": "start",
-                                    "opening_match": "",
-                                    "carry_over_elements": [],
-                                    "allowed_changes": "作为当前场景的起始片段建立新的连续性基线。",
-                                    "transition_reason": "场景起始段，不承接上一片段。",
-                                },
-                                "title": f"{scene_title} / 片段 1",
-                                "summary": beat,
-                                "involved_characters": focus_characters,
-                                "start_frame_characters": focus_characters,
-                                "mid_frame_characters": focus_characters,
-                                "end_frame_characters": focus_characters,
-                                "narration": narration,
-                                "dialogue_lines": dialogue_lines,
-                                "subtitle_lines": self._build_subtitle_lines(
-                                    narration=narration,
-                                    dialogue_lines=dialogue_lines,
-                                    timed_beats=timed_beats,
-                                ),
-                                "sound_effects": sound_effects,
-                                "music_direction": (
-                                    f"延续 {novel_package.brief.tone} 的悬疑氛围音乐，"
-                                    "结尾轻微上扬并留下悬念。"
-                                ),
-                                "timed_beats": timed_beats,
-                                "scene_prompt": (
-                                    f"{novel_package.outline.title}，{beat}，"
-                                    f"场景基线：{self._scene_bible_brief(scene_bible)}，"
-                                    f"视觉母题：{'、'.join(novel_package.outline.visual_motifs)}，"
-                                    f"角色色彩：{prompt_suffix or novel_package.brief.tone}"
-                                ),
-                                "start_frame_prompt": (
-                                    f"首帧，{beat} 的起始瞬间，情绪压低，镜头建立环境。"
-                                    f"保持 {self._scene_bible_brief(scene_bible)}。"
-                                ),
-                                "mid_frame_prompt": (
-                                    f"中段锚点帧，{beat} 的中段推进，"
-                                    f"角色 {'、'.join(focus_characters) or '环境'} 的位置关系保持稳定。"
-                                    f"保持 {self._scene_bible_brief(scene_bible)}。"
-                                ),
-                                "end_frame_prompt": (
-                                    f"尾帧，指向 {chapter.cliffhanger} 的情绪或动作定格。"
-                                    f"保持 {self._scene_bible_brief(scene_bible)}。"
-                                ),
-                                "duration_seconds": self.segment_duration_seconds,
-                                "requires_mid_frame": self._should_require_mid_frame(
-                                    involved_characters=focus_characters,
-                                    duration_seconds=self.segment_duration_seconds,
-                                    dialogue_lines=dialogue_lines,
-                                    timed_beats=timed_beats,
-                                ),
-                                "transition_hint": "auto",
-                            }
-                        ],
-                    }
-                )
-        return VideoSegmentPlanSchema.model_validate({"scenes": scenes})
+    def _build_story_source_revision(
+        self,
+        novel_package: NovelPackage,
+    ) -> str:
+        digest_source = "\n".join(
+            item.markdown.strip()
+            for item in novel_package.chapters
+        )
+        if not digest_source.strip():
+            digest_source = novel_package.outline.title
+        digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()
+        return digest[:12]
+
+    def _update_story_memory_after_chapter(
+        self,
+        story_memory: StoryMemoryPackage,
+        *,
+        novel_package: NovelPackage,
+        chapter_plan: VideoSegmentPlanSchema,
+        chapter_number: int,
+    ) -> StoryMemoryPackage:
+        chapter_outline = next(
+            item for item in novel_package.outline.chapters if item.number == chapter_number
+        )
+        chapter_state = next(
+            item for item in story_memory.chapter_states if item.chapter_number == chapter_number
+        )
+        planning_entry = next(
+            item for item in story_memory.planning_index.chapters if item.chapter_number == chapter_number
+        )
+        previous_chapter_state = next(
+            (
+                item
+                for item in story_memory.chapter_states
+                if item.chapter_number < chapter_number and item.generated_segment_ids
+            ),
+            None,
+        )
+        previous_exit_state = (
+            dict(previous_chapter_state.exit_state)
+            if previous_chapter_state is not None
+            else {}
+        )
+        first_segment = chapter_plan.segments[0] if chapter_plan.segments else None
+        last_segment = chapter_plan.segments[-1] if chapter_plan.segments else None
+
+        chapter_state.entry_state = previous_exit_state or {
+            "story_opening": chapter_outline.summary or chapter_outline.title,
+        }
+        chapter_state.generated_scene_ids = [item.scene_id for item in chapter_plan.scenes]
+        chapter_state.generated_segment_ids = [item.segment_id for item in chapter_plan.segments]
+        chapter_state.new_facts = self._unique_story_memory_items(
+            [chapter_outline.summary, *chapter_outline.beats[:3]],
+            limit=4,
+        )
+        chapter_state.resolved_threads = self._unique_story_memory_items(
+            [chapter_outline.goal],
+            limit=2,
+        )
+        chapter_state.unresolved_threads = self._unique_story_memory_items(
+            [chapter_outline.cliffhanger],
+            limit=2,
+        )
+        chapter_state.exit_state = self._build_story_memory_exit_state(last_segment)
+
+        planning_entry.scene_ids = list(chapter_state.generated_scene_ids)
+        planning_entry.segment_ids = list(chapter_state.generated_segment_ids)
+        planning_entry.scene_count = len(planning_entry.scene_ids)
+        planning_entry.segment_count = len(planning_entry.segment_ids)
+
+        story_memory.planning_index.scene_count = sum(
+            item.scene_count for item in story_memory.planning_index.chapters
+        )
+        story_memory.planning_index.segment_count = sum(
+            item.segment_count for item in story_memory.planning_index.chapters
+        )
+        story_memory.generation_notes.last_planned_chapter = chapter_number
+        story_memory.generation_notes.last_successful_stage = "video-segment-planner"
+        if first_segment is not None and last_segment is not None:
+            story_memory.continuity_state = self._build_story_memory_continuity_state(
+                chapter_plan=chapter_plan,
+                opening_segment=first_segment,
+                ending_segment=last_segment,
+            )
+        return story_memory
+
+    def _sync_story_memory_with_plan(
+        self,
+        story_memory: StoryMemoryPackage,
+        *,
+        novel_package: NovelPackage,
+        plan: VideoSegmentPlanSchema,
+    ) -> StoryMemoryPackage:
+        scenes_by_chapter: dict[int, list[object]] = {}
+        segments_by_chapter: dict[int, list[VideoSegmentSchema]] = {}
+        for scene in plan.scenes:
+            scenes_by_chapter.setdefault(scene.chapter_number, []).append(scene)
+        for segment in plan.segments:
+            segments_by_chapter.setdefault(segment.chapter_number, []).append(segment)
+
+        for chapter_outline in novel_package.outline.chapters:
+            chapter_number = chapter_outline.number
+            chapter_state = next(
+                item for item in story_memory.chapter_states if item.chapter_number == chapter_number
+            )
+            planning_entry = next(
+                item for item in story_memory.planning_index.chapters if item.chapter_number == chapter_number
+            )
+            chapter_scenes = scenes_by_chapter.get(chapter_number, [])
+            chapter_segments = segments_by_chapter.get(chapter_number, [])
+            previous_segments = segments_by_chapter.get(chapter_number - 1, [])
+            previous_last_segment = previous_segments[-1] if previous_segments else None
+            chapter_state.entry_state = (
+                self._build_story_memory_exit_state(previous_last_segment)
+                if previous_last_segment is not None
+                else {"story_opening": chapter_outline.summary or chapter_outline.title}
+            )
+            chapter_state.exit_state = self._build_story_memory_exit_state(
+                chapter_segments[-1] if chapter_segments else None
+            )
+            chapter_state.generated_scene_ids = [item.scene_id for item in chapter_scenes]
+            chapter_state.generated_segment_ids = [item.segment_id for item in chapter_segments]
+            planning_entry.scene_ids = list(chapter_state.generated_scene_ids)
+            planning_entry.segment_ids = list(chapter_state.generated_segment_ids)
+            planning_entry.scene_count = len(planning_entry.scene_ids)
+            planning_entry.segment_count = len(planning_entry.segment_ids)
+
+        story_memory.planning_index.scene_count = sum(
+            item.scene_count for item in story_memory.planning_index.chapters
+        )
+        story_memory.planning_index.segment_count = sum(
+            item.segment_count for item in story_memory.planning_index.chapters
+        )
+        if plan.segments:
+            story_memory.continuity_state = self._build_story_memory_continuity_state(
+                chapter_plan=plan,
+                opening_segment=plan.segments[0],
+                ending_segment=plan.segments[-1],
+            )
+            story_memory.generation_notes.last_planned_chapter = plan.segments[-1].chapter_number
+        story_memory.generation_notes.last_successful_stage = "video-segment-plan-merged"
+        return story_memory
+
+    def _build_story_memory_exit_state(
+        self,
+        segment: VideoSegmentSchema | None,
+    ) -> dict[str, object]:
+        if segment is None:
+            return {}
+        return {
+            "segment_id": segment.segment_id,
+            "scene_id": segment.scene_id,
+            "scene_title": segment.scene_title,
+            "summary": self._compact_story_memory_text(segment.summary, limit=100),
+            "carry_over_characters": list(
+                segment.end_frame_characters or segment.involved_characters
+            ),
+            "end_state_lock": self._compact_story_memory_text(
+                segment.shot_state.end_state_lock,
+                limit=100,
+            ),
+            "transition_hint": segment.transition_hint,
+        }
+
+    def _build_story_memory_continuity_state(
+        self,
+        *,
+        chapter_plan: VideoSegmentPlanSchema,
+        opening_segment: VideoSegmentSchema,
+        ending_segment: VideoSegmentSchema,
+    ) -> StoryMemoryContinuityState:
+        active_relationship_state = self._unique_story_memory_items(
+            [
+                self._compact_story_memory_text(opening_segment.summary, limit=80),
+                self._compact_story_memory_text(ending_segment.summary, limit=80),
+            ],
+            limit=2,
+        )
+        active_costume_state = [
+            f"{name} 保持既定服装轮廓"
+            for name in ending_segment.involved_characters[:2]
+        ]
+        carry_over_visuals = self._unique_story_memory_items(
+            [
+                *ending_segment.scene_bible.background_anchors,
+                *ending_segment.scene_bible.dominant_palette,
+                *chapter_plan.scenes[-1].involved_characters[:2],
+            ],
+            limit=6,
+        )
+        return StoryMemoryContinuityState(
+            current_time_context=ending_segment.scene_bible.time_window,
+            current_location_context=ending_segment.scene_bible.location,
+            active_props=list(ending_segment.scene_bible.fixed_props[:4]),
+            active_costume_state=active_costume_state,
+            active_relationship_state=active_relationship_state,
+            carry_over_visuals=carry_over_visuals,
+        )
+
+    def _merge_chapter_segment_plans(
+        self,
+        chapter_plans: list[VideoSegmentPlanSchema],
+    ) -> VideoSegmentPlanSchema:
+        merged_scenes: list[dict[str, object]] = []
+        for plan in chapter_plans:
+            merged_scenes.extend(
+                item.model_dump()
+                for item in plan.scenes
+            )
+        return VideoSegmentPlanSchema.model_validate({"scenes": merged_scenes})
+
+    def _compact_story_memory_text(
+        self,
+        text: str,
+        *,
+        limit: int,
+    ) -> str:
+        compact = re.sub(r"\s+", " ", str(text or "")).strip()
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 1].rstrip() + "…"
+
+    def _unique_story_memory_items(
+        self,
+        values: list[str],
+        *,
+        limit: int,
+    ) -> list[str]:
+        items: list[str] = []
+        for raw in values:
+            value = str(raw or "").strip()
+            if not value or value in items:
+                continue
+            items.append(value)
+            if len(items) >= limit:
+                break
+        return items
 
     def _derive_scene_bible_defaults(
         self,
@@ -457,6 +699,7 @@ class VideoPlanningMixin:
             if isinstance(scene.scene_bible, SceneBible)
             else SceneBible.from_dict(scene.scene_bible)
         )
+        source_environment_texts = self._collect_scene_master_source_texts(scene)
         environment_clauses = self._extract_scene_master_environment_clauses(scene)
         if not environment_clauses:
             return source_scene_bible
@@ -468,10 +711,16 @@ class VideoPlanningMixin:
         time_window = self._scene_bible_value(source_scene_bible, "time_window").strip()
         weather = self._scene_bible_value(source_scene_bible, "weather").strip()
         lighting = self._scene_bible_value(source_scene_bible, "lighting").strip()
+        dominant_palette = list(source_scene_bible.dominant_palette)
         spatial_layout = self._scene_bible_value(source_scene_bible, "spatial_layout").strip()
         if self._contains_scene_master_human_signal(spatial_layout, scene.involved_characters):
             spatial_layout = ""
 
+        scene_anchor_tokens = [
+            item
+            for item in self._extract_anchor_list(scene.scene_anchor, max_items=4)
+            if not self._contains_scene_master_human_signal(item, scene.involved_characters)
+        ]
         background_anchors = [
             item
             for item in self._scene_bible_list(source_scene_bible, "background_anchors")
@@ -482,8 +731,17 @@ class VideoPlanningMixin:
             for item in self._scene_bible_list(source_scene_bible, "fixed_props")
             if not self._contains_scene_master_human_signal(item, scene.involved_characters)
         ]
-
         environment_text = "；".join(environment_clauses)
+        inferred_fixed_props = self._extract_scene_master_keyword_hits(
+            [*source_environment_texts, *environment_clauses, *scene_anchor_tokens],
+            self.SCENE_MASTER_PROP_KEYWORDS,
+            max_items=4,
+        )
+        inferred_palette = self._extract_scene_master_keyword_hits(
+            [*source_environment_texts, environment_text, *environment_clauses, *scene_anchor_tokens],
+            self.SCENE_MASTER_PALETTE_KEYWORDS,
+            max_items=3,
+        )
         if not location:
             location = self._infer_scene_master_location(scene, environment_clauses)
         if not time_window:
@@ -506,20 +764,31 @@ class VideoPlanningMixin:
 
         background_anchors = self._merge_unique_strings(
             background_anchors,
+            scene_anchor_tokens,
             environment_clauses,
         )[:4]
+        fixed_props = self._merge_unique_strings(
+            fixed_props,
+            inferred_fixed_props,
+        )[:4]
+        if not dominant_palette:
+            dominant_palette = inferred_palette[:3]
+        continuity_notes = source_scene_bible.continuity_notes.strip() or (
+            f"保持 {location or scene.title or scene.scene_id} 的地点、时间、光线、背景锚点、固定道具与空间透视稳定；"
+            "不要把后续关键帧画成另一个新场景。"
+        )
 
         return SceneBible(
             location=location,
             time_window=time_window,
             weather=weather,
             lighting=lighting,
-            dominant_palette=list(source_scene_bible.dominant_palette),
+            dominant_palette=dominant_palette,
             background_anchors=background_anchors,
             fixed_props=fixed_props,
             spatial_layout=spatial_layout,
             character_blocking=source_scene_bible.character_blocking,
-            continuity_notes=source_scene_bible.continuity_notes,
+            continuity_notes=continuity_notes,
         )
 
     def _extract_scene_master_environment_clauses(
@@ -527,17 +796,7 @@ class VideoPlanningMixin:
         scene: VideoScene,
     ) -> list[str]:
         clauses: list[str] = []
-        source_texts: list[str] = []
-        for segment in scene.segments:
-            source_texts.extend(
-                [
-                    segment.scene_prompt,
-                    segment.start_frame_prompt,
-                    segment.mid_frame_prompt,
-                    segment.end_frame_prompt,
-                ]
-            )
-        source_texts.append(scene.scene_anchor)
+        source_texts = self._collect_scene_master_source_texts(scene)
 
         for source_text in source_texts:
             normalized_text = self._sanitize_image_prompt_text(source_text)
@@ -568,6 +827,23 @@ class VideoPlanningMixin:
                 if len(clauses) >= 4:
                     return clauses
         return clauses
+
+    def _collect_scene_master_source_texts(
+        self,
+        scene: VideoScene,
+    ) -> list[str]:
+        source_texts: list[str] = []
+        for segment in scene.segments:
+            source_texts.extend(
+                [
+                    segment.scene_prompt,
+                    segment.start_frame_prompt,
+                    segment.mid_frame_prompt,
+                    segment.end_frame_prompt,
+                ]
+            )
+        source_texts.extend([scene.scene_anchor, scene.summary, scene.title])
+        return [str(item or "").strip() for item in source_texts if str(item or "").strip()]
 
     def _normalize_scene_master_environment_clause(
         self,
@@ -611,6 +887,25 @@ class VideoPlanningMixin:
             if normalized:
                 return normalized[:24]
         return ""
+
+    def _extract_scene_master_keyword_hits(
+        self,
+        texts: list[str],
+        keywords: list[str],
+        *,
+        max_items: int,
+    ) -> list[str]:
+        hits: list[str] = []
+        for text in texts:
+            normalized = str(text or "").strip()
+            if not normalized:
+                continue
+            for keyword in keywords:
+                if keyword in normalized and keyword not in hits:
+                    hits.append(keyword)
+                    if len(hits) >= max_items:
+                        return hits
+        return hits
 
     def _build_scene_image_tasks(
         self,
@@ -1135,10 +1430,11 @@ class VideoPlanningMixin:
             return False
 
         if current_segment.reuse_previous_end_frame:
-            return (
+            if (
                 current_segment.source_segment_id == previous_segment.source_segment_id
                 and current_segment.subsegment_index == previous_segment.subsegment_index + 1
-            )
+            ):
+                return True
 
         continuity_previous_segment_id = current_segment.continuity_link.previous_segment_id.strip()
         continuity_mode = current_segment.continuity_link.transition_mode.strip().lower()

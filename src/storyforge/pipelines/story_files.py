@@ -15,7 +15,7 @@ class StorySourceFiles:
 
 
 @dataclass(slots=True)
-class StoryAnalysisFiles:
+class StoryStructureFiles:
     output_dir: Path
     novel_package_path: Path
     novel_audit_path: Path
@@ -35,16 +35,16 @@ def write_story_source_files(
     )
 
 
-def write_story_analysis_files(
+def write_story_structure_files(
     output_dir: Path,
     novel_package: NovelPackage,
-) -> StoryAnalysisFiles:
+) -> StoryStructureFiles:
     output_dir.mkdir(parents=True, exist_ok=True)
     novel_package_path = output_dir / "novel_package.json"
     novel_audit_path = output_dir / "novel_audit.json"
     write_json(novel_package_path, _build_runtime_novel_package_payload(novel_package))
     write_json(novel_audit_path, _build_novel_audit_payload(novel_package))
-    return StoryAnalysisFiles(
+    return StoryStructureFiles(
         output_dir=output_dir,
         novel_package_path=novel_package_path,
         novel_audit_path=novel_audit_path,
@@ -60,7 +60,9 @@ def clear_story_derived_artifacts(output_dir: Path) -> None:
         "character_visual_bible.json",
         "character_image_manifest.json",
         "scene_plan.json",
+        "scene_structure_source.json",
         "segment_plan.json",
+        "segment_contract_progress.json",
         "scene_image_manifest.json",
         "seedream_character_execution.json",
         "seedream_scene_execution.json",

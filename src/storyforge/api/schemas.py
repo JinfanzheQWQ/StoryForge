@@ -17,16 +17,6 @@ class StoryBriefInput(BaseModel):
     style_keywords: list[str] = Field(default_factory=list)
 
 
-class BuildProjectRequest(BaseModel):
-    project_id: str | None = None
-    brief: StoryBriefInput
-    use_llm: bool = True
-    submit_seedance: bool = False
-    llm_provider: str | None = None
-    llm_model: str | None = None
-    continuity_review_mode: Literal["off", "auto", "on"] = "auto"
-
-
 class CreateStoryTaskRequest(BaseModel):
     project_id: str | None = None
     brief: StoryBriefInput
@@ -47,6 +37,7 @@ class CreateStageTaskRequest(BaseModel):
     scene_id: str | None = None
     master_only: bool = False
     merge_only: bool = False
+    resume_from_progress: bool = False
 
     @model_validator(mode="after")
     def validate_scope(self) -> "CreateStageTaskRequest":
@@ -60,6 +51,8 @@ class CreateStageTaskRequest(BaseModel):
             raise ValueError("master_only=true 时必须提供 scene_id。")
         if self.master_only and segment_id:
             raise ValueError("master_only=true 不能与 segment_id 同时提交。")
+        if self.resume_from_progress and (segment_id or scene_id or self.master_only or self.merge_only):
+            raise ValueError("resume_from_progress 目前只支持分段合同阶段，不能和局部媒体范围一起提交。")
         return self
 
 

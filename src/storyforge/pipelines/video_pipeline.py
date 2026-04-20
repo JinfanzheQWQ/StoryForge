@@ -11,15 +11,13 @@ from storyforge.integrations.llm import build_agent_backend
 from storyforge.integrations.ffmpeg_adapter import (
     concat_manifest_clips,
 )
-from storyforge.integrations.seedance import SeedanceClient, SeedanceExecutionReport
+from storyforge.integrations.seedance import SeedanceClient
 from storyforge.integrations.seedream import SeedreamClient
 from storyforge.pipelines.continuity import write_continuity_report
 from storyforge.pipelines.video_models import (
     CharacterImagePipelineResult,
     ContinuityRepairResult,
-    ImagePipelineResult,
     SceneImagePipelineResult,
-    VideoPipelineResult,
     VideoPlanningArtifacts,
     VideoMergeResult,
     VideoRenderResult,
@@ -34,7 +32,6 @@ from storyforge.pipelines.video_support import (
     read_seedream_execution_report,
     resolve_rendered_manifest_clips,
     resolve_selected_manifest_clips,
-    should_skip_seedance_after_seedream,
     validate_manifest_ready_for_video,
 )
 
@@ -50,124 +47,6 @@ SCENE_REPAIR_SEGMENT_ACTIONS = {
     "regenerate_scene_images",
     "regenerate_video",
 }
-
-
-def run_video_pipeline(
-    novel_package: NovelPackage,
-    config: AppConfig,
-    project_root: Path,
-    output_root: Path | None = None,
-    use_llm: bool = True,
-    submit_seedance: bool = False,
-    continuity_review_mode: str = "auto",
-    llm_provider: str | None = None,
-    llm_model: str | None = None,
-) -> VideoPipelineResult:
-    image_result = run_image_pipeline(
-        novel_package=novel_package,
-        config=config,
-        project_root=project_root,
-        output_root=output_root,
-        use_llm=use_llm,
-        submit_images=submit_seedance,
-    )
-
-    if should_skip_seedance_after_seedream(submit_seedance, image_result.seedream_execution):
-        seedance_execution = SeedanceExecutionReport(
-            submitted=False,
-            manifest_title=image_result.manifest.title,
-            completed_count=0,
-            failed_count=0,
-            pending_count=len(image_result.manifest.clips),
-            note="Seedance skipped because Seedream did not generate all required frame images.",
-        )
-        seedance_execution_path = image_result.output_dir / "seedance_execution.json"
-        write_json(seedance_execution_path, seedance_execution)
-        return VideoPipelineResult(
-            output_dir=image_result.output_dir,
-            character_bible_path=image_result.character_bible_path,
-            character_images_path=image_result.character_images_path,
-            scene_plan_path=image_result.scene_plan_path,
-            segment_plan_path=image_result.segment_plan_path,
-            scene_images_path=image_result.scene_images_path,
-            manifest_path=image_result.manifest_path,
-            seedream_execution_path=image_result.seedream_execution_path,
-            seedance_execution_path=seedance_execution_path,
-            rendered_clip_paths=[],
-            full_story_path=None,
-            project_package=image_result.project_package,
-            manifest=image_result.manifest,
-            seedream_execution=image_result.seedream_execution,
-            seedance_execution=seedance_execution,
-        )
-
-    video_render_result = run_video_render_pipeline(
-        config=config,
-        project_root=project_root,
-        output_root=image_result.output_dir,
-        submit_seedance=submit_seedance,
-        continuity_review_mode=continuity_review_mode,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-    )
-    return VideoPipelineResult(
-        output_dir=image_result.output_dir,
-        character_bible_path=image_result.character_bible_path,
-        character_images_path=image_result.character_images_path,
-        scene_plan_path=image_result.scene_plan_path,
-        segment_plan_path=image_result.segment_plan_path,
-        scene_images_path=image_result.scene_images_path,
-        manifest_path=video_render_result.manifest_path,
-        seedream_execution_path=image_result.seedream_execution_path,
-        seedance_execution_path=video_render_result.seedance_execution_path,
-        rendered_clip_paths=video_render_result.rendered_clip_paths,
-        full_story_path=video_render_result.full_story_path,
-        project_package=image_result.project_package,
-        manifest=video_render_result.manifest,
-        seedream_execution=image_result.seedream_execution,
-        seedance_execution=video_render_result.seedance_execution,
-    )
-
-
-def run_image_pipeline(
-    novel_package: NovelPackage,
-    config: AppConfig,
-    project_root: Path,
-    output_root: Path | None = None,
-    use_llm: bool = True,
-    submit_images: bool = True,
-) -> ImagePipelineResult:
-    character_result = run_character_image_pipeline(
-        novel_package=novel_package,
-        config=config,
-        project_root=project_root,
-        output_root=output_root,
-        use_llm=use_llm,
-        submit_characters=submit_images,
-    )
-
-    scene_result = run_scene_image_pipeline(
-        config=config,
-        project_root=project_root,
-        output_root=character_result.output_dir,
-        submit_scenes=submit_images,
-    )
-
-    return ImagePipelineResult(
-        output_dir=scene_result.output_dir,
-        character_bible_path=scene_result.character_bible_path,
-        character_images_path=scene_result.character_images_path,
-        scene_plan_path=scene_result.scene_plan_path,
-        segment_plan_path=scene_result.segment_plan_path,
-        scene_images_path=scene_result.scene_images_path,
-        manifest_path=scene_result.manifest_path,
-        seedream_execution_path=scene_result.seedream_execution_path,
-        character_seedream_execution_path=scene_result.character_seedream_execution_path,
-        scene_seedream_execution_path=scene_result.scene_seedream_execution_path,
-        project_package=scene_result.project_package,
-        manifest=scene_result.manifest,
-        seedream_execution=scene_result.seedream_execution,
-    )
 
 
 def run_character_image_pipeline(
@@ -688,9 +567,7 @@ def run_video_merge_pipeline(
 __all__ = [
     "CharacterImagePipelineResult",
     "ContinuityRepairResult",
-    "ImagePipelineResult",
     "SceneImagePipelineResult",
-    "VideoPipelineResult",
     "VideoPlanningArtifacts",
     "VideoMergeResult",
     "VideoRenderResult",
@@ -698,10 +575,8 @@ __all__ = [
     "reset_scene_execution_contracts_for_repair",
     "run_scene_continuity_repair_pipeline",
     "run_segment_continuity_repair_pipeline",
-    "run_image_pipeline",
     "run_video_merge_pipeline",
     "run_scene_image_pipeline",
-    "run_video_pipeline",
     "run_video_render_pipeline",
 ]
 

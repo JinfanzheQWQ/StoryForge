@@ -520,6 +520,10 @@ class StoryMemoryChapterState:
     new_facts: list[str] = field(default_factory=list)
     resolved_threads: list[str] = field(default_factory=list)
     unresolved_threads: list[str] = field(default_factory=list)
+    carry_over_summary: str = ""
+    carry_over_visuals: list[str] = field(default_factory=list)
+    carry_over_props: list[str] = field(default_factory=list)
+    relationship_state: list[str] = field(default_factory=list)
     generated_scene_ids: list[str] = field(default_factory=list)
     generated_segment_ids: list[str] = field(default_factory=list)
 
@@ -534,6 +538,10 @@ class StoryMemoryChapterState:
             new_facts=list(raw.get("new_facts", [])),
             resolved_threads=list(raw.get("resolved_threads", [])),
             unresolved_threads=list(raw.get("unresolved_threads", [])),
+            carry_over_summary=str(raw.get("carry_over_summary", "") or ""),
+            carry_over_visuals=list(raw.get("carry_over_visuals", [])),
+            carry_over_props=list(raw.get("carry_over_props", [])),
+            relationship_state=list(raw.get("relationship_state", [])),
             generated_scene_ids=list(raw.get("generated_scene_ids", [])),
             generated_segment_ids=list(raw.get("generated_segment_ids", [])),
         )

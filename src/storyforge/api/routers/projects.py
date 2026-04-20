@@ -9,7 +9,6 @@ from storyforge.api.serializers import (
     build_project_summary_responses,
 )
 from storyforge.api.schemas import (
-    BuildProjectRequest,
     CreateContinuityRepairBatchTaskRequest,
     CreateContinuityRepairTaskRequest,
     CreateStageTaskRequest,
@@ -166,98 +165,6 @@ async def create_story_job(
     return JobAcceptedResponse(project_id=project_id, task_id=record.task_id, status=record.status)
 
 
-@router.post("/images", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def create_image_job(
-    payload: CreateStageTaskRequest,
-    request: Request,
-) -> JobAcceptedResponse:
-    _ensure_live_llm_requested(payload.use_llm)
-    container = request.app.state.container
-    project = container.project_store.get(payload.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
-
-    task_payload = {
-        "project_id": payload.project_id,
-        "source_task_id": payload.source_task_id,
-    }
-    _apply_pipeline_root_task_id(
-        container,
-        task_payload,
-        project_id=payload.project_id,
-        source_task_id=payload.source_task_id,
-    )
-    if payload.use_llm is not None:
-        task_payload["use_llm"] = payload.use_llm
-    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
-    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
-
-    record = await container.task_queue.submit(
-        project_id=payload.project_id,
-        task_type="project.images",
-        payload=task_payload,
-    )
-    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
-    return JobAcceptedResponse(
-        project_id=payload.project_id,
-        task_id=record.task_id,
-        status=record.status,
-    )
-
-
-@router.post("/story-analysis", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def create_story_analysis_job(
-    payload: CreateStageTaskRequest,
-    request: Request,
-) -> JobAcceptedResponse:
-    _ensure_live_llm_requested(payload.use_llm)
-    container = request.app.state.container
-    project = container.project_store.get(payload.project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
-
-    source_task = _resolve_story_source_task(
-        container,
-        payload.project_id,
-        payload.source_task_id,
-        require_completed=True,
-    )
-    existing_task = _find_existing_story_analysis_task(
-        container,
-        project_id=payload.project_id,
-        source_task_id=payload.source_task_id,
-        pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
-        story_source_revision=str(source_task.result.get("story_source_revision", "")),
-        continuity_review_mode=payload.continuity_review_mode,
-    )
-    if existing_task is not None:
-        return JobAcceptedResponse(
-            project_id=payload.project_id,
-            task_id=existing_task.task_id,
-            status=existing_task.status,
-        )
-
-    task_payload = {
-        "project_id": payload.project_id,
-        "source_task_id": payload.source_task_id,
-        "use_llm": True if payload.use_llm is None else payload.use_llm,
-    }
-    task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
-    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
-    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
-    record = await container.task_queue.submit(
-        project_id=payload.project_id,
-        task_type="project.story_analysis",
-        payload=task_payload,
-    )
-    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
-    return JobAcceptedResponse(
-        project_id=payload.project_id,
-        task_id=record.task_id,
-        status=record.status,
-    )
-
-
 @router.post("/scene-structure", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_scene_structure_job(
     payload: CreateStageTaskRequest,
@@ -356,6 +263,8 @@ async def create_segment_contracts_job(
         "source_task_id": payload.source_task_id,
         "use_llm": True if payload.use_llm is None else payload.use_llm,
     }
+    if payload.resume_from_progress:
+        task_payload["resume_from_progress"] = True
     task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
@@ -482,27 +391,6 @@ async def create_continuity_repair_batch_job(
         task_id=record.task_id,
         status=record.status,
     )
-
-
-def _find_existing_story_analysis_task(
-    container,
-    *,
-    project_id: str,
-    source_task_id: str,
-    pipeline_root_task_id: str,
-    story_source_revision: str,
-    continuity_review_mode: str | None = None,
-):
-    return _find_existing_revisioned_stage_task(
-        container,
-        project_id=project_id,
-        task_type="project.story_analysis",
-        source_task_id=source_task_id,
-        pipeline_root_task_id=pipeline_root_task_id,
-        story_source_revision=story_source_revision,
-        continuity_review_mode=continuity_review_mode,
-    )
-
 
 def _find_existing_revisioned_stage_task(
     container,
@@ -727,42 +615,6 @@ async def create_video_job(
         task_id=record.task_id,
         status=record.status,
     )
-
-
-@router.post("/novel-to-video", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
-async def create_project_job(
-    payload: BuildProjectRequest,
-    request: Request,
-) -> JobAcceptedResponse:
-    _ensure_live_llm_requested(payload.use_llm)
-    container = request.app.state.container
-    queue = container.task_queue
-    project_store = container.project_store
-    project_id = payload.project_id
-    if project_id:
-        project = project_store.get(project_id)
-        if project is None:
-            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    else:
-        project = project_store.create(payload.brief.model_dump())
-        project_id = project.project_id
-
-    task_payload = {
-        "project_id": project_id,
-        "brief": payload.brief.model_dump(),
-        "use_llm": payload.use_llm,
-        "submit_seedance": payload.submit_seedance,
-    }
-    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
-    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
-
-    record = await queue.submit(
-        project_id=project_id,
-        task_type="project.build",
-        payload=task_payload,
-    )
-    project_store.attach_task(project_id, record.task_id, payload.brief.model_dump())
-    return JobAcceptedResponse(project_id=project_id, task_id=record.task_id, status=record.status)
 
 
 @router.get("/{project_id}/story-source/{source_task_id}", response_model=StorySourceResponse)

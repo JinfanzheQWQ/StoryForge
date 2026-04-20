@@ -1,1 +1,1 @@
-"""Agent backends and orchestration."""
+"""Agent backend interfaces and implementations."""

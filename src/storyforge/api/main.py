@@ -56,8 +56,8 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
         title="StoryForge API",
         version="0.1.0",
         description=(
-            "Async novel-to-video task API backed by FastAPI, persisted projects, "
-            "and mandatory MySQL-backed metadata storage."
+            "Async step-based story and media pipeline API backed by FastAPI, "
+            "persisted projects, and mandatory MySQL-backed metadata storage."
         ),
         lifespan=lifespan,
     )

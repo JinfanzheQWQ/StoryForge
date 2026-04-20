@@ -1,7 +1,7 @@
 # 使用文档
 
 这份文档面向“如何把 StoryForge 跑起来并完成一轮实际工作流”。
-它是当前唯一的操作手册；README 不再重复这里的步骤细节，`status.md` 也不再重复这里的产物说明。
+它聚焦安装、配置、页面操作顺序和核心产物说明。
 
 如果你只想先快速体验，优先看 [`README.md`](../README.md)。  
 如果你需要 HTTP 接口示例，配合阅读 [`api.md`](api.md)。
@@ -57,7 +57,7 @@ SEEDANCE_BASE_URL=https://your-seedance-endpoint.example.com
 
 - `storyforge.example.toml`：主配置，默认开发与日常运行使用
 - `storyforge.live.example.toml`：真实提交模板，默认打开真实媒体提交相关开关
-- StoryForge 现在要求 MySQL 必须可连接；没有数据库时不会以“内存态”降级运行
+- StoryForge 要求 MySQL 可连接
 
 关键配置项：
 
@@ -96,7 +96,7 @@ database = "storyforge"
 - 先确认 `.env` 里的密钥和 `base_url` 已正确配置
 - `llm.max_tokens` 当前默认建议保留 `8192`；如果结构化视频规划经常报 `finish_reason='length'`，不要再往下调
 - 页面默认走 `DeepSeek`；如果要换成 `ChatGPT 5.4`，需要先配置 `OPENAI_API_KEY`
-- 页面里的 `模型 ID` 现在是只读默认值，会随 provider 自动切换，不再支持手工输入
+- 页面里的 `模型 ID` 是只读默认值，会随 provider 自动切换
 - 创建页默认会把 `V2 连续性软审校` 设为 `auto`
 - 在看懂 manifest 和图片产物之前，不要一开始就跑真实视频生成
 
@@ -121,6 +121,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 2. 在项目详情页的“小说”标签页检查并按需修改正文
 3. 先生成场景结构；如需切换当前 run 的 `V2` 审校策略，可在项目详情页先改模式，再继续下一步
 4. 检查 `chapter -> scene` 拆分后，再生成分段合同
+   - 分段合同运行中会显示 `章 + scene` 进度；如果中途失败，直接点“从失败位置继续”即可
 5. 生成角色图
 6. 在项目详情页时间线里按 segment 逐段生成场景图
 7. 在同一条时间线里按 segment 逐段生成视频
@@ -144,35 +145,13 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 ## CLI
 
-初始化目录：
+CLI 提供启动 Web / API 的入口：
 
 ```bash
-uv run storyforge init
+uv run storyforge api serve --host 127.0.0.1 --port 8000
 ```
 
-运行 demo brief。该命令同样需要真实 LLM provider 配置：
-
-```bash
-uv run storyforge pipeline demo
-```
-
-使用自己的 brief：
-
-```bash
-uv run storyforge pipeline build \
-  --brief path/to/your_story.toml \
-  --config configs/storyforge.example.toml \
-  --llm
-```
-
-从已有小说包继续规划视频：
-
-```bash
-uv run storyforge video plan \
-  --novel-package outputs/your-story/novel_package.json \
-  --config configs/storyforge.example.toml \
-  --llm
-```
+当前推荐工作流统一走 Web 页面分步执行。
 
 ## brief 编写
 
@@ -211,34 +190,43 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `Character Designer` 必须严格覆盖目标 slots，不能重复 `cast_slot_id`，也不能凭空补正文里没有证据的人
 - `story_memory.json` 会在这一步初始化并逐章回写，用来把上一章退出状态、角色摘要和 continuity state 传给后续规划
 - 如果模型返回 `finish_reason='length'`，系统会自动保留更高的 completion token 预算、缩短章节摘录，并优先把规划收缩到更小的 `scene structure / segment contracts` 粒度，再在后续 retry 里强制要求更紧凑的 JSON 输出
-- 小说结构化主链路同样不再依赖本地模板静默兜底：如果 `Story Architect`、`Story Drafter`、`Chapter Planner` 或 `Editorial Reviewer` 返回空标题、缺章、空正文或空 beats，这一步会直接重试 / 失败
+- 小说结构化主链路采用 fail-fast：如果 `Story Architect`、`Story Drafter`、`Chapter Planner` 或 `Editorial Reviewer` 返回空标题、缺章、空正文或空 beats，这一步会直接重试 / 失败
 - `scene_plan.json` 是当前场景级主规划文件；在这一步里它主要保存 `chapter -> scene` skeleton、`scene_bible` 与 `scene_master_frame` 相关字段
 - `scene_bible` 用来锁定地点、时间、天气、光线、背景锚点、固定道具、空间布局和角色调度，后续场景图与视频都会直接消费它
 - 每个 scene 还会带 `scene_master_frame_prompt / path / status / url`，用于同场景母图生成与复用
-- 如果旧 run 或弱规划里的 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，并补充固定道具 / 主色调线索，再回填到 `scene_bible` 后生成母图 prompt
+- 如果 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，并补充固定道具 / 主色调线索，再回填到 `scene_bible` 后生成母图 prompt
 - `story_memory.json` 是项目级结构化状态文件，不是自由文本聊天记忆；当前主要用于章节级视频规划承接
-- 兼容接口 `POST /v1/projects/story-analysis` 仍存在，但它只是把“场景结构 + 分段合同”串成一步执行；新页面默认优先走分步接口
 
 ### 3. 生成分段合同
 
 - 这一步依赖已经完成且未过期的 `project.scene_structure`
 - 它会在已有 scene skeleton 的基础上，补齐正式 `segment contracts`，并写出：
   - `character_image_manifest.json`
+  - `scene_structure_source.json`
   - 最终版 `scene_plan.json`
   - `segment_plan.json`
+  - `segment_contract_progress.json`
   - `scene_image_manifest.json`
   - `seedance_manifest.json`
   - `continuity_report.json`
 - 同一份 `story_source` 已经有 queued / running / completed 的 `project.segment_contracts` 任务时，后端会直接复用已有任务
-- 视频规划内部已拆成三段式：
+- 视频规划内部已拆成四段式：
   - 先按章节生成 `scene structure`
-  - 再按单个 `scene` 生成 `segment contracts`
-  - 最后本地富化成正式 `scene_plan.json / segment_plan.json`
+  - 再按单个 `scene` 生成 1-4 个连续 chunk
+  - 再按单个 `chunk` 生成 `segment contracts`
+  - 最后本地富化并统一重编成正式 `scene_plan.json / segment_plan.json`
+- planner 现在不会把整份 `story_memory` 和整章长摘录原样喂给每个 scene / chunk
+- 当前实际传给 LLM 的是“当前章批次视图 + 最近已规划章节摘要 + 焦点角色摘要 + 当前 scene / chunk 聚焦摘录”
 - 最终版 `scene_plan.json` 仍是场景级主规划文件，保存 `chapter -> scene -> segment`
-- scene 级字段优先只保留在 scene 层；segment 默认不再重复整套 `scene_title / scene_summary / scene_anchor / scene_bible`
-- segment planner 默认不再直接输出 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt`；这些字段由本地 `Segment Prompt Enricher` 统一补齐
+- scene 级字段保留在 scene 层；segment 层聚焦执行合同与承接信息
+- `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 由本地 `Segment Prompt Enricher` 统一补齐
+- scene 内 chunk 合并时，系统会自动补强跨 chunk 首段的 `previous_segment_id / opening_match / carry_over_elements`，减少“同一 scene 里像重新开演”
 - `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
+- `scene_structure_source.json` 是恢复用的原始 scene skeleton 快照，供失败后从当前位置继续时读取，不参与图片和视频执行
+- `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 持续回写进度、失败章节、失败 scene 和失败 chunk；如果前端看到“从失败位置继续”，底层依赖的就是这份 checkpoint
 - 视频 segment 规划在 live LLM 模式下会最多自动重试 3 次；如果模型返回的是分析备注、伪分镜或空结构，而不是可执行的正式场景计划，这一步会直接失败并把原因写入任务，而不会静默生成坏掉的 `scene_plan.json`
+- 如果这一步在中途失败，再次调用 `project.segment_contracts` 并带 `resume_from_progress=true` 时，会先复用已落盘的 chunk 规划，只继续失败 scene 内剩余 chunk，再继续后续 scene / chapter，不会重跑已完成部分
+- `resume_from_progress` 使用当前 chunk 级 checkpoint；`segment_contract_progress.json` 需要包含 `scene/chunk` 结构
 - 这一步还会按 `continuity_review_mode` 写出连续性审校结果：
   - `off`：只保留 `V1` 规则校验
   - `auto`：按 run 复杂度与风险自动决定是否触发 `V2`
@@ -251,7 +239,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 ### 4. 生成角色图
 
 - 对应执行报告是 `seedream_character_execution.json`
-- 角色定妆图会统一使用白底三视图模板，只显示角色姓名，不再允许手工往模板里塞更多面板文字
+- 角色定妆图会统一使用白底三视图模板，只显示角色姓名
 
 ### 5. 生成场景图
 
@@ -296,13 +284,13 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 ### 6. 手动合并总片
 
-- 总片不再自动合并
+- 总片采用手动合并
 - 页面会提供单独的“合并已生成片段”按钮
 - 至少需要 2 个已生成片段，才能拼成 `rendered/full_story.mp4`
 
 ## 输出目录
 
-CLI 直接运行时，默认输出到：
+项目任务默认输出到：
 
 ```text
 outputs/<story-slug>/
@@ -347,7 +335,7 @@ outputs/<story-slug>/
   视频角色视觉设定，用来约束角色外观、服装、色彩和角色定妆 prompt。
 - `character_image_manifest.json`
   角色定妆图任务清单，记录每个角色要怎么生成、输出到哪里、当前状态是什么。
-  角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只保留角色姓名和人物描述，要求正面、左侧面、背面三栏全身站姿一致。不再要求信息格、色卡、材质块或灰底设计板；性别、身份和职业只作为造型参考，不允许作为画面文字。
+  角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只保留角色姓名和人物描述，要求正面、左侧面、背面三栏全身站姿一致。性别、身份和职业只作为造型参考，不允许作为画面文字。
 - `segment_plan.json`
   视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首帧 / 中段锚点帧 / 尾帧 prompt，以及分段关系。
   其中 `requires_mid_frame = true` 表示该片段会额外生成中段锚点帧；常见于双人 / 多人同框、8 秒以上片段、动作推进明显或中段关系变化明显的镜头。
@@ -361,7 +349,7 @@ outputs/<story-slug>/
 - `seedance_manifest.json`
   最终视频提交清单，Seedance 会按这里的每个 clip 去生成视频。
   StoryForge 会优先用“角色定妆图 + 中段锚点图（如有）+ 首尾帧”的完整组合提交；若 Seedance 对该组合返回 400，会自动降级到更保守的图片组合继续重试。
-  `title` 应继承真实小说标题，不再使用 `segment_video_manifest` 这类文件用途名；旧产物重载时也会优先从 `novel_package.json` / `story_source.json` 恢复标题。
+  `title` 应继承真实小说标题，不使用 `segment_video_manifest` 这类文件用途名；读取产物时会优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - `seedance_execution.json`
   视频执行报告，记录提交状态、完成数量、失败数量和下载结果。
 - `continuity_repair_<segment_id>.json`
@@ -408,7 +396,7 @@ outputs/<story-slug>/
 ## 失败与重试
 
 - 所有任务都会在接口和页面上返回 `error` 字段，前端会展示任务级和阶段级失败原因。
-- Seedance 视频任务如果提交阶段就被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和各次降级尝试，不再只显示 `failed_count=1`。
+- Seedance 视频任务如果在提交阶段被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和各次降级尝试。
 - LLM 结构化输出失败会由 StoryForge 外层最多重试 3 次；仍失败会显式标记任务失败。
 - LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果第一次 structured 调用返回空结构，还会再走一次 LangChain 普通 JSON 回收；两次都拿不到合法 JSON 时，才会显示“模型没有返回结构化对象”这类明确原因。
 - 视频 segment 规划还会额外拒绝带有 `当前片段聚焦`、`结尾要保留`、`当前小段聚焦` 这类分析模板话术的伪分镜；看到这类错误时，应直接重跑“生成分段合同”；如果上游 scene skeleton 也已失效，再先重跑“生成场景结构”。

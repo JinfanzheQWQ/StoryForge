@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import shutil
 import sys
 import unittest
 from unittest.mock import patch
+
+from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -18,7 +21,7 @@ if str(TESTS) not in sys.path:
 from storyforge.core.config import AppConfig  # noqa: E402
 from storyforge.core.io import read_json  # noqa: E402
 from storyforge.agents.base import PromptRequest  # noqa: E402
-from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief  # noqa: E402
+from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief, StorySourcePackage  # noqa: E402
 from storyforge.domains.novel.errors import (  # noqa: E402
     NovelStructuredGenerationError,
 )
@@ -40,7 +43,14 @@ from storyforge.domains.novel.schemas import (  # noqa: E402
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
 from storyforge.domains.video.contracts import CharacterVisualProfile, ContinuityLink, SceneBible, ShotState, VideoScene, VideoSegment  # noqa: E402
 from storyforge.domains.video.errors import VideoStructuredGenerationError  # noqa: E402
-from storyforge.domains.video.schemas import CharacterVisualBibleSchema, VideoSegmentPlanSchema  # noqa: E402
+from storyforge.domains.video.schemas import (  # noqa: E402
+    ChapterSceneSchema,
+    CharacterVisualBibleSchema,
+    SceneSegmentChunkSchema,
+    SceneSegmentChunkPlanSchema,
+    SceneSegmentContractBatchSchema,
+    VideoSegmentPlanSchema,
+)  # noqa: E402
 from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
 from storyforge.integrations.seedance import SeedanceExecutionReport  # noqa: E402
 from storyforge.integrations.seedream import SeedreamExecutionReport  # noqa: E402
@@ -51,24 +61,25 @@ from storyforge.pipelines.continuity import (  # noqa: E402
 )
 from storyforge.pipelines.story_pipeline import (  # noqa: E402
     run_story_generation_pipeline,
-    run_story_pipeline,
     run_story_scene_structure_pipeline,
     run_story_segment_contracts_pipeline,
 )
 from storyforge.pipelines.story_files import clear_story_derived_artifacts  # noqa: E402
 from storyforge.pipelines.video_pipeline import (  # noqa: E402
     reset_scene_execution_contracts_for_repair,
+    run_character_image_pipeline,
     run_scene_continuity_repair_pipeline,
     run_segment_continuity_repair_pipeline,
     run_scene_image_pipeline,
     run_video_merge_pipeline,
-    run_video_pipeline,
     run_video_render_pipeline,
 )
 from storyforge.pipelines.video_planning import (  # noqa: E402
     build_video_planning_artifacts,
+    load_segment_contract_progress,
     load_video_planning_artifacts,
 )
+from storyforge.pipelines.video_support import should_skip_seedance_after_seedream  # noqa: E402
 from _deterministic_backends import (  # noqa: E402
     DeterministicStoryBackend,
     DeterministicVideoBackend,
@@ -109,6 +120,24 @@ def build_test_visual_bible(novel_package) -> CharacterVisualBibleSchema:
     )
 
 
+@dataclass(slots=True)
+class StoryStageBundle:
+    output_dir: Path
+    story_source_path: Path
+    novel_package_path: Path
+    novel_audit_path: Path
+    story_memory_path: Path
+    character_bible_path: Path
+    character_images_path: Path
+    scene_plan_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    seedance_manifest_path: Path
+    story_source: StorySourcePackage
+    novel_package: object
+    video_planning: object
+
+
 class PipelineTestCase(unittest.TestCase):
     def setUp(self) -> None:
         class ContinuityBackend:
@@ -137,13 +166,67 @@ class PipelineTestCase(unittest.TestCase):
             shutil.rmtree(self.temp_root)
 
     def _run_story_pipeline(self, **kwargs):
-        return run_story_pipeline(
-            config=kwargs.pop("config"),
-            project_root=kwargs.pop("project_root", ROOT),
-            output_root=kwargs.pop("output_root", self.temp_root),
-            backend=kwargs.pop("backend", self.story_backend),
-            video_backend=kwargs.pop("video_backend", self.video_backend),
-            **kwargs,
+        config = kwargs.pop("config")
+        project_root = kwargs.pop("project_root", ROOT)
+        output_root = kwargs.pop("output_root", self.temp_root)
+        backend = kwargs.pop("backend", self.story_backend)
+        video_backend = kwargs.pop("video_backend", self.video_backend)
+        brief = kwargs.pop("brief")
+        use_llm = kwargs.pop("use_llm", True)
+        llm_provider = kwargs.pop("llm_provider", None)
+        llm_model = kwargs.pop("llm_model", None)
+        continuity_review_mode = kwargs.pop("continuity_review_mode", "auto")
+        if kwargs:
+            raise TypeError(f"Unsupported _run_story_pipeline kwargs: {sorted(kwargs.keys())}")
+
+        generation = run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=project_root,
+            output_root=output_root,
+            backend=backend,
+            use_llm=use_llm,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+        scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=project_root,
+            output_root=generation.output_dir,
+            backend=backend,
+            video_backend=video_backend,
+            use_llm=use_llm,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+        segment_contracts = run_story_segment_contracts_pipeline(
+            novel_package=scene_structure.novel_package,
+            config=config,
+            project_root=project_root,
+            output_root=scene_structure.output_dir,
+            backend=video_backend,
+            scene_structure_artifacts=scene_structure.scene_structure,
+            use_llm=use_llm,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            continuity_review_mode=continuity_review_mode,
+        )
+        return StoryStageBundle(
+            output_dir=generation.output_dir,
+            story_source_path=generation.story_source_path,
+            novel_package_path=scene_structure.novel_package_path,
+            novel_audit_path=scene_structure.novel_audit_path,
+            story_memory_path=segment_contracts.story_memory_path,
+            character_bible_path=segment_contracts.character_bible_path,
+            character_images_path=segment_contracts.character_images_path,
+            scene_plan_path=segment_contracts.scene_plan_path,
+            segment_plan_path=segment_contracts.segment_plan_path,
+            scene_images_path=segment_contracts.scene_images_path,
+            seedance_manifest_path=segment_contracts.seedance_manifest_path,
+            story_source=generation.story_source,
+            novel_package=scene_structure.novel_package,
+            video_planning=segment_contracts.video_planning,
         )
 
     def _run_story_generation_pipeline(self, **kwargs):
@@ -1219,6 +1302,73 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("输出过长被截断", retry_request.user_prompt)
         self.assertIn("不要重复父级 scene", retry_request.user_prompt)
 
+    def test_video_structured_retry_adds_timed_beats_note(self) -> None:
+        service = NovelToVideoService(backend=self.video_backend)
+        retry_request = service._build_retry_request(
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "video-scene-segment-planner"},
+            ),
+            schema=SceneSegmentContractBatchSchema,
+            attempt=2,
+            last_error=RuntimeError("segment ch01-sc01-seg01 缺少 timed_beats。"),
+        )
+
+        self.assertEqual(retry_request.metadata["structured_retry_attempt"], 2)
+        self.assertIn("漏掉了必填的 timed_beats", retry_request.user_prompt)
+        self.assertIn("0-2秒：发生了什么", retry_request.user_prompt)
+
+    def test_video_structured_retry_adds_frame_and_opening_match_notes(self) -> None:
+        service = NovelToVideoService(backend=self.video_backend)
+        retry_request = service._build_retry_request(
+            request=PromptRequest(
+                system_prompt="system",
+                user_prompt="user",
+                metadata={"task": "video-scene-segment-planner"},
+            ),
+            schema=SceneSegmentContractBatchSchema,
+            attempt=2,
+            last_error=RuntimeError(
+                "segment ch01-sc01-seg01 的 mid_frame_characters 不能为空，且只能使用 involved_characters 内角色。"
+                " segment ch01-sc01-seg01 的 continuity_link.opening_match 过于空泛，必须写出可拍到的开场状态。"
+            ),
+        )
+
+        self.assertIn("中段出镜角色写错了", retry_request.user_prompt)
+        self.assertIn("不要直接照搬整个 scene cast", retry_request.user_prompt)
+        self.assertIn("opening_match 不合格", retry_request.user_prompt)
+        self.assertIn("不要留空，也不要写", retry_request.user_prompt)
+
+    def test_scene_segment_contract_schema_requires_timed_beats(self) -> None:
+        with self.assertRaises(ValidationError):
+            SceneSegmentContractBatchSchema.model_validate(
+                {
+                    "scene_id": "ch01-sc01",
+                    "chapter_number": 1,
+                    "segments": [
+                        {
+                            "segment_id": "ch01-sc01-seg01",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc01",
+                            "title": "等待",
+                            "summary": "主角在湖边等待。",
+                            "involved_characters": ["陈默"],
+                            "start_frame_characters": ["陈默"],
+                            "end_frame_characters": ["陈默"],
+                            "narration": "",
+                            "dialogue_lines": [],
+                            "subtitle_lines": [],
+                            "duration_seconds": 5,
+                            "requires_mid_frame": False,
+                            "transition_hint": "start",
+                            "shot_state": {},
+                            "continuity_link": {},
+                        }
+                    ],
+                }
+            )
+
     def test_character_roster_count_mismatch_triggers_missing_slot_backfill(self) -> None:
         class CountMismatchBackend:
             def __init__(self) -> None:
@@ -1438,7 +1588,7 @@ class PipelineTestCase(unittest.TestCase):
                                         "continuity_link": {},
                                         "title": "片段 1",
                                         "summary": "当前片段聚焦：林辰等待苏雨",
-                                        "involved_characters": ["林辰", "苏雨"],
+                                        "involved_characters": ["林辰"],
                                         "start_frame_characters": ["林辰"],
                                         "mid_frame_characters": [],
                                         "end_frame_characters": ["林辰"],
@@ -1483,10 +1633,10 @@ class PipelineTestCase(unittest.TestCase):
                                     "continuity_link": {},
                                     "title": "片段 1",
                                     "summary": "林辰独自在紫藤花架下等待苏雨",
-                                    "involved_characters": ["林辰", "苏雨"],
-                                    "start_frame_characters": ["林辰"],
-                                    "mid_frame_characters": [],
-                                    "end_frame_characters": ["林辰"],
+                                        "involved_characters": ["林辰"],
+                                        "start_frame_characters": ["林辰"],
+                                        "mid_frame_characters": [],
+                                        "end_frame_characters": ["林辰"],
                                     "narration": "林辰提前来到花园，在紫藤花下反复整理衣角。",
                                     "dialogue_lines": [],
                                     "subtitle_lines": ["林辰提前来到花园，在紫藤花下反复整理衣角。"],
@@ -1541,7 +1691,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("未通过结构化校验", service.backend.requests[-1].user_prompt)
         self.assertEqual(service.backend.requests[-1].metadata["structured_retry_attempt"], 2)
 
-    def test_story_and_video_pipeline(self) -> None:
+    def test_story_pipeline_and_explicit_video_stages(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
 
@@ -1603,159 +1753,172 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all(item.voice_profile.forbidden_voice_changes for item in story_result.novel_package.outline.characters)
         )
-        video_result = run_video_pipeline(
+        character_result = run_character_image_pipeline(
             novel_package=story_result.novel_package,
             config=config,
             project_root=ROOT,
             output_root=story_result.output_dir,
+            submit_characters=False,
         )
-        self.assertTrue(video_result.character_bible_path.exists())
-        self.assertTrue(video_result.scene_plan_path.exists())
-        self.assertTrue(video_result.segment_plan_path.exists())
-        self.assertTrue(video_result.manifest_path.exists())
-        self.assertTrue(video_result.seedream_execution_path.exists())
-        self.assertTrue(video_result.seedance_execution_path.exists())
-        self.assertIsNone(video_result.full_story_path)
-        self.assertGreater(len(video_result.project_package.scenes), 0)
-        self.assertGreater(len(video_result.project_package.segments), 0)
-        self.assertGreater(len(video_result.project_package.seedance_manifest.clips), 0)
-        self.assertTrue(
-            all(item.scene_bible.location for item in video_result.project_package.scenes)
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=character_result.output_dir,
+            submit_scenes=False,
         )
-        self.assertTrue(
-            all(item.scene_bible.continuity_notes for item in video_result.project_package.scenes)
+        render_result = run_video_render_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=scene_result.output_dir,
+            submit_seedance=False,
         )
+        self.assertTrue(character_result.character_bible_path.exists())
+        self.assertTrue(scene_result.scene_plan_path.exists())
+        self.assertTrue(scene_result.segment_plan_path.exists())
+        self.assertTrue(render_result.manifest_path.exists())
+        self.assertTrue(scene_result.seedream_execution_path.exists())
+        self.assertTrue(render_result.seedance_execution_path.exists())
+        self.assertIsNone(render_result.full_story_path)
+        self.assertGreater(len(scene_result.project_package.scenes), 0)
+        self.assertGreater(len(scene_result.project_package.segments), 0)
+        self.assertGreater(len(scene_result.project_package.seedance_manifest.clips), 0)
         self.assertTrue(
-            all(item.scene_master_frame_prompt for item in video_result.project_package.scenes)
-        )
-        self.assertTrue(
-            all(item.scene_master_frame_path.endswith("_master.png") for item in video_result.project_package.scenes)
-        )
-        self.assertTrue(
-            all(item.scene_bible.location for item in video_result.project_package.segments)
-        )
-        self.assertTrue(
-            all(item.scene_bible.continuity_notes for item in video_result.project_package.segments)
+            all(item.scene_bible.location for item in scene_result.project_package.scenes)
         )
         self.assertTrue(
-            all(item.shot_state.framing for item in video_result.project_package.segments)
+            all(item.scene_bible.continuity_notes for item in scene_result.project_package.scenes)
         )
         self.assertTrue(
-            all(item.shot_state.action_progression for item in video_result.project_package.segments)
+            all(item.scene_master_frame_prompt for item in scene_result.project_package.scenes)
         )
         self.assertTrue(
-            all(item.continuity_link.transition_mode for item in video_result.project_package.segments)
+            all(item.scene_master_frame_path.endswith("_master.png") for item in scene_result.project_package.scenes)
+        )
+        self.assertTrue(
+            all(item.scene_bible.location for item in scene_result.project_package.segments)
+        )
+        self.assertTrue(
+            all(item.scene_bible.continuity_notes for item in scene_result.project_package.segments)
+        )
+        self.assertTrue(
+            all(item.shot_state.framing for item in scene_result.project_package.segments)
+        )
+        self.assertTrue(
+            all(item.shot_state.action_progression for item in scene_result.project_package.segments)
+        )
+        self.assertTrue(
+            all(item.continuity_link.transition_mode for item in scene_result.project_package.segments)
         )
         self.assertEqual(
-            {item.chapter_number for item in video_result.project_package.segments},
+            {item.chapter_number for item in scene_result.project_package.segments},
             {item.number for item in story_result.novel_package.outline.chapters},
         )
         self.assertTrue(
             all(
                 (item.narration and item.narration.strip()) or item.dialogue_lines
-                for item in video_result.project_package.segments
+                for item in scene_result.project_package.segments
             )
         )
         self.assertTrue(
-            all(item.subtitle_lines for item in video_result.project_package.segments)
+            all(item.subtitle_lines for item in scene_result.project_package.segments)
         )
         self.assertTrue(
-            all(item.sound_effects for item in video_result.project_package.segments)
+            all(item.sound_effects for item in scene_result.project_package.segments)
         )
         self.assertTrue(
-            all(item.music_direction for item in video_result.project_package.segments)
+            all(item.music_direction for item in scene_result.project_package.segments)
         )
         self.assertTrue(
-            all(item.timed_beats for item in video_result.project_package.segments)
+            all(item.timed_beats for item in scene_result.project_package.segments)
         )
         self.assertTrue(
-            all("角色对白：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("角色对白：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all("角色音色锁定：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("角色音色锁定：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all("禁止变化：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("禁止变化：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all("硬字幕样式：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("硬字幕样式：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all("硬字幕文案：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("硬字幕文案：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all("时间节拍：" in item.prompt for item in video_result.project_package.seedance_manifest.clips)
+            all("时间节拍：" in item.prompt for item in scene_result.project_package.seedance_manifest.clips)
         )
         self.assertTrue(
-            all(item.image_kind == "turnaround_sheet" for item in video_result.project_package.character_images)
+            all(item.image_kind == "turnaround_sheet" for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("统一三视图模板 SF-TURN-01" in item.prompt for item in video_result.project_package.character_images)
+            all("统一三视图模板 SF-TURN-01" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("横版 16:9" in item.prompt for item in video_result.project_package.character_images)
+            all("横版 16:9" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("纯白色" in item.prompt for item in video_result.project_package.character_images)
+            all("纯白色" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("左栏正面，中栏左侧面，右栏背面" in item.prompt for item in video_result.project_package.character_images)
+            all("左栏正面，中栏左侧面，右栏背面" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("画面顶部只允许出现角色中文姓名" in item.prompt for item in video_result.project_package.character_images)
+            all("画面顶部只允许出现角色中文姓名" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("画面唯一可见文字：" in item.prompt for item in video_result.project_package.character_images)
+            all("画面唯一可见文字：" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
             all(
                 "不得写性别、身份、职业、角色定位" in item.prompt
-                for item in video_result.project_package.character_images
+                for item in scene_result.project_package.character_images
             )
         )
         self.assertTrue(
-            all("同一种美术风格" in item.prompt for item in video_result.project_package.character_images)
+            all("同一种美术风格" in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("主配色" not in item.prompt for item in video_result.project_package.character_images)
+            all("主配色" not in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all("2x2 信息格" not in item.prompt for item in video_result.project_package.character_images)
+            all("2x2 信息格" not in item.prompt for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all(item.use_as_reference for item in video_result.project_package.character_images)
+            all(item.use_as_reference for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all(item.output_path.endswith("_sheet.png") for item in video_result.project_package.character_images)
+            all(item.output_path.endswith("_sheet.png") for item in scene_result.project_package.character_images)
         )
         self.assertTrue(
-            all(item.reference_images for item in video_result.project_package.scene_images)
+            all(item.reference_images for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all(item.scene_master_frame_prompt for item in video_result.project_package.scene_images)
+            all(item.scene_master_frame_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all(item.scene_master_frame_path.endswith("_master.png") for item in video_result.project_package.scene_images)
+            all(item.scene_master_frame_path.endswith("_master.png") for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("角色锁定要求" in item.start_frame_prompt for item in video_result.project_package.scene_images)
+            all("角色锁定要求" in item.start_frame_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("稳定年龄感" in item.start_frame_prompt for item in video_result.project_package.scene_images)
+            all("稳定年龄感" in item.start_frame_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("稳定肩宽" in item.start_frame_prompt for item in video_result.project_package.scene_images)
+            all("稳定肩宽" in item.start_frame_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("禁止出现任何可见文字" in item.scene_prompt for item in video_result.project_package.scene_images)
+            all("禁止出现任何可见文字" in item.scene_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("所有对白和硬字幕都只在后续视频阶段添加" in item.start_frame_prompt for item in video_result.project_package.scene_images)
+            all("所有对白和硬字幕都只在后续视频阶段添加" in item.start_frame_prompt for item in scene_result.project_package.scene_images)
         )
         self.assertTrue(
-            all("不要提前画进图片里" in item.end_frame_prompt for item in video_result.project_package.scene_images)
+            all("不要提前画进图片里" in item.end_frame_prompt for item in scene_result.project_package.scene_images)
         )
-        persisted_scene_plan = read_json(video_result.scene_plan_path)
+        persisted_scene_plan = read_json(scene_result.scene_plan_path)
         self.assertTrue(
             all(item.get("scene_bible") for item in persisted_scene_plan["scenes"])
         )
@@ -1765,7 +1928,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all(str(item.get("scene_master_frame_path", "")).endswith("_master.png") for item in persisted_scene_plan["scenes"])
         )
-        persisted_segment_plan = read_json(video_result.segment_plan_path)
+        persisted_segment_plan = read_json(scene_result.segment_plan_path)
         self.assertTrue(
             all(item.get("scene_bible") for item in persisted_segment_plan)
         )
@@ -1775,8 +1938,8 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all(item.get("continuity_link") for item in persisted_segment_plan)
         )
-        self.assertFalse(video_result.seedream_execution.submitted)
-        self.assertFalse(video_result.seedance_execution.submitted)
+        self.assertFalse(scene_result.seedream_execution.submitted)
+        self.assertFalse(render_result.seedance_execution.submitted)
 
     def test_story_scene_structure_and_segment_contract_pipelines(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -1829,6 +1992,18 @@ class PipelineTestCase(unittest.TestCase):
             stage_two_memory["generation_notes"]["last_successful_stage"],
             "video-segment-plan-merged",
         )
+        self.assertTrue(
+            all(item.get("carry_over_summary", "") for item in stage_two_memory["chapter_states"])
+        )
+        self.assertTrue(
+            all(isinstance(item.get("carry_over_visuals", []), list) for item in stage_two_memory["chapter_states"])
+        )
+        self.assertTrue(
+            all(isinstance(item.get("carry_over_props", []), list) for item in stage_two_memory["chapter_states"])
+        )
+        self.assertTrue(
+            all(isinstance(item.get("relationship_state", []), list) for item in stage_two_memory["chapter_states"])
+        )
         persisted_scene_plan = read_json(segment_contracts.scene_plan_path)
         self.assertTrue(
             all(item.get("scene_bible") for item in persisted_scene_plan["scenes"])
@@ -1848,6 +2023,583 @@ class PipelineTestCase(unittest.TestCase):
         )
         self.assertTrue(
             all(item.get("continuity_link") for item in persisted_segment_plan)
+        )
+
+    def test_story_pipeline_matches_split_structuring_outputs(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="全链路结构化一致性测试",
+            idea="毕业前夕，两个人在校园里逐步靠近彼此。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=2,
+            total_word_target=1800,
+        )
+        generation = self._run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "compat-source",
+        )
+
+        split_scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "compat-split",
+            backend=self.story_backend,
+            video_backend=self.video_backend,
+        )
+        split_segment_contracts = run_story_segment_contracts_pipeline(
+            novel_package=split_scene_structure.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=split_scene_structure.output_dir,
+            backend=self.video_backend,
+            scene_structure_artifacts=split_scene_structure.scene_structure,
+        )
+        full_pipeline = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "full-pipeline",
+        )
+
+        split_scene_plan = read_json(split_segment_contracts.scene_plan_path)
+        full_scene_plan = read_json(full_pipeline.scene_plan_path)
+        self.assertEqual(
+            [item["scene_id"] for item in split_scene_plan["scenes"]],
+            [item["scene_id"] for item in full_scene_plan["scenes"]],
+        )
+        self.assertEqual(
+            [item["title"] for item in split_scene_plan["scenes"]],
+            [item["title"] for item in full_scene_plan["scenes"]],
+        )
+        self.assertEqual(
+            [
+                [segment["segment_id"] for segment in item.get("segments", [])]
+                for item in split_scene_plan["scenes"]
+            ],
+            [
+                [segment["segment_id"] for segment in item.get("segments", [])]
+                for item in full_scene_plan["scenes"]
+            ],
+        )
+
+        split_segment_plan = read_json(split_segment_contracts.segment_plan_path)
+        full_segment_plan = read_json(full_pipeline.segment_plan_path)
+        self.assertEqual(
+            [item["segment_id"] for item in split_segment_plan],
+            [item["segment_id"] for item in full_segment_plan],
+        )
+        self.assertEqual(
+            [item["scene_id"] for item in split_segment_plan],
+            [item["scene_id"] for item in full_segment_plan],
+        )
+
+        split_story_memory = read_json(split_segment_contracts.story_memory_path)
+        full_story_memory = read_json(full_pipeline.story_memory_path)
+        self.assertEqual(
+            split_story_memory["planning_index"],
+            full_story_memory["planning_index"],
+        )
+        self.assertEqual(
+            [
+                {
+                    "chapter_number": item["chapter_number"],
+                    "generated_scene_ids": item.get("generated_scene_ids", []),
+                    "generated_segment_ids": item.get("generated_segment_ids", []),
+                    "carry_over_summary": item.get("carry_over_summary", ""),
+                }
+                for item in split_story_memory["chapter_states"]
+            ],
+            [
+                {
+                    "chapter_number": item["chapter_number"],
+                    "generated_scene_ids": item.get("generated_scene_ids", []),
+                    "generated_segment_ids": item.get("generated_segment_ids", []),
+                    "carry_over_summary": item.get("carry_over_summary", ""),
+                }
+                for item in full_story_memory["chapter_states"]
+            ],
+        )
+
+    def test_segment_contracts_checkpoint_and_resume_skips_completed_scenes_in_failed_chapter(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="断点续跑测试",
+            idea="三章连续推进的校园情感短篇。",
+            genre="青春",
+            tone="克制电影感",
+            target_audience="大众读者",
+            chapter_count=3,
+            total_word_target=1800,
+            must_include=["三章顺序推进"],
+            style_keywords=["连贯", "清晰"],
+        )
+        generation = self._run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=ROOT,
+            output_root=generation.output_dir,
+            backend=self.story_backend,
+            video_backend=self.video_backend,
+        )
+        injected_scene_payloads: list[dict[str, object]] = []
+        scene_two_injected = False
+        for scene in scene_structure.scene_structure.scene_plan.scenes:
+            injected_scene_payloads.append(scene.model_dump())
+            if scene.chapter_number == 2 and not scene_two_injected:
+                duplicate_scene = scene.model_dump()
+                duplicate_scene["scene_id"] = "ch02-sc02"
+                duplicate_scene["title"] = f"{scene.title} / 后续"
+                duplicate_scene["summary"] = f"{scene.summary} 后续推进。"
+                duplicate_scene["segments"] = []
+                injected_scene_payloads.append(duplicate_scene)
+                scene_two_injected = True
+        self.assertTrue(scene_two_injected)
+        scene_structure.scene_structure.scene_plan = VideoSegmentPlanSchema.model_validate(
+            {"scenes": injected_scene_payloads}
+        )
+
+        chapter_scene_ids: dict[int, list[str]] = {}
+        for scene in scene_structure.scene_structure.scene_plan.scenes:
+            chapter_scene_ids.setdefault(scene.chapter_number, []).append(scene.scene_id)
+        self.assertGreaterEqual(len(chapter_scene_ids.get(2, [])), 2)
+
+        original_chunk_builder = NovelToVideoService._build_scene_chunk_contract_batch
+        attempted_scenes: list[str] = []
+        failed_scene_id = chapter_scene_ids[2][1]
+        completed_before_failure = chapter_scene_ids[1] + [chapter_scene_ids[2][0]]
+        failed_chunk_id = f"{failed_scene_id}-chunk01"
+
+        def fail_on_second_scene_of_second_chapter(
+            service,
+            *,
+            novel_package,
+            story_memory,
+            chapter_number,
+            scene,
+            chunk,
+            previous_chunk_exit_state,
+            previous_tail_segment,
+        ):
+            attempted_scenes.append(scene.scene_id)
+            if chapter_number == 2 and scene.scene_id == failed_scene_id:
+                raise VideoStructuredGenerationError(
+                    task="video-scene-segment-planner",
+                    schema_name="SceneSegmentContractBatchSchema",
+                    attempts=3,
+                    cause=RuntimeError("scene failed"),
+                    metadata={
+                        "chapter_number": 2,
+                        "scene_id": failed_scene_id,
+                        "chunk_id": failed_chunk_id,
+                    },
+                )
+            return original_chunk_builder(
+                service,
+                novel_package=novel_package,
+                story_memory=story_memory,
+                chapter_number=chapter_number,
+                scene=scene,
+                chunk=chunk,
+                previous_chunk_exit_state=previous_chunk_exit_state,
+                previous_tail_segment=previous_tail_segment,
+            )
+
+        with patch.object(
+            NovelToVideoService,
+            "_build_scene_chunk_contract_batch",
+            autospec=True,
+            side_effect=fail_on_second_scene_of_second_chapter,
+        ):
+            with self.assertRaises(VideoStructuredGenerationError):
+                run_story_segment_contracts_pipeline(
+                    novel_package=scene_structure.novel_package,
+                    config=config,
+                    project_root=ROOT,
+                    output_root=generation.output_dir,
+                    backend=self.video_backend,
+                    scene_structure_artifacts=scene_structure.scene_structure,
+                )
+
+        self.assertEqual(
+            attempted_scenes,
+            chapter_scene_ids[1] + chapter_scene_ids[2][:2],
+        )
+        progress = load_segment_contract_progress(generation.output_dir)
+        self.assertIsNotNone(progress)
+        assert progress is not None
+        self.assertEqual(progress.status, "failed")
+        self.assertEqual(progress.completed_chapters, 1)
+        self.assertEqual(progress.failed_chapter_number, 2)
+        self.assertEqual(progress.failed_scene_id, failed_scene_id)
+        self.assertEqual(progress.failed_chunk_id, failed_chunk_id)
+        self.assertEqual(
+            progress.completed_scene_count,
+            len(completed_before_failure),
+        )
+        self.assertTrue(progress.resume_ready)
+        partial_plan = load_video_planning_artifacts(generation.output_dir)
+        self.assertEqual(
+            [scene.scene_id for scene in partial_plan.project_package.scenes],
+            completed_before_failure,
+        )
+
+        resumed_scenes: list[str] = []
+
+        def record_resumed_scenes(
+            service,
+            *,
+            novel_package,
+            story_memory,
+            chapter_number,
+            scene,
+            chunk,
+            previous_chunk_exit_state,
+            previous_tail_segment,
+        ):
+            resumed_scenes.append(scene.scene_id)
+            return original_chunk_builder(
+                service,
+                novel_package=novel_package,
+                story_memory=story_memory,
+                chapter_number=chapter_number,
+                scene=scene,
+                chunk=chunk,
+                previous_chunk_exit_state=previous_chunk_exit_state,
+                previous_tail_segment=previous_tail_segment,
+            )
+
+        with patch.object(
+            NovelToVideoService,
+            "_build_scene_chunk_contract_batch",
+            autospec=True,
+            side_effect=record_resumed_scenes,
+        ):
+            resumed = run_story_segment_contracts_pipeline(
+                novel_package=scene_structure.novel_package,
+                config=config,
+                project_root=ROOT,
+                output_root=generation.output_dir,
+                backend=self.video_backend,
+                scene_structure_artifacts=scene_structure.scene_structure,
+                resume_from_progress=True,
+            )
+
+        self.assertFalse(set(completed_before_failure).intersection(resumed_scenes))
+        self.assertEqual(
+            resumed_scenes,
+            chapter_scene_ids[2][1:] + chapter_scene_ids[3],
+        )
+        self.assertTrue(resumed.segment_contract_progress_path.exists())
+        resumed_progress = load_segment_contract_progress(generation.output_dir)
+        self.assertIsNotNone(resumed_progress)
+        assert resumed_progress is not None
+        self.assertEqual(resumed_progress.status, "completed")
+        self.assertEqual(resumed_progress.completed_chapters, 3)
+        self.assertEqual(resumed_progress.total_chapters, 3)
+        self.assertEqual(
+            resumed_progress.completed_scene_count,
+            sum(len(scene_ids) for scene_ids in chapter_scene_ids.values()),
+        )
+        self.assertFalse(resumed_progress.resume_ready)
+        resumed_plan = load_video_planning_artifacts(generation.output_dir)
+        self.assertEqual(
+            [scene.scene_id for scene in resumed_plan.project_package.scenes],
+            chapter_scene_ids[1] + chapter_scene_ids[2] + chapter_scene_ids[3],
+        )
+
+    def test_segment_contracts_checkpoint_and_resume_within_scene_chunk(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="scene 内 chunk 续跑测试",
+            idea="一个男生在湖边等待，随后与喜欢的人正式碰面。",
+            genre="校园情感",
+            tone="克制电影感",
+            target_audience="大众读者",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        generation = self._run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "chunk-resume",
+        )
+        scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=ROOT,
+            output_root=generation.output_dir,
+            backend=self.story_backend,
+            video_backend=self.video_backend,
+        )
+        scene_id = scene_structure.scene_structure.scene_plan.scenes[0].scene_id
+        chapter_number = scene_structure.scene_structure.scene_plan.scenes[0].chapter_number
+        character_names = [item.name for item in scene_structure.novel_package.outline.characters[:2]]
+        if not character_names:
+            character_names = ["主角"]
+        first_character = character_names[0]
+        chunk_plan = SceneSegmentChunkPlanSchema.model_validate(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "chunks": [
+                    {
+                        "chunk_id": "wait",
+                        "order_index": 1,
+                        "title": "等待",
+                        "summary": "主角在湖边等待，对方尚未入镜。",
+                        "must_cover": ["单人等待", "听见脚步声"],
+                        "transition_goal": "停在回头前的一刻。",
+                        "expected_segment_count": 1,
+                    },
+                    {
+                        "chunk_id": "meet",
+                        "order_index": 2,
+                        "title": "会面",
+                        "summary": "对方走近，两人正式开始交谈。",
+                        "must_cover": ["对方入镜", "正式开口"],
+                        "transition_goal": "从等待推进到面对面交流。",
+                        "expected_segment_count": 1,
+                    },
+                ],
+            }
+        )
+        first_batch = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "segments": [
+                    {
+                        "segment_id": f"{scene_id}-seg01",
+                        "chapter_number": chapter_number,
+                        "scene_id": scene_id,
+                        "title": "等待",
+                        "summary": "主角在湖边等待，对方尚未入镜。",
+                        "involved_characters": [first_character],
+                        "start_frame_characters": [first_character],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": [first_character],
+                        "narration": "他在湖边等待，听见脚步声后微微回头。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["他在湖边等待，听见脚步声后微微回头。"],
+                        "timed_beats": ["0-6秒：他在湖边等待，听见脚步声后微微回头。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "framing": "中景",
+                            "camera_motion": "缓慢推进",
+                            "blocking": "单人站在湖边步道侧前方",
+                            "action_progression": "等待并在尾部听见脚步声",
+                            "emotion_progression": "紧张逐步累积",
+                            "prop_continuity": "书包停在肩侧",
+                            "screen_direction": "保持向右前方等待",
+                            "end_state_lock": "他回头一半，动作停住",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "主角已站在湖边步道，面向湖面等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立单人等待的开场基线。",
+                            "transition_reason": "当前 scene 的起始段。",
+                        },
+                    }
+                ],
+            }
+        )
+        second_batch = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "segments": [
+                    {
+                        "segment_id": f"{scene_id}-seg01",
+                        "chapter_number": chapter_number,
+                        "scene_id": scene_id,
+                        "title": "会面",
+                        "summary": "对方走近后，两人正式开始交谈。",
+                        "involved_characters": character_names,
+                        "start_frame_characters": [first_character],
+                        "mid_frame_characters": character_names,
+                        "end_frame_characters": character_names or [first_character],
+                        "narration": "脚步声靠近，他转身迎上对方，终于开口。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["脚步声靠近，他转身迎上对方，终于开口。"],
+                        "timed_beats": ["0-6秒：脚步声靠近，他转身迎上对方，终于开口。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": True,
+                        "transition_hint": "continue",
+                        "shot_state": {
+                            "framing": "中景转双人中近景",
+                            "camera_motion": "轻微前推",
+                            "blocking": "另一人从右侧入镜并停在主角面前",
+                            "action_progression": "从回头承接到面对面开口",
+                            "emotion_progression": "紧张转为对视交流",
+                            "prop_continuity": "书包仍在肩侧",
+                            "screen_direction": "延续上一段的右向视线",
+                            "end_state_lock": "两人停在面对面对话姿态",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": f"{scene_id}-seg01",
+                            "transition_mode": "continue",
+                            "opening_match": "承接上一段尾部，他仍停在湖边并回头迎向来人。",
+                            "carry_over_elements": ["湖边站位", "书包", "右向视线"],
+                            "allowed_changes": "对方入镜，两人从等待推进到正式会面。",
+                            "transition_reason": "同一 scene 内继续推进到会面动作。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        attempted_chunks: list[str] = []
+
+        def fail_on_second_chunk(
+            service,
+            *,
+            novel_package,
+            story_memory,
+            chapter_number,
+            scene,
+            chunk,
+            previous_chunk_exit_state,
+            previous_tail_segment,
+        ):
+            attempted_chunks.append(chunk.chunk_id)
+            if chunk.chunk_id == "meet":
+                raise VideoStructuredGenerationError(
+                    task="video-scene-segment-planner",
+                    schema_name="SceneSegmentContractBatchSchema",
+                    attempts=3,
+                    cause=RuntimeError("chunk failed"),
+                    metadata={
+                        "chapter_number": chapter_number,
+                        "scene_id": scene.scene_id,
+                        "chunk_id": chunk.chunk_id,
+                        "chunk_order_index": chunk.order_index,
+                    },
+                )
+            return first_batch
+
+        with patch.object(
+            NovelToVideoService,
+            "_plan_scene_chunk_outline",
+            autospec=True,
+            return_value=chunk_plan,
+        ) as chunk_plan_mock:
+            with patch.object(
+                NovelToVideoService,
+                "_build_scene_chunk_contract_batch",
+                autospec=True,
+                side_effect=fail_on_second_chunk,
+            ):
+                with self.assertRaises(VideoStructuredGenerationError):
+                    run_story_segment_contracts_pipeline(
+                        novel_package=scene_structure.novel_package,
+                        config=config,
+                        project_root=ROOT,
+                        output_root=generation.output_dir,
+                        backend=self.video_backend,
+                        scene_structure_artifacts=scene_structure.scene_structure,
+                    )
+
+        self.assertEqual(chunk_plan_mock.call_count, 1)
+        self.assertEqual(attempted_chunks, ["wait", "meet"])
+        progress = load_segment_contract_progress(generation.output_dir)
+        self.assertIsNotNone(progress)
+        assert progress is not None
+        self.assertEqual(progress.status, "failed")
+        self.assertEqual(progress.completed_chunk_count, 1)
+        self.assertEqual(progress.failed_chunk_id, "meet")
+        self.assertEqual(progress.failed_scene_id, scene_id)
+        self.assertTrue(progress.resume_ready)
+        scene_progress = progress.chapters[0].scenes[0]
+        self.assertEqual(scene_progress.chunk_count, 2)
+        self.assertEqual(scene_progress.completed_chunk_count, 1)
+        self.assertEqual(scene_progress.failed_chunk_id, "meet")
+        self.assertEqual(
+            [item.status for item in scene_progress.chunks],
+            ["completed", "failed"],
+        )
+
+        partial_plan = load_video_planning_artifacts(generation.output_dir)
+        self.assertEqual(
+            [item.segment_id for item in partial_plan.project_package.segments],
+            [f"{scene_id}-seg01"],
+        )
+
+        resumed_chunks: list[str] = []
+
+        def build_remaining_chunk(
+            service,
+            *,
+            novel_package,
+            story_memory,
+            chapter_number,
+            scene,
+            chunk,
+            previous_chunk_exit_state,
+            previous_tail_segment,
+        ):
+            resumed_chunks.append(chunk.chunk_id)
+            self.assertEqual(chunk.chunk_id, "meet")
+            self.assertIsNotNone(previous_tail_segment)
+            self.assertEqual(previous_tail_segment.segment_id, f"{scene_id}-seg01")
+            return second_batch
+
+        with patch.object(
+            NovelToVideoService,
+            "_plan_scene_chunk_outline",
+            autospec=True,
+            side_effect=AssertionError("resume should reuse stored chunk plan"),
+        ):
+            with patch.object(
+                NovelToVideoService,
+                "_build_scene_chunk_contract_batch",
+                autospec=True,
+                side_effect=build_remaining_chunk,
+            ):
+                resumed = run_story_segment_contracts_pipeline(
+                    novel_package=scene_structure.novel_package,
+                    config=config,
+                    project_root=ROOT,
+                    output_root=generation.output_dir,
+                    backend=self.video_backend,
+                    scene_structure_artifacts=scene_structure.scene_structure,
+                    resume_from_progress=True,
+                )
+
+        self.assertTrue(resumed.segment_contract_progress_path.exists())
+        self.assertEqual(resumed_chunks, ["meet"])
+        resumed_progress = load_segment_contract_progress(generation.output_dir)
+        self.assertIsNotNone(resumed_progress)
+        assert resumed_progress is not None
+        self.assertEqual(resumed_progress.status, "completed")
+        self.assertEqual(resumed_progress.total_chunks, 2)
+        self.assertEqual(resumed_progress.completed_chunk_count, 2)
+        self.assertFalse(resumed_progress.resume_ready)
+        resumed_scene_progress = resumed_progress.chapters[0].scenes[0]
+        self.assertEqual(resumed_scene_progress.status, "completed")
+        self.assertEqual(resumed_scene_progress.completed_chunk_count, 2)
+        self.assertEqual(
+            [item.status for item in resumed_scene_progress.chunks],
+            ["completed", "completed"],
+        )
+        resumed_plan = load_video_planning_artifacts(generation.output_dir)
+        self.assertEqual(
+            [item.segment_id for item in resumed_plan.project_package.segments],
+            [f"{scene_id}-seg01", f"{scene_id}-seg02"],
         )
 
     def test_cast_analysis_source_evidence_must_exist_in_story_draft(self) -> None:
@@ -2128,16 +2880,28 @@ class PipelineTestCase(unittest.TestCase):
 
         mock_execute_manifest.side_effect = fake_execute_manifest
 
-        video_result = run_video_pipeline(
+        character_result = run_character_image_pipeline(
             novel_package=story_result.novel_package,
             config=config,
             project_root=ROOT,
             output_root=story_result.output_dir,
+            submit_characters=True,
+        )
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=character_result.output_dir,
+            submit_scenes=True,
+        )
+        render_result = run_video_render_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=scene_result.output_dir,
             submit_seedance=True,
         )
 
-        self.assertIsNone(video_result.full_story_path)
-        self.assertEqual(len(video_result.rendered_clip_paths), len(video_result.manifest.clips))
+        self.assertIsNone(render_result.full_story_path)
+        self.assertEqual(len(render_result.rendered_clip_paths), len(render_result.manifest.clips))
 
     @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
     def test_run_video_merge_pipeline_concats_rendered_clips_on_demand(
@@ -2184,7 +2948,7 @@ class PipelineTestCase(unittest.TestCase):
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_images")
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_character_images")
-    def test_video_pipeline_skips_seedance_when_required_frames_fail(
+    def test_seedance_skip_guard_returns_true_when_seedream_frames_fail(
         self,
         mock_generate_character_images,
         mock_generate_scene_images,
@@ -2211,16 +2975,23 @@ class PipelineTestCase(unittest.TestCase):
             note="failed",
         )
 
-        video_result = run_video_pipeline(
+        character_result = run_character_image_pipeline(
             novel_package=story_result.novel_package,
             config=config,
             project_root=ROOT,
             output_root=story_result.output_dir,
-            submit_seedance=True,
+            submit_characters=True,
+        )
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=character_result.output_dir,
+            submit_scenes=True,
         )
 
-        self.assertFalse(video_result.seedance_execution.submitted)
-        self.assertIn("Seedream", video_result.seedance_execution.note)
+        self.assertTrue(
+            should_skip_seedance_after_seedream(True, scene_result.seedream_execution)
+        )
         mock_execute_manifest.assert_not_called()
 
     @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_images")
@@ -2698,23 +3469,106 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn(expected_name, segment.scene_prompt)
         self.assertIn(expected_name, segment.start_frame_prompt)
 
-    def test_legacy_voice_style_is_upgraded_to_structured_voice_profile(self) -> None:
-        profile = CharacterProfile.from_dict(
-            {
-                "name": "林雪",
-                "role": "信使",
-                "desire": "送达密函",
-                "conflict": "追兵逼近",
-                "arc": "从逃避到承担",
-                "visual_signature": ["深蓝", "风雪"],
-                "voice_style": "冷静克制，低声短句推进信息",
-                "image_prompt": "雪港信使设定图",
-            }
+    def test_character_profile_requires_structured_voice_profile(self) -> None:
+        with self.assertRaisesRegex(ValueError, "voice_profile"):
+            CharacterProfile.from_dict(
+                {
+                    "name": "林雪",
+                    "role": "信使",
+                    "desire": "送达密函",
+                    "conflict": "追兵逼近",
+                    "arc": "从逃避到承担",
+                    "visual_signature": ["深蓝", "风雪"],
+                    "voice_style": "冷静克制，低声短句推进信息",
+                    "image_prompt": "雪港信使设定图",
+                }
+            )
+
+    def test_resume_from_progress_rejects_legacy_checkpoint_without_chunks(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="旧进度拒绝恢复",
+            idea="毕业前夕，两个人在校园里逐步靠近彼此。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        generation = self._run_story_generation_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "legacy-progress-source",
+        )
+        scene_structure = run_story_scene_structure_pipeline(
+            story_source=generation.story_source,
+            config=config,
+            project_root=ROOT,
+            output_root=generation.output_dir,
+            backend=self.story_backend,
+            video_backend=self.video_backend,
         )
 
-        self.assertEqual(profile.voice_style, "冷静克制，低声短句推进信息")
-        self.assertEqual(profile.voice_profile.voice_style, "冷静克制，低声短句推进信息")
-        self.assertTrue(profile.voice_profile.forbidden_voice_changes)
+        progress_payload = {
+            "schema_version": 2,
+            "status": "failed",
+            "story_title": scene_structure.novel_package.outline.title,
+            "story_source_revision": scene_structure.scene_structure.story_memory.story_identity.story_source_revision,
+            "total_chapters": 1,
+            "total_scenes": len(scene_structure.scene_structure.scene_plan.scenes),
+            "total_chunks": 0,
+            "completed_chapters": 0,
+            "completed_scene_count": 0,
+            "completed_chunk_count": 0,
+            "completed_segment_count": 0,
+            "failed_chapter_number": 1,
+            "failed_scene_id": scene_structure.scene_structure.scene_plan.scenes[0].scene_id,
+            "failed_chunk_id": "",
+            "resume_ready": True,
+            "chapters": [
+                {
+                    "chapter_number": 1,
+                    "chapter_title": scene_structure.novel_package.outline.chapters[0].title,
+                    "status": "failed",
+                    "scene_count": len(scene_structure.scene_structure.scene_plan.scenes),
+                    "completed_scene_count": 0,
+                    "segment_count": 0,
+                    "failed_scene_id": scene_structure.scene_structure.scene_plan.scenes[0].scene_id,
+                    "error": "legacy checkpoint",
+                    "scenes": [
+                        {
+                            "scene_id": scene.scene_id,
+                            "scene_title": scene.title,
+                            "chapter_number": scene.chapter_number,
+                            "status": "failed" if index == 0 else "pending",
+                            "chunk_count": 0,
+                            "completed_chunk_count": 0,
+                            "segment_count": 0,
+                            "failed_chunk_id": "",
+                            "error": "legacy checkpoint" if index == 0 else "",
+                            "chunks": [],
+                        }
+                        for index, scene in enumerate(scene_structure.scene_structure.scene_plan.scenes)
+                    ],
+                }
+            ],
+        }
+        progress_path = generation.output_dir / "segment_contract_progress.json"
+        progress_path.write_text(
+            json.dumps(progress_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "旧版本数据"):
+            run_story_segment_contracts_pipeline(
+                novel_package=scene_structure.novel_package,
+                config=config,
+                project_root=ROOT,
+                output_root=generation.output_dir,
+                backend=self.video_backend,
+                scene_structure_artifacts=scene_structure.scene_structure,
+                resume_from_progress=True,
+            )
 
     def test_visual_bible_names_are_repaired_to_outline_characters(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -3016,6 +3870,1446 @@ class PipelineTestCase(unittest.TestCase):
 
         segment = normalized.segments[0]
         self.assertEqual(segment.mid_frame_characters, [first_character.name])
+
+    def test_scene_segment_contract_output_requires_explicit_frame_characters(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖边等待",
+                "summary": "主角在镜湖边等待。",
+                "scene_anchor": "镜湖边长椅，傍晚",
+                "involved_characters": ["陈默"],
+                "scene_bible": {
+                    "location": "镜湖边长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "长椅靠湖",
+                    "character_blocking": "单人等待",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": [],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": [],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "start_frame_characters 不能为空"):
+            service._validate_scene_segment_contract_output(
+                contracts,
+                scene=scene,
+            )
+
+    def test_scene_segment_contract_output_rejects_generic_opening_match(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖边等待",
+                "summary": "主角在镜湖边等待。",
+                "scene_anchor": "镜湖边长椅，傍晚",
+                "involved_characters": ["陈默"],
+                "scene_bible": {
+                    "location": "镜湖边长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "长椅靠湖",
+                    "character_blocking": "单人等待",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "等待并保持站姿",
+                            "end_state_lock": "陈默仍站在长椅旁等待",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "场景开始",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立等待状态。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "opening_match 过于空泛"):
+            service._validate_scene_segment_contract_output(
+                contracts,
+                scene=scene,
+            )
+
+    def test_scene_segment_contract_output_auto_expands_duration_to_fit_speech_budget(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖告白",
+                "summary": "主角在镜湖边终于开口告白。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": ["信封"],
+                    "spatial_layout": "长椅靠湖，镜头从侧前方拍摄",
+                    "character_blocking": "陈默站在长椅旁开口",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "终于开口",
+                        "summary": "陈默终于说出压在心里的话。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": ["陈默"],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "",
+                        "dialogue_lines": [f"陈默：{'我' * 34}"],
+                        "subtitle_lines": ["我" * 34],
+                        "timed_beats": [
+                            "0-4秒：陈默深吸一口气，终于抬头看向前方。",
+                            "4-9秒：他把压在心里的话完整说出来。",
+                        ],
+                        "duration_seconds": 9,
+                        "requires_mid_frame": True,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "从犹豫推进到完整开口",
+                            "end_state_lock": "陈默说完后仍站在原地等待回应",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默已站在镜湖长椅旁，手里攥着信封，准备开口。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "把犹豫推进到正式告白。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        validated = service._validate_scene_segment_contract_output(
+            contracts,
+            scene=scene,
+        )
+
+        self.assertEqual(validated.segments[0].duration_seconds, 12)
+
+    def test_scene_chunk_contract_output_rejects_segments_beyond_expected_limit(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖等待",
+                "summary": "陈默在镜湖边等待后与林晚会面。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖金色侧光",
+                    "background_anchors": ["镜湖", "长椅"],
+                    "spatial_layout": "长椅靠湖，步道从右侧延伸",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "wait-and-meet",
+                "order_index": 1,
+                "title": "等待与会面",
+                "summary": "等待后直接会面。",
+                "must_cover": ["等待", "会面"],
+                "transition_goal": "两人开始对话。",
+                "expected_segment_count": 1,
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "等待并听见脚步声",
+                            "end_state_lock": "陈默听见脚步声后微微回头，动作停住",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默已站在镜湖长椅旁，面向湖面等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立单人等待的开场基线。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    },
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "会面",
+                        "summary": "林晚走近后，两人正式会面。",
+                        "involved_characters": ["陈默", "林晚"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": ["陈默", "林晚"],
+                        "end_frame_characters": ["陈默", "林晚"],
+                        "narration": "林晚走近后，两人终于站定面对面。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["林晚走近后，两人终于站定面对面。"],
+                        "timed_beats": ["0-6秒：林晚走近后，两人终于站定面对面。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": True,
+                        "transition_hint": "continue",
+                        "shot_state": {
+                            "action_progression": "从等待推进到正式会面",
+                            "end_state_lock": "两人面对面站定",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "ch01-sc01-seg01",
+                            "transition_mode": "continue",
+                            "opening_match": "陈默仍在长椅旁微微回头，保持上一段听见脚步声后停住的姿态。",
+                            "carry_over_elements": ["镜湖长椅", "陈默站位", "右向视线"],
+                            "allowed_changes": "林晚入镜，两人从等待推进到正式会面。",
+                            "transition_reason": "同一 chunk 内继续推进到会面动作。",
+                        },
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "超过当前 chunk 的执行上限"):
+            service._validate_scene_chunk_contract_output(
+                contracts,
+                scene=scene,
+                chunk=chunk,
+            )
+
+    def test_scene_chunk_contract_batch_retries_with_more_segments_when_single_segment_exceeds_12s(self) -> None:
+        class SplitRetryBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if self.calls == 1:
+                    return {
+                        "scene_id": "ch01-sc01",
+                        "chapter_number": 1,
+                        "segments": [
+                            {
+                                "segment_id": "ch01-sc01-seg01",
+                                "chapter_number": 1,
+                                "scene_id": "ch01-sc01",
+                                "title": "完整告白",
+                                "summary": "两人把整轮告白和回应都放进同一段里。",
+                                "involved_characters": ["陈默", "林晚"],
+                                "start_frame_characters": ["陈默"],
+                                "mid_frame_characters": ["陈默", "林晚"],
+                                "end_frame_characters": ["陈默", "林晚"],
+                                "narration": "",
+                                "dialogue_lines": [
+                                    f"陈默：{'我' * 40}",
+                                    f"林晚：{'好' * 38}",
+                                ],
+                                "subtitle_lines": [
+                                    "我" * 40,
+                                    "好" * 38,
+                                ],
+                                "timed_beats": [
+                                    "0-4秒：陈默终于开口。",
+                                    "4-8秒：林晚认真听着。",
+                                    "8-12秒：两人都想把整轮对白一次说完。",
+                                ],
+                                "duration_seconds": 12,
+                                "requires_mid_frame": True,
+                                "transition_hint": "auto",
+                                "shot_state": {
+                                    "framing": "双人中景",
+                                    "camera_motion": "轻微前推",
+                                    "blocking": "陈默在前，林晚站在对面",
+                                    "action_progression": "从犹豫开口推进到完整告白与回应",
+                                    "emotion_progression": "紧张迅速升高",
+                                    "prop_continuity": "书包和信封保持在手边",
+                                    "screen_direction": "保持面对面站位",
+                                    "end_state_lock": "两人仍停在面对面的告白姿态",
+                                },
+                                "continuity_link": {
+                                    "previous_segment_id": "",
+                                    "transition_mode": "start",
+                                    "opening_match": "陈默已站在花园长椅旁，面向林晚准备开口。",
+                                    "carry_over_elements": [],
+                                    "allowed_changes": "推进到完整告白与回应。",
+                                    "transition_reason": "当前 chunk 的起始段。",
+                                },
+                            }
+                        ],
+                    }
+                return {
+                    "scene_id": "ch01-sc01",
+                    "chapter_number": 1,
+                    "segments": [
+                        {
+                            "segment_id": "ch01-sc01-seg01",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc01",
+                            "title": "试探开口",
+                            "summary": "陈默先试探着开口，把气氛推到正式告白前。",
+                            "involved_characters": ["陈默", "林晚"],
+                            "start_frame_characters": ["陈默"],
+                            "mid_frame_characters": ["陈默", "林晚"],
+                            "end_frame_characters": ["陈默", "林晚"],
+                            "narration": "",
+                            "dialogue_lines": ["陈默：林晚，我想先把一直压着的话说出来。"],
+                            "subtitle_lines": ["林晚，我想先把一直压着的话说出来。"],
+                            "timed_beats": [
+                                "0-4秒：陈默深吸一口气，终于看向林晚。",
+                                "4-8秒：他先用一句试探的话打开局面。",
+                            ],
+                            "duration_seconds": 8,
+                            "requires_mid_frame": True,
+                            "transition_hint": "auto",
+                            "shot_state": {
+                                "framing": "双人中景",
+                                "camera_motion": "缓慢前推",
+                                "blocking": "两人站定，陈默先开口",
+                                "action_progression": "从沉默对视推进到试探开口",
+                                "emotion_progression": "紧张但开始稳定",
+                                "prop_continuity": "信封仍握在陈默手里",
+                                "screen_direction": "保持面对面站位",
+                                "end_state_lock": "陈默说完开场句，等待林晚反应",
+                            },
+                            "continuity_link": {
+                                "previous_segment_id": "",
+                                "transition_mode": "start",
+                                "opening_match": "陈默已站在花园长椅旁，面向林晚准备开口。",
+                                "carry_over_elements": [],
+                                "allowed_changes": "把气氛推进到正式告白前的开场句。",
+                                "transition_reason": "当前 chunk 的起始段。",
+                            },
+                        },
+                        {
+                            "segment_id": "ch01-sc01-seg02",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc01",
+                            "title": "正式告白",
+                            "summary": "陈默把最核心的告白内容完整说出来。",
+                            "involved_characters": ["陈默", "林晚"],
+                            "start_frame_characters": ["陈默", "林晚"],
+                            "mid_frame_characters": ["陈默", "林晚"],
+                            "end_frame_characters": ["陈默", "林晚"],
+                            "narration": "",
+                            "dialogue_lines": ["陈默：我喜欢你很久了，今天不想再躲着这句话。"],
+                            "subtitle_lines": ["我喜欢你很久了，今天不想再躲着这句话。"],
+                            "timed_beats": [
+                                "0-5秒：陈默一口气把最重要的话说出来。",
+                                "5-10秒：林晚愣住，情绪被彻底推高。",
+                            ],
+                            "duration_seconds": 10,
+                            "requires_mid_frame": True,
+                            "transition_hint": "continue",
+                            "shot_state": {
+                                "framing": "双人中近景",
+                                "camera_motion": "轻微前压",
+                                "blocking": "两人仍保持面对面站位",
+                                "action_progression": "从开场句推进到完整告白",
+                                "emotion_progression": "紧张转为坦白后的释放",
+                                "prop_continuity": "信封仍在陈默手里，林晚没有离开站位",
+                                "screen_direction": "延续面对面视线",
+                                "end_state_lock": "林晚怔住，陈默仍望着她等待回答",
+                            },
+                            "continuity_link": {
+                                "previous_segment_id": "ch01-sc01-seg01",
+                                "transition_mode": "continue",
+                                "opening_match": "承接上一段尾部，陈默仍看着林晚，刚说完开场句。",
+                                "carry_over_elements": ["面对面站位", "信封", "花园长椅背景"],
+                                "allowed_changes": "把试探开口推进到正式告白。",
+                                "transition_reason": "同一 chunk 内继续推进到核心告白。",
+                            },
+                        },
+                        {
+                            "segment_id": "ch01-sc01-seg03",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc01",
+                            "title": "回应落点",
+                            "summary": "林晚给出第一句明确回应，让这一轮对白自然落点。",
+                            "involved_characters": ["陈默", "林晚"],
+                            "start_frame_characters": ["陈默", "林晚"],
+                            "mid_frame_characters": ["林晚", "陈默"],
+                            "end_frame_characters": ["陈默", "林晚"],
+                            "narration": "",
+                            "dialogue_lines": ["林晚：我听见了，也不想再让你一个人等下去。"],
+                            "subtitle_lines": ["我听见了，也不想再让你一个人等下去。"],
+                            "timed_beats": [
+                                "0-4秒：林晚先稳住呼吸，认真看向陈默。",
+                                "4-9秒：她给出第一句明确回应，关系落到新的状态。",
+                            ],
+                            "duration_seconds": 9,
+                            "requires_mid_frame": True,
+                            "transition_hint": "continue",
+                            "shot_state": {
+                                "framing": "双人中近景",
+                                "camera_motion": "轻微停顿后慢推",
+                                "blocking": "林晚接住陈默的视线并回应",
+                                "action_progression": "从怔住推进到明确回应",
+                                "emotion_progression": "克制转为温柔确认",
+                                "prop_continuity": "两人站位不变，信封仍留在画面里",
+                                "screen_direction": "保持对视方向",
+                                "end_state_lock": "两人停在新的确认关系里",
+                            },
+                            "continuity_link": {
+                                "previous_segment_id": "ch01-sc01-seg02",
+                                "transition_mode": "continue",
+                                "opening_match": "承接上一段尾部，林晚怔住，陈默仍望着她等待回答。",
+                                "carry_over_elements": ["对视方向", "花园长椅背景", "信封"],
+                                "allowed_changes": "把正式告白推进到第一句明确回应。",
+                                "transition_reason": "同一 chunk 内继续推进到回应落点。",
+                            },
+                        },
+                    ],
+                }
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "chunk-split-retry",
+        )
+        backend = SplitRetryBackend()
+        service = NovelToVideoService(
+            backend=backend,
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "chunk-split-retry-memory"),
+        )
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "花园告白",
+                "summary": "两人在花园长椅旁完成一轮告白与回应。",
+                "scene_anchor": "花园长椅，傍晚，暖色侧光",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "花园长椅旁",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖色侧光",
+                    "dominant_palette": ["暖橙", "墨绿"],
+                    "background_anchors": ["花园长椅", "树影", "石板路"],
+                    "fixed_props": ["信封"],
+                    "spatial_layout": "长椅靠近石板路，人物面对面站在长椅前",
+                    "character_blocking": "两人先对视，再完成告白与回应",
+                    "continuity_notes": "保持长椅、树影和石板路关系稳定",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc01-c02",
+                "order_index": 2,
+                "title": "告白与回应",
+                "summary": "这一轮对白很长，必须分成更细的执行段。",
+                "must_cover": ["试探开口", "正式告白", "明确回应"],
+                "transition_goal": "两人停在新的关系状态里。",
+                "expected_segment_count": 1,
+            }
+        )
+
+        result = service._build_scene_chunk_contract_batch(
+            novel_package=story_result.novel_package,
+            story_memory=story_memory,
+            chapter_number=1,
+            scene=scene,
+            chunk=chunk,
+            previous_chunk_exit_state={},
+            previous_tail_segment=None,
+        )
+
+        self.assertEqual(backend.calls, 2)
+        self.assertEqual(len(result.segments), 3)
+        self.assertIn("至少拆成 3 个 segment", backend.requests[-1].user_prompt)
+        self.assertIn("这次最多只能输出 3 个 segment", backend.requests[-1].user_prompt)
+
+    def test_scene_chunk_contract_batch_runs_overflow_repair_after_chunk_retries_exhausted(self) -> None:
+        class OverflowRepairBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if request.metadata.get("task") == "video-scene-segment-overflow-repair":
+                    return {
+                        "scene_id": "ch01-sc01",
+                        "chapter_number": 1,
+                        "segments": [
+                            {
+                                "segment_id": "ch01-sc01-seg01",
+                                "chapter_number": 1,
+                                "scene_id": "ch01-sc01",
+                                "title": "终于开口",
+                                "summary": "陈默先把压在心里的第一层告白说出来。",
+                                "involved_characters": ["陈默", "林晚"],
+                                "start_frame_characters": ["陈默"],
+                                "mid_frame_characters": ["陈默", "林晚"],
+                                "end_frame_characters": ["陈默", "林晚"],
+                                "narration": "",
+                                "dialogue_lines": ["陈默：林晚，我喜欢你很久了。"],
+                                "subtitle_lines": ["林晚，我喜欢你很久了。"],
+                                "timed_beats": [
+                                    "0-4秒：陈默先抬头看向林晚。",
+                                    "4-8秒：他说出第一句明确告白。",
+                                ],
+                                "duration_seconds": 8,
+                                "requires_mid_frame": True,
+                                "transition_hint": "auto",
+                                "shot_state": {
+                                    "framing": "双人中景",
+                                    "camera_motion": "缓慢前推",
+                                    "blocking": "两人面对面站定",
+                                    "action_progression": "从沉默对视推进到正式开口",
+                                    "emotion_progression": "紧张被说出口的勇气打破",
+                                    "prop_continuity": "信封仍握在陈默手里",
+                                    "screen_direction": "保持面对面站位",
+                                    "end_state_lock": "陈默说完第一句后仍看着林晚等待反应",
+                                },
+                                "continuity_link": {
+                                    "previous_segment_id": "",
+                                    "transition_mode": "start",
+                                    "opening_match": "陈默已站在花园长椅旁，手里攥着信封，正看向林晚准备开口。",
+                                    "carry_over_elements": [],
+                                    "allowed_changes": "把犹豫推进到第一句明确告白。",
+                                    "transition_reason": "当前 chunk 的起始段。",
+                                },
+                            },
+                            {
+                                "segment_id": "ch01-sc01-seg02",
+                                "chapter_number": 1,
+                                "scene_id": "ch01-sc01",
+                                "title": "回应落下",
+                                "summary": "林晚在短暂停顿后给出明确回应，两人的关系状态正式改变。",
+                                "involved_characters": ["陈默", "林晚"],
+                                "start_frame_characters": ["陈默", "林晚"],
+                                "mid_frame_characters": ["陈默", "林晚"],
+                                "end_frame_characters": ["陈默", "林晚"],
+                                "narration": "",
+                                "dialogue_lines": [
+                                    "林晚：我听到了，我也不想再把这句话藏着。",
+                                ],
+                                "subtitle_lines": ["我听到了，我也不想再把这句话藏着。"],
+                                "timed_beats": [
+                                    "0-4秒：林晚先怔住，目光没有移开。",
+                                    "4-9秒：她缓慢开口给出明确回应。",
+                                ],
+                                "duration_seconds": 9,
+                                "requires_mid_frame": True,
+                                "transition_hint": "continue",
+                                "shot_state": {
+                                    "framing": "双人中近景",
+                                    "camera_motion": "轻微前推后停住",
+                                    "blocking": "两人仍面对面站定，林晚开始回应",
+                                    "action_progression": "从等待回应推进到明确回应落下",
+                                    "emotion_progression": "紧张转为确认后的轻微松动",
+                                    "prop_continuity": "信封仍在陈默手里",
+                                    "screen_direction": "保持面对面站位",
+                                    "end_state_lock": "两人停在新的关系确认状态里",
+                                },
+                                "continuity_link": {
+                                    "previous_segment_id": "ch01-sc01-seg01",
+                                    "transition_mode": "continue",
+                                    "opening_match": "承接上一段尾部，陈默仍看着林晚等待反应，林晚先短暂停住后准备开口。",
+                                    "carry_over_elements": ["面对面站位", "信封", "对视关系"],
+                                    "allowed_changes": "把等待反应推进到明确回应落下。",
+                                    "transition_reason": "同一 chunk 内继续推进到回应节点。",
+                                },
+                            },
+                        ],
+                    }
+                return {
+                    "scene_id": "ch01-sc01",
+                    "chapter_number": 1,
+                    "segments": [
+                        {
+                            "segment_id": "ch01-sc01-seg03",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc01",
+                            "title": "完整长对白",
+                            "summary": "模型把整轮告白和回应继续塞进一个超长片段里。",
+                            "involved_characters": ["陈默", "林晚"],
+                            "start_frame_characters": ["陈默"],
+                            "mid_frame_characters": ["陈默", "林晚"],
+                            "end_frame_characters": ["陈默", "林晚"],
+                            "narration": "",
+                            "dialogue_lines": [
+                                f"陈默：{'我' * 26}",
+                                f"林晚：{'好' * 22}",
+                            ],
+                            "subtitle_lines": [
+                                "我" * 26,
+                                "好" * 22,
+                            ],
+                            "timed_beats": [
+                                "0-4秒：陈默抬头看向林晚。",
+                                "4-8秒：他一口气把整段告白说完。",
+                                "8-12秒：林晚也尝试把整句回应一次说完。",
+                            ],
+                            "duration_seconds": 12,
+                            "requires_mid_frame": True,
+                            "transition_hint": "auto",
+                            "shot_state": {
+                                "framing": "双人中景",
+                                "camera_motion": "缓慢前推",
+                                "blocking": "两人面对面站定",
+                                "action_progression": "从开口推进到完整告白与回应",
+                                "emotion_progression": "紧张持续升高",
+                                "prop_continuity": "信封仍在陈默手里",
+                                "screen_direction": "保持面对面站位",
+                                "end_state_lock": "两人仍停在面对面的回应姿态",
+                            },
+                            "continuity_link": {
+                                "previous_segment_id": "",
+                                "transition_mode": "start",
+                                "opening_match": "陈默已站在花园长椅旁，手里攥着信封，准备开口。",
+                                "carry_over_elements": [],
+                                "allowed_changes": "把整轮告白与回应塞进一个片段。",
+                                "transition_reason": "当前 chunk 的起始段。",
+                            },
+                        }
+                    ],
+                }
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "chunk-overflow-repair",
+        )
+        backend = OverflowRepairBackend()
+        service = NovelToVideoService(
+            backend=backend,
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "chunk-overflow-repair-memory"),
+        )
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "花园告白",
+                "summary": "两人在花园长椅旁完成一轮告白与回应。",
+                "scene_anchor": "花园长椅，傍晚，暖色侧光",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "花园长椅旁",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖色侧光",
+                    "dominant_palette": ["暖橙", "墨绿"],
+                    "background_anchors": ["花园长椅", "树影", "石板路"],
+                    "fixed_props": ["信封"],
+                    "spatial_layout": "长椅靠近石板路，人物面对面站在长椅前",
+                    "character_blocking": "两人先对视，再完成告白与回应",
+                    "continuity_notes": "保持长椅、树影和石板路关系稳定",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc01-c02",
+                "order_index": 2,
+                "title": "告白与回应",
+                "summary": "这一轮对白很长，必须被正式拆开。",
+                "must_cover": ["正式告白", "明确回应"],
+                "transition_goal": "两人停在新的关系状态里。",
+                "expected_segment_count": 1,
+            }
+        )
+
+        result = service._build_scene_chunk_contract_batch(
+            novel_package=story_result.novel_package,
+            story_memory=story_memory,
+            chapter_number=1,
+            scene=scene,
+            chunk=chunk,
+            previous_chunk_exit_state={},
+            previous_tail_segment=None,
+        )
+
+        self.assertEqual(backend.calls, 4)
+        self.assertEqual(
+            [item.segment_id for item in result.segments],
+            ["ch01-sc01-ck02-seg01", "ch01-sc01-ck02-seg02"],
+        )
+        self.assertEqual(
+            backend.requests[-1].metadata.get("task"),
+            "video-scene-segment-overflow-repair",
+        )
+        self.assertIn("上一轮失败 batch JSON", backend.requests[-1].user_prompt)
+        self.assertIn("ch01-sc01-seg03", backend.requests[-1].user_prompt)
+
+    def test_build_subtitle_lines_does_not_fallback_to_timed_beats(self) -> None:
+        service = NovelToVideoService()
+
+        self.assertEqual(
+            service._build_subtitle_lines(
+                narration="",
+                dialogue_lines=[],
+                timed_beats=["0-5秒：他只是转身看向湖面。"],
+            ),
+            [],
+        )
+
+    def test_scene_chunk_contract_output_requires_cross_chunk_first_segment_to_continue_or_cut(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖等待",
+                "summary": "陈默等待后与林晚会面。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "lighting": "暖金色侧光",
+                    "background_anchors": ["镜湖", "长椅"],
+                    "spatial_layout": "长椅靠湖，步道从右侧延伸",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "meet",
+                "order_index": 2,
+                "title": "正式会面",
+                "summary": "等待之后正式会面。",
+                "must_cover": ["会面"],
+                "transition_goal": "两人开始对话。",
+                "expected_segment_count": 1,
+            }
+        )
+        previous_tail_segment = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "等待并听见脚步声",
+                            "end_state_lock": "陈默听见脚步声后微微回头，动作停住",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默已站在镜湖长椅旁等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立等待的开场基线。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    }
+                ],
+            }
+        ).segments[0]
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "会面",
+                        "summary": "林晚走近后，两人正式会面。",
+                        "involved_characters": ["陈默", "林晚"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": ["陈默", "林晚"],
+                        "end_frame_characters": ["陈默", "林晚"],
+                        "narration": "林晚走近后，两人正式会面。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["林晚走近后，两人正式会面。"],
+                        "timed_beats": ["0-6秒：林晚走近后，两人正式会面。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": True,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "从等待推进到会面",
+                            "end_state_lock": "两人面对面站定",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默仍在长椅旁回头。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "林晚入镜，两人正式会面。",
+                            "transition_reason": "错误地把跨 chunk 首段写成重新开场。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "只能是 continue 或 cut"):
+            service._validate_scene_chunk_contract_output(
+                contracts,
+                scene=scene,
+                chunk=chunk,
+                previous_tail_segment=previous_tail_segment,
+            )
+
+    def test_scene_chunk_contract_output_allows_cross_chunk_first_segment_to_continue(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖等待",
+                "summary": "陈默等待后与林晚会面。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "lighting": "暖金色侧光",
+                    "background_anchors": ["镜湖", "长椅"],
+                    "spatial_layout": "长椅靠湖，步道从右侧延伸",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "meet",
+                "order_index": 2,
+                "title": "正式会面",
+                "summary": "等待之后正式会面。",
+                "must_cover": ["会面"],
+                "transition_goal": "两人开始对话。",
+                "expected_segment_count": 1,
+            }
+        )
+        previous_tail_segment = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "等待并听见脚步声",
+                            "end_state_lock": "陈默听见脚步声后微微回头，动作停住",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默已站在镜湖长椅旁等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立等待的开场基线。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    }
+                ],
+            }
+        ).segments[0]
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "会面",
+                        "summary": "林晚走近后，两人正式会面。",
+                        "involved_characters": ["陈默", "林晚"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": ["陈默", "林晚"],
+                        "end_frame_characters": ["陈默", "林晚"],
+                        "narration": "林晚走近后，两人正式会面。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["林晚走近后，两人正式会面。"],
+                        "timed_beats": ["0-6秒：林晚走近后，两人正式会面。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": True,
+                        "transition_hint": "continue",
+                        "shot_state": {
+                            "action_progression": "从等待推进到会面",
+                            "end_state_lock": "两人面对面站定",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "ch01-sc01-seg01",
+                            "transition_mode": "continue",
+                            "opening_match": "陈默仍在长椅旁微微回头，保持上一段听见脚步声后停住的姿态。",
+                            "carry_over_elements": ["镜湖长椅", "陈默站位", "右向视线"],
+                            "allowed_changes": "林晚入镜，两人从等待推进到正式会面。",
+                            "transition_reason": "跨 chunk 承接后推进到正式会面。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        validated = service._validate_scene_chunk_contract_output(
+            contracts,
+            scene=scene,
+            chunk=chunk,
+            previous_tail_segment=previous_tail_segment,
+        )
+
+        self.assertEqual(validated.segments[0].continuity_link.transition_mode, "continue")
+
+    def test_scene_chunk_contract_output_rejects_duplicate_adjacent_segments(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "玫瑰园入口",
+                "summary": "主角在玫瑰园入口等待后停步赏花。",
+                "scene_anchor": "玫瑰园入口，傍晚",
+                "involved_characters": ["林辰", "苏晴"],
+                "scene_bible": {
+                    "location": "校园玫瑰园入口",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖金色侧光",
+                    "dominant_palette": ["暖橙", "墨绿"],
+                    "background_anchors": ["玫瑰花架", "石径"],
+                    "fixed_props": ["花瓣"],
+                    "spatial_layout": "入口石径通向花园内部",
+                    "character_blocking": "林辰先停步，随后看向花架",
+                    "continuity_notes": "保持入口与花架关系稳定",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "flower-stop",
+                "order_index": 1,
+                "title": "停步赏花",
+                "summary": "林辰在玫瑰园入口停步赏花。",
+                "must_cover": ["停下脚步", "看向花架"],
+                "transition_goal": "准备继续往花园内部走",
+                "expected_segment_count": 2,
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "停步",
+                        "summary": "林辰在玫瑰园入口停下脚步赏花。",
+                        "involved_characters": ["林辰"],
+                        "start_frame_characters": ["林辰"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["林辰"],
+                        "narration": "林辰在入口停下脚步，看着花架。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["林辰在入口停下脚步，看着花架。"],
+                        "timed_beats": ["0-5秒：林辰在入口停下脚步，看着花架。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "action_progression": "停下脚步并看着花架",
+                        },
+                        "continuity_link": {
+                            "transition_mode": "start",
+                            "opening_match": "林辰已站在玫瑰园入口，面向花架停下脚步。",
+                            "allowed_changes": "停下脚步并看向花架。",
+                            "transition_reason": "当前 chunk 的起始段。",
+                        },
+                    },
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "停步赏花延续",
+                        "summary": "林辰停在玫瑰园入口，继续停步赏花，没有继续前进。",
+                        "involved_characters": ["林辰"],
+                        "start_frame_characters": ["林辰"],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["林辰"],
+                        "narration": "林辰仍停在入口看着花架。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["林辰仍停在入口看着花架。"],
+                        "timed_beats": ["0-5秒：林辰仍停在入口看着花架。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "continue",
+                        "shot_state": {
+                            "action_progression": "停在原地继续看着花架，没有新的动作推进",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "ch01-sc01-seg01",
+                            "transition_mode": "continue",
+                            "opening_match": "林辰仍停在入口，保持上一段停下脚步看着花架的姿势。",
+                            "allowed_changes": "继续保持当前停步赏花状态。",
+                            "carry_over_elements": ["站位不变"],
+                            "transition_reason": "同一 chunk 内继续停步赏花。",
+                        },
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "重复表达同一事件"):
+            service._validate_scene_chunk_contract_output(
+                contracts,
+                scene=scene,
+                chunk=chunk,
+            )
+
+    def test_scene_chunk_output_rejects_duplicate_adjacent_chunks(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "玫瑰园入口",
+                "summary": "林辰与苏晴走到玫瑰园入口并短暂停步。",
+                "scene_anchor": "玫瑰园入口，傍晚",
+                "involved_characters": ["林辰", "苏晴"],
+                "scene_bible": {
+                    "location": "校园玫瑰园入口",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖金色侧光",
+                    "dominant_palette": ["暖橙", "墨绿"],
+                    "background_anchors": ["玫瑰花架", "石径"],
+                    "fixed_props": ["花瓣"],
+                    "spatial_layout": "入口石径通向花园内部",
+                    "character_blocking": "两人停步后再继续前进",
+                    "continuity_notes": "保持入口石径和花架方向稳定",
+                },
+            }
+        )
+        chunk_plan = SceneSegmentChunkPlanSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "chunks": [
+                    {
+                        "chunk_id": "flower-stop-1",
+                        "order_index": 1,
+                        "title": "停步赏花",
+                        "summary": "林辰在玫瑰园入口停下脚步赏花。",
+                        "must_cover": ["停下脚步", "看向花架"],
+                        "transition_goal": "准备继续前进。",
+                        "expected_segment_count": 1,
+                    },
+                    {
+                        "chunk_id": "flower-stop-2",
+                        "order_index": 2,
+                        "title": "停步赏花延续",
+                        "summary": "林辰停在玫瑰园入口，继续停步赏花，没有继续前进。",
+                        "must_cover": ["停下脚步", "继续看向花架"],
+                        "transition_goal": "继续保持停步赏花状态。",
+                        "expected_segment_count": 1,
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "重复表达同一事件"):
+            service._validate_scene_segment_chunk_output(
+                chunk_plan,
+                scene=scene,
+            )
+
+    def test_scene_chunk_output_rejects_excessive_total_expected_segments(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "长场景",
+                "summary": "两人在校园内从相遇走到告白前。",
+                "scene_anchor": "校园黄昏步道",
+                "involved_characters": ["林辰", "苏晴"],
+                "scene_bible": {
+                    "location": "校园黄昏步道",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "夕阳侧光",
+                    "dominant_palette": ["暖金", "深蓝"],
+                    "background_anchors": ["树影", "步道", "路灯"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "步道逐步通往花园",
+                    "character_blocking": "两人边走边交流",
+                    "continuity_notes": "保持步道方向稳定",
+                },
+            }
+        )
+        chunk_plan = SceneSegmentChunkPlanSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "chunks": [
+                    {
+                        "chunk_id": "walk-1",
+                        "order_index": 1,
+                        "title": "起步",
+                        "summary": "两人从教学楼前走出。",
+                        "must_cover": ["走出教学楼"],
+                        "transition_goal": "进入步道。",
+                        "expected_segment_count": 3,
+                    },
+                    {
+                        "chunk_id": "walk-2",
+                        "order_index": 2,
+                        "title": "并肩",
+                        "summary": "两人沿步道并肩前进。",
+                        "must_cover": ["并肩前进"],
+                        "transition_goal": "靠近花园。",
+                        "expected_segment_count": 3,
+                    },
+                    {
+                        "chunk_id": "walk-3",
+                        "order_index": 3,
+                        "title": "放慢",
+                        "summary": "两人在树影下放慢脚步。",
+                        "must_cover": ["放慢脚步"],
+                        "transition_goal": "停在花园前。",
+                        "expected_segment_count": 3,
+                    },
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "超过 scene 上限"):
+            service._validate_scene_segment_chunk_output(
+                chunk_plan,
+                scene=scene,
+            )
+
+    def test_materialize_scene_segment_does_not_fallback_single_character_frames(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="单人等待",
+            idea="一个人在镜湖边等待。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=800,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "single-frame-strict",
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖边等待",
+                "summary": "主角在镜湖边等待。",
+                "scene_anchor": "镜湖边长椅，傍晚",
+                "involved_characters": ["陈默"],
+                "scene_bible": {
+                    "location": "镜湖边长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "长椅靠湖",
+                    "character_blocking": "单人等待",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contract = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "陈默在镜湖边等待。",
+                        "involved_characters": ["陈默"],
+                        "start_frame_characters": [],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": ["陈默"],
+                        "narration": "陈默在镜湖边等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["陈默在镜湖边等待。"],
+                        "timed_beats": ["0-5秒：陈默在镜湖边等待。"],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                    }
+                ],
+            }
+        ).segments[0]
+
+        with self.assertRaisesRegex(ValueError, "start_frame_characters 不能为空"):
+            service._materialize_scene_segment(
+                novel_package=story_result.novel_package,
+                scene=scene,
+                contract=contract,
+            )
+
+    def test_scene_segment_contract_output_requires_explicit_mid_frame_fields_when_effectively_needed(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "mid-frame-contract-inference",
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        first_character, second_character = self._ensure_two_outline_characters(story_result)
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "花廊会面",
+                "summary": "主角在花廊等待后与对方正式会面。",
+                "scene_anchor": "紫藤花廊，傍晚",
+                "involved_characters": [first_character.name, second_character.name],
+                "scene_bible": {
+                    "location": "校园紫藤花廊",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖金色侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["紫藤花架", "小径"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "花廊入口连接校园小径",
+                    "character_blocking": "先单人等待，再双人面对面站定",
+                    "continuity_notes": "保持花廊与小径方向稳定",
+                },
+            }
+        )
+        contract = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "花廊等待与会面",
+                        "summary": f"{first_character.name}等待片刻后，与{second_character.name}正式会面。",
+                        "involved_characters": [first_character.name, second_character.name],
+                        "start_frame_characters": [first_character.name],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": [first_character.name, second_character.name],
+                        "narration": "他等到对方走近，终于站定面对面。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["他等到对方走近，终于站定面对面。"],
+                        "timed_beats": [
+                            f"0-4秒：{first_character.name}独自在花廊下等待。",
+                            f"4-9秒：{first_character.name}伸手示意，{second_character.name}停下脚步，与他面对面站定。",
+                        ],
+                        "duration_seconds": 9,
+                        "requires_mid_frame": False,
+                        "transition_hint": "continue",
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": f"{first_character.name}已独自在花廊下站定等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": f"{second_character.name}入镜，关系推进到正式会面。",
+                            "transition_reason": "当前 scene 的起始段。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "requires_mid_frame 必须为 true，且必须显式给出 mid_frame_characters",
+        ):
+            service._validate_scene_segment_contract_output(
+                contract,
+                scene=scene,
+            )
 
     def test_romance_brief_repairs_primary_character_genders_to_male_female_pair(self) -> None:
         service = NovelGeneratorService()
@@ -3478,14 +5772,19 @@ class PipelineTestCase(unittest.TestCase):
             [1],
         )
 
-    def test_segment_planner_prompt_leaves_segments_per_chapter_to_llm(self) -> None:
+    def test_scene_segment_contract_prompt_keeps_duration_and_mid_frame_rules(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
         story_result = self._run_story_pipeline(
             brief=brief,
             config=config,
             project_root=ROOT,
-            output_root=self.temp_root,
+            output_root=self.temp_root / "segment-contract-prompt",
+        )
+        story_result.novel_package.chapters[0].markdown = (
+            "陈默先到镜湖边长椅旁等林晚。"
+            "他一边看着湖面对岸的灯光，一边反复练习开口的话。"
+            "林晚沿着步道走近，他终于抬头看向她。"
         )
         service = NovelToVideoService(
             segment_duration_seconds=config.video.segment_duration_seconds,
@@ -3495,30 +5794,138 @@ class PipelineTestCase(unittest.TestCase):
             scene_image_provider=config.video.scene_image_provider,
             seedance_config=config.seedance,
         )
-        prompt = service._build_segment_planner_user_prompt(story_result.novel_package)
-
-        self.assertIn(
-            "同一章节可以拆成 1 个或多个场景，每个场景又可以拆成 1 段、2 段、3 段或更多",
-            prompt,
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "segment-contract-prompt-memory"),
         )
-        self.assertIn("必须由你根据该章正文内容自行判断", prompt)
+        scene_payload = {
+            "scene_id": "ch01-sc01",
+            "chapter_number": 1,
+            "title": "镜湖等待",
+            "summary": "陈默在镜湖边等待林晚走近。",
+            "scene_anchor": "镜湖边长椅，对岸亮灯，傍晚微风",
+            "involved_characters": ["陈默", "林晚"],
+            "scene_bible": {
+                "location": "镜湖边长椅",
+                "time_window": "傍晚",
+                "weather": "微风",
+                "lighting": "湖面对岸暖灯亮起",
+                "dominant_palette": ["暖橙", "深蓝"],
+                "background_anchors": ["镜湖", "长椅", "对岸灯光"],
+                "fixed_props": ["书包"],
+                "spatial_layout": "长椅靠湖，步道从右后方延伸",
+                "character_blocking": "陈默先独自等待，林晚沿步道靠近",
+                "continuity_notes": "保持镜湖、长椅与对岸灯光关系稳定",
+            },
+        }
+        chunk_payload = {
+            "chunk_id": "chunk-01",
+            "order_index": 1,
+            "title": "等待与靠近",
+            "summary": "陈默等待，林晚逐步靠近。",
+            "must_cover": ["陈默等待", "林晚沿步道走近"],
+            "transition_goal": "两人即将开始对话",
+            "expected_segment_count": 2,
+        }
+
+        prompt = service._build_scene_segment_contract_user_prompt(
+            story_result.novel_package,
+            chapter_number=1,
+            story_memory=story_memory,
+            scene_payload=scene_payload,
+            chunk_payload=chunk_payload,
+            previous_chunk_exit_state={},
+        )
+
+        self.assertIn("当前 chunk 一般拆成 1-3 个 segment", prompt)
         self.assertIn("按中文自然口播语速估算音频长度", prompt)
         self.assertIn("如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段", prompt)
-        self.assertIn("硬字幕超过当前时长可说完", prompt)
+        self.assertIn("告白、回应、对峙、双人长对话 scene 要优先少段而不是碎段", prompt)
+        self.assertIn("不要把“准备开口”和“真正开口”拆成两个近义连续片段", prompt)
         self.assertIn("requires_mid_frame", prompt)
-        self.assertIn("mid_frame_prompt", prompt)
+        self.assertIn("mid_frame_characters", prompt)
+        self.assertIn("`expected_segment_count` 是上限，不是目标值", prompt)
+        self.assertIn("`mid_frame_characters` 必须严格跟随片段中间那一拍真实出镜角色", prompt)
+        self.assertIn("`opening_match` 必须写成可拍到的开场画面", prompt)
+        self.assertIn("不要输出 `scene_prompt`", prompt)
+        self.assertIn("当前 chunk 这次最多只能输出 2 个 segment", prompt)
+        self.assertIn("禁止在任何字段写工程注记或制作标签", prompt)
+        self.assertIn("`subtitle_lines` 只允许写本段真正会被听到的对白或旁白", prompt)
         self.assertNotIn("推荐最少片段数", prompt)
+
+    def test_scene_chunk_planner_prompt_blocks_scene_replay_and_makes_expected_count_hard_limit(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "scene-chunk-prompt",
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "scene-chunk-prompt-memory"),
+        )
+        scene_payload = {
+            "scene_id": "ch01-sc02",
+            "chapter_number": 1,
+            "title": "离开图书馆后前往镜湖",
+            "summary": "两人离开图书馆后继续向镜湖走去，不再重演门口等待和相遇。",
+            "scene_anchor": "教学楼外步道 / 傍晚 / 离开图书馆后",
+            "involved_characters": ["陈默", "林晚"],
+            "scene_bible": {
+                "location": "教学楼外步道",
+                "time_window": "傍晚",
+                "weather": "微风",
+                "lighting": "夕阳侧光",
+                "dominant_palette": ["暖橙", "深蓝"],
+                "background_anchors": ["教学楼外墙", "林荫步道"],
+                "fixed_props": ["书包"],
+                "spatial_layout": "两人沿步道从图书馆方向继续向前",
+                "character_blocking": "陈默在前半步，林晚在后侧跟上",
+                "continuity_notes": "这是上一 scene 汇合后的继续前进，不要回到等待阶段",
+            },
+        }
+
+        prompt = service._build_scene_chunk_planner_user_prompt(
+            story_result.novel_package,
+            chapter_number=1,
+            story_memory=story_memory,
+            scene_payload=scene_payload,
+        )
+
+        self.assertIn("当前 scene 的第一个 chunk 必须从本 scene 在正文里的真正起点开始", prompt)
+        self.assertIn("不能回放", prompt)
+        self.assertIn("`expected_segment_count` 是后续 segment planner 的硬上限", prompt)
+        self.assertIn("告白、回应类 scene 优先拆成 1-3 个 chunk", prompt)
+        self.assertIn("一个 chunk 必须对应一个连续事件目标", prompt)
+        self.assertIn("`expected_segment_count` 要按保守上限填写，优先填 1", prompt)
 
     def test_chapter_segment_planner_uses_story_memory_and_calls_once_per_chapter(self) -> None:
         class ChapterCountingVideoBackend(DeterministicVideoBackend):
             def __init__(self) -> None:
                 super().__init__()
                 self.scene_requests: list[PromptRequest] = []
+                self.chunk_requests: list[PromptRequest] = []
                 self.segment_requests: list[PromptRequest] = []
 
             def generate_structured(self, request: PromptRequest, schema):
                 if request.metadata.get("task") == "video-chapter-scene-planner":
                     self.scene_requests.append(request)
+                if request.metadata.get("task") == "video-scene-chunk-planner":
+                    self.chunk_requests.append(request)
                 if request.metadata.get("task") == "video-scene-segment-planner":
                     self.segment_requests.append(request)
                 return super().generate_structured(request, schema)
@@ -3556,11 +5963,288 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(
             all(request.user_prompt.count("该章应由模型自行判断拆成几段") == 1 for request in backend.scene_requests)
         )
+        self.assertTrue(all('"chapter_batch_view"' in request.user_prompt for request in backend.scene_requests))
+        self.assertTrue(all('"recent_chapter_memory"' in request.user_prompt for request in backend.scene_requests))
+        self.assertTrue(all('"focus_cast_bible"' in request.user_prompt for request in backend.scene_requests))
+        self.assertTrue(all('"carry_over_summary"' in request.user_prompt for request in backend.scene_requests))
+        self.assertTrue(all('"planning_index"' not in request.user_prompt for request in backend.scene_requests))
+        self.assertEqual(len(backend.chunk_requests), 3)
+        self.assertTrue(all("目标 scene JSON" in request.user_prompt for request in backend.chunk_requests))
+        self.assertTrue(all('"recent_chapter_memory"' in request.user_prompt for request in backend.chunk_requests))
+        self.assertTrue(all('"carry_over_visuals"' in request.user_prompt for request in backend.chunk_requests))
+        self.assertTrue(all('"planning_index"' not in request.user_prompt for request in backend.chunk_requests))
         self.assertEqual(len(backend.segment_requests), 3)
         self.assertTrue(all("目标 scene JSON" in request.user_prompt for request in backend.segment_requests))
+        self.assertTrue(all('"recent_chapter_memory"' in request.user_prompt for request in backend.segment_requests))
+        self.assertTrue(all('"relationship_state"' in request.user_prompt for request in backend.segment_requests))
+        self.assertTrue(all('"planning_index"' not in request.user_prompt for request in backend.segment_requests))
         self.assertTrue(artifacts.story_memory_path.exists())
         loaded = load_video_planning_artifacts(artifacts.output_dir)
         self.assertIsNotNone(loaded.project_package.story_memory)
+
+    def test_scene_chunk_planner_prompt_uses_scene_focused_excerpt(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="镜湖聚焦摘录",
+            idea="毕业前夕，一个男生在镜湖边等待喜欢的人。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "focused-excerpt",
+        )
+        story_result.novel_package.chapters[0].markdown = (
+            "他先在机房里检查了很久的代码和投影设备。"
+            "图书馆门口的风吹得人有些发冷。"
+            "陈默站在镜湖边长椅旁等待林晚出现，湖面对岸亮起一排暖灯。"
+            "他反复练习开口的话，直到看见林晚沿着湖边步道走来。"
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "focused-excerpt-memory"),
+        )
+        scene_payload = {
+            "scene_id": "ch01-sc01",
+            "chapter_number": 1,
+            "title": "镜湖长椅",
+            "summary": "陈默在镜湖边长椅等待林晚出现。",
+            "scene_anchor": "镜湖边长椅，湖面对岸亮灯，傍晚微风",
+            "involved_characters": ["陈默", "林晚"],
+            "scene_bible": {
+                "location": "镜湖边长椅",
+                "time_window": "傍晚",
+                "weather": "微风",
+                "lighting": "对岸暖灯",
+                "dominant_palette": ["暖橙", "深蓝"],
+                "background_anchors": ["镜湖", "长椅", "对岸灯光"],
+                "fixed_props": ["书包"],
+                "spatial_layout": "长椅靠湖，步道从右后方延伸而来",
+                "character_blocking": "陈默先独自等待，林晚后续沿步道走近",
+                "continuity_notes": "保持镜湖、长椅和对岸灯光关系稳定",
+            },
+        }
+
+        prompt = service._build_scene_chunk_planner_user_prompt(
+            story_result.novel_package,
+            chapter_number=1,
+            story_memory=story_memory,
+            scene_payload=scene_payload,
+        )
+
+        self.assertIn("本次聚焦：", prompt)
+        self.assertIn("镜湖边长椅", prompt)
+        self.assertIn("陈默站在镜湖边长椅旁等待林晚出现", prompt)
+        self.assertNotIn("机房里检查了很久的代码", prompt)
+
+    def test_scene_chunk_planner_merges_chunk_contracts_into_sequential_segments(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief(
+            title_hint="镜湖告白分块测试",
+            idea="黄昏时分，一个男生在校园里等待喜欢的人到来并准备告白。",
+            genre="校园情感",
+            tone="克制、温柔",
+            chapter_count=1,
+            total_word_target=1200,
+        )
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "chunked-scene",
+        )
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "chunked-scene-memory"),
+        )
+        character_names = [
+            item.name for item in story_result.novel_package.outline.characters[:2]
+        ]
+        first_character = character_names[0]
+        raw_scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖长椅",
+                "summary": "主角先独自等待，随后对方入镜，两人正式开始对话。",
+                "scene_anchor": "镜湖边长椅，傍晚，湖面对岸亮起灯光",
+                "involved_characters": character_names,
+                "scene_bible": {
+                    "location": "镜湖边长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["湖面", "长椅", "对岸灯光"],
+                    "fixed_props": ["书包"],
+                    "spatial_layout": "长椅靠湖，人物沿步道进入画面",
+                    "character_blocking": "先单人等待，再双人对话",
+                    "continuity_notes": "同一 scene 内保持湖边与长椅的背景关系稳定",
+                },
+            }
+        )
+        chunk_plan = SceneSegmentChunkPlanSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "chunks": [
+                    {
+                        "chunk_id": "wait",
+                        "order_index": 1,
+                        "title": "等待",
+                        "summary": "主角独自在长椅旁等待，对方尚未入镜。",
+                        "must_cover": ["单人等待", "紧张情绪"],
+                        "transition_goal": "停在听到脚步声前的悬置状态。",
+                        "expected_segment_count": 1,
+                    },
+                    {
+                        "chunk_id": "meet",
+                        "order_index": 2,
+                        "title": "会面",
+                        "summary": "对方入镜，两人正式开始对话。",
+                        "must_cover": ["对方入镜", "正式开口"],
+                        "transition_goal": "推进到双人关系建立。",
+                        "expected_segment_count": 1,
+                    },
+                ],
+            }
+        )
+        first_batch = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "等待",
+                        "summary": "主角在湖边长椅旁等待。",
+                        "involved_characters": [first_character],
+                        "start_frame_characters": [first_character],
+                        "mid_frame_characters": [],
+                        "end_frame_characters": [first_character],
+                        "narration": "他在长椅旁等待。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["他在长椅旁等待。"],
+                        "timed_beats": ["0-6秒：他在长椅旁等待。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": False,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "framing": "中景",
+                            "camera_motion": "缓慢推进",
+                            "blocking": "单人站在长椅侧前方",
+                            "action_progression": "等待并听见远处脚步声",
+                            "emotion_progression": "紧张逐步累积",
+                            "prop_continuity": "书包留在肩侧",
+                            "screen_direction": "面向右前方",
+                            "end_state_lock": "他在听到脚步声后微微回头，动作停住",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "主角已站在长椅侧前方，面向前方等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "建立单人等待的开场基线。",
+                            "transition_reason": "当前 scene 的起始段。",
+                        },
+                    }
+                ],
+            }
+        )
+        second_batch = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "会面",
+                        "summary": "对方走近后，两人正式开始对话。",
+                        "involved_characters": character_names,
+                        "start_frame_characters": [first_character],
+                        "mid_frame_characters": character_names,
+                        "end_frame_characters": character_names,
+                        "narration": "脚步声靠近，对话终于开始。",
+                        "dialogue_lines": [],
+                        "subtitle_lines": ["脚步声靠近，对话终于开始。"],
+                        "timed_beats": ["0-6秒：脚步声靠近，对话终于开始。"],
+                        "duration_seconds": 6,
+                        "requires_mid_frame": True,
+                        "transition_hint": "continue",
+                        "shot_state": {
+                            "framing": "中景转双人中近景",
+                            "camera_motion": "轻微前推",
+                            "blocking": "另一人从右侧入镜，停在主角身前",
+                            "action_progression": "从回头承接到正式开口",
+                            "emotion_progression": "紧张转为面对面交流",
+                            "prop_continuity": "书包仍在肩侧",
+                            "screen_direction": "延续上一段的右向视线",
+                            "end_state_lock": "两人停在面对面的对话姿态",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "ch01-sc01-seg01",
+                            "transition_mode": "continue",
+                            "opening_match": "承接上一段尾部，他仍站在长椅旁并转向来人。",
+                            "carry_over_elements": ["长椅站位", "书包", "右向视线"],
+                            "allowed_changes": "对方入镜，等待推进到正式对话。",
+                            "transition_reason": "同一 scene 内继续推进到会面动作。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with patch.object(
+            NovelToVideoService,
+            "_run_structured_agent",
+            autospec=True,
+            side_effect=[chunk_plan, first_batch, second_batch],
+        ):
+            plan = service._build_scene_plan_from_scene_structure(
+                novel_package=story_result.novel_package,
+                story_memory=story_memory,
+                chapter_number=1,
+                raw_scene=raw_scene,
+            )
+
+        self.assertEqual(
+            [item.segment_id for item in plan.segments],
+            ["ch01-sc01-seg01", "ch01-sc01-seg02"],
+        )
+        self.assertEqual(
+            plan.segments[1].continuity_link.previous_segment_id,
+            "ch01-sc01-seg01",
+        )
+        self.assertEqual(plan.segments[1].continuity_link.transition_mode, "continue")
+        self.assertIn("上一段尾部状态", plan.segments[1].continuity_link.opening_match)
 
     def test_repair_segment_plan_preserves_all_llm_segments_within_same_chapter(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
@@ -4006,6 +6690,63 @@ class PipelineTestCase(unittest.TestCase):
         )
         self.assertTrue(all(item.subtitle_lines for item in normalized.segments))
         self.assertTrue(any(item.dialogue_lines for item in normalized.segments[1:]))
+
+    def test_normalize_segments_for_seedance_is_idempotent_for_already_prepared_segments(self) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        service = NovelToVideoService(
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        raw_plan = VideoSegmentPlanSchema.model_validate(
+            {
+                "segments": [
+                    {
+                        "segment_id": "confession_long_01",
+                        "chapter_number": 1,
+                        "title": "长对白告白",
+                        "summary": "两人在雨棚下完成一整轮告白与回应。",
+                        "involved_characters": ["林雾", "沈砚"],
+                        "narration": "雨声压低了街口的喧哗，她终于停下脚步。",
+                        "dialogue_lines": [
+                            "林雾：我喜欢你很久了，不是今天才开始，也不是因为这场雨才突然想说。",
+                            "沈砚：我听见了，你别急，我也有话想慢慢告诉你。",
+                        ],
+                        "subtitle_lines": [
+                            "我喜欢你很久了，不是今天才开始。",
+                            "我听见了，你别急，我也有话想告诉你。",
+                        ],
+                        "sound_effects": ["雨声"],
+                        "music_direction": "克制温柔",
+                        "timed_beats": ["0-5秒：两人在雨棚下完成告白对白。"],
+                        "scene_prompt": "雨棚下双人对话。",
+                        "start_frame_prompt": "两人在雨棚下对视。",
+                        "end_frame_prompt": "沈砚抬眼回应。",
+                        "duration_seconds": 5,
+                    }
+                ]
+            }
+        )
+
+        first_pass = service._normalize_segments_for_seedance(raw_plan)
+        second_pass = service._normalize_segments_for_seedance(first_pass)
+
+        self.assertEqual(
+            [item.segment_id for item in first_pass.segments],
+            [item.segment_id for item in second_pass.segments],
+        )
+        self.assertEqual(len(first_pass.segments), len(second_pass.segments))
+        self.assertTrue(all("当前子片段" not in item.title for item in second_pass.segments))
+        self.assertTrue(all("/ 第" not in item.title for item in second_pass.segments))
+        self.assertTrue(
+            all(
+                "当前为第" not in " ".join(item.subtitle_lines)
+                for item in second_pass.segments
+            )
+        )
 
     def test_scene_frame_prompts_strip_dialogue_and_subtitle_text(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

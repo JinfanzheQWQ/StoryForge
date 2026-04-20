@@ -27,13 +27,14 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 - 基于 `LangChain >= 1.2` 的结构化多 Agent 小说生成
 - 基于 `DeepSeek` 与 `ChatGPT 5.4` 的双 LLM 接入，页面可切换
 - 视频结构化规划已接入 `chapter -> scene -> segment` 三层结构
+- `project.segment_contracts` 已支持按 scene + scene 内 chunk checkpoint、失败位置回传和从失败位置继续
 - 同一 `scene` 现在会生成并复用 `scene_bible`，用于锁定地点、时间、光线、背景锚点与角色调度
 - 同一 `scene` 现在会先生成并复用 `scene_master_frame`，作为后续关键帧与视频的场景母图
 - 每个 `segment` 现在会生成并复用 `shot_state`，用于锁定景别、镜头推进、动作推进、道具连续性与尾部承接状态
 - 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
 - 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
 - `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
-- 浏览器端六步式工作台、CLI 和 HTTP API 三种入口
+- 浏览器端六步式工作台 + HTTP API；CLI 提供服务启动入口
 
 ## 核心工作流
 
@@ -46,24 +47,27 @@ StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
 5. 生成场景图
 6. 生成视频
 
-在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`。视频合并仍然是可选的手动动作，不自动执行。
+在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`。第 3 步现在会持续回写分段合同进度，后端会为 `scene` 与 scene 内 `chunk` 持续落 checkpoint；失败后可直接“从失败位置继续”。视频合并仍然是可选的手动动作，不自动执行。
 
 ## 主要特性
 
 - 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Editorial Reviewer`
-- 小说链路改为 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 只负责项目底稿，不再提前钉死角色结构
-- Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，旧的结构化结果和媒体资产会被标记为需要重做
+- 小说链路采用 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 负责项目底稿、主题和舞台约束
+- Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，相关结构化结果和媒体资产会被标记为需要重做
 - Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，当前内置 `DeepSeek` 与 `ChatGPT 5.4`
 - 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做规则校验、归一化与轻量 repair
-- 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错，不再用 brief-first 结果静默顶替
-- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；若第一次 structured 调用空返回，还会再做一次 plain JSON 回收；不再用 `create_agent + ToolStrategy` 跑小说结构化输出
+- 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错
+- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；若第一次 structured 调用空返回，还会再做一次 plain JSON 回收
 - LLM 配置已补 `llm.max_tokens`，当前默认 `8192`；视频分镜规划也已压缩 scene/segment 重复字段，降低 `finish_reason='length'` 导致的 JSON 截断
-- 分步结构化阶段具备后端幂等保护：`project.scene_structure`、`project.segment_contracts` 与兼容入口 `project.story_analysis` 都会按正文修订复用已有 queued / running / completed 任务
-- 运行时已移除 DryRun / 非 LLM 演示模式：Web、API、CLI 默认都要求真实 LLM provider 配置，非 LLM 模式会直接报错
+- `story_memory` prompt 现在会按章节批次收紧成 `chapter_batch_view + recent_chapter_memory + focus_cast_bible`，scene / chunk planner 还会从正文里抽局部聚焦摘录，进一步降低长章节 prompt 压力
+- `story_memory` 现在还会为每章保存更细粒度的 carry-over 摘要，用于后续章节承接角色关系、环境锚点和固定道具状态
+- 分步结构化阶段具备后端幂等保护：`project.scene_structure` 与 `project.segment_contracts` 都会按正文修订复用已有 queued / running / completed 任务
+- `project.segment_contracts` 会在运行中返回 `segment_contract_progress`；当前前端展示 `章 + scene` 进度，后端同时保留 `chunk` 级恢复状态，并在存在 checkpoint 时给出“从失败位置继续”入口
+- Web、API、CLI 默认都要求真实 LLM provider 配置
 - 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
 - 视频规划已拆成场景主规划与执行索引两层：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 保留给逐段执行和重试
-- 视频 segment 规划在 live LLM 模式下同样采用 fail-fast：若返回分析模板、伪分镜或空结构，系统会重试并最终显式失败，不再静默写出坏掉的 `scene_plan.json`
-- Seedance manifest 标题继承真实小说标题，旧产物重载时会优先从 `novel_package.json` / `story_source.json` 恢复标题
+- 视频 segment 规划在 live LLM 模式下采用 fail-fast：若返回分析模板、伪分镜或空结构，系统会重试并最终显式失败，保证落盘的是可执行规划
+- Seedance manifest 标题继承真实小说标题；加载产物时会优先从 `novel_package.json` / `story_source.json` 恢复标题
 - 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
 - 场景一致性链路：`scene_bible` -> 场景图 prompt -> Seedance 视频 prompt
 - 场景母图链路：`scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
@@ -160,7 +164,7 @@ STORYFORGE_DB_PASSWORD=...
 ### 3. 检查配置文件
 
 默认配置文件是 [`configs/storyforge.example.toml`](configs/storyforge.example.toml)。
-`configs/` 目录现在只保留两份配置：
+`configs/` 目录提供两份配置：
 
 - [`configs/storyforge.example.toml`](configs/storyforge.example.toml)：主配置，默认开发与日常运行使用
 - [`configs/storyforge.live.example.toml`](configs/storyforge.live.example.toml)：真实提交模板，适合需要默认自动提交 Seedream / Seedance 的场景
@@ -172,7 +176,7 @@ STORYFORGE_DB_PASSWORD=...
 - `seedream.base_url` / `seedream.model`
 - `seedance.base_url` / `seedance.model`
 - `queue.concurrency`
-- 内容合规由接入的 LLM / 媒体供应商负责，StoryForge 后端不再做本地规则拦截
+- 内容合规由接入的 LLM / 媒体供应商负责，StoryForge 后端聚焦任务编排、数据持久化与产物管理
 
 ### 4. 启动 Web 控制台与 API
 
@@ -193,41 +197,20 @@ uv run storyforge api serve
 2. 在“小说”标签页审阅并按需修改正文
 3. 手动触发场景结构生成
 4. 检查 `chapter -> scene` 结构后，再生成分段合同
+   - 如果分段合同在中途失败，页面会显示 `章 + scene` 进度和失败位置，可直接从失败位置继续
 5. 查看 `scene` 分组后的时间线规划
 6. 在同一条 story run 上生成角色图
 7. 基于同一条 story run 逐段生成场景图与视频，并在需要时手动合并总片
 
-## CLI 用法
+## CLI
 
-初始化目录：
-
-```bash
-uv run storyforge init
-```
-
-运行 demo brief。该命令同样需要真实 LLM provider 配置：
+CLI 提供启动 Web / API 的入口：
 
 ```bash
-uv run storyforge pipeline demo
+uv run storyforge api serve
 ```
 
-使用自己的 brief：
-
-```bash
-uv run storyforge pipeline build \
-  --brief examples/briefs/demo_story.toml \
-  --config configs/storyforge.example.toml \
-  --llm
-```
-
-从已有小说包继续规划视频：
-
-```bash
-uv run storyforge video plan \
-  --novel-package outputs/your-story/novel_package.json \
-  --config configs/storyforge.example.toml \
-  --llm
-```
+当前推荐工作方式统一为页面分步操作。
 
 ## API 概览
 
@@ -236,7 +219,6 @@ uv run storyforge video plan \
 - `POST /v1/projects/novel`
 - `POST /v1/projects/scene-structure`
 - `POST /v1/projects/segment-contracts`
-- `POST /v1/projects/story-analysis`
 - `POST /v1/projects/characters`
 - `POST /v1/projects/scenes`
 - `POST /v1/projects/videos`
@@ -274,7 +256,7 @@ uv run storyforge video plan \
 - `rendered/*.mp4`
 - `rendered/full_story.mp4`
 
-CLI 默认输出到 `outputs/<story-slug>/`，Web 项目任务会在同一 `output_dir` 上分阶段复用。
+项目任务产物默认落在 `outputs/<story-slug>/`，同一条 story run 会持续复用同一个 `output_dir`。
 更完整的目录结构、产物职责和联调顺序见：[docs/usage.md](docs/usage.md)
 
 ## 仓库结构
@@ -285,7 +267,7 @@ StoryForge/
 ├── docs/                    # 项目文档
 ├── examples/                # 示例 brief
 ├── src/storyforge/
-│   ├── agents/              # Agent backend 与 orchestrator
+│   ├── agents/              # Agent backend 抽象与 LangChain 实现
 │   ├── api/                 # FastAPI、模板和静态资源
 │   ├── application/         # 队列、任务运行时、持久化
 │   ├── core/                # 配置、IO、环境变量工具

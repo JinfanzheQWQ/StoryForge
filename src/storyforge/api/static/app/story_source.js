@@ -24,7 +24,7 @@ export function resolveStorySourceLocator(task, run = null) {
   const projectId = task?.project_id;
   const sourceTaskId =
     run?.rootTask?.task_id
-    || (task?.task_type === "project.story" || task?.task_type === "project.build"
+    || (task?.task_type === "project.story"
       ? task?.task_id
       : task?.result?.source_task_id || task?.payload?.source_task_id);
   const hasStorySource =

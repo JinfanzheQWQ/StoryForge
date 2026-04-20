@@ -227,6 +227,11 @@ class VideoPlanningMixin:
                 new_facts=list(item.beats[:3]),
                 resolved_threads=[item.goal] if item.goal else [],
                 unresolved_threads=[item.cliffhanger] if item.cliffhanger else [],
+                carry_over_summary=self._compact_story_memory_text(
+                    item.summary or item.title,
+                    limit=100,
+                ),
+                carry_over_visuals=list(novel_package.outline.visual_motifs[:3]),
             )
             for item in novel_package.outline.chapters
         ]
@@ -381,6 +386,19 @@ class VideoPlanningMixin:
             limit=2,
         )
         chapter_state.exit_state = self._build_story_memory_exit_state(last_segment)
+        chapter_state.carry_over_summary = self._build_story_memory_chapter_carry_over_summary(
+            chapter_plan=chapter_plan,
+            chapter_state=chapter_state,
+        )
+        chapter_state.carry_over_visuals = self._build_story_memory_chapter_carry_over_visuals(
+            chapter_plan=chapter_plan,
+        )
+        chapter_state.carry_over_props = self._build_story_memory_chapter_carry_over_props(
+            chapter_plan=chapter_plan,
+        )
+        chapter_state.relationship_state = self._build_story_memory_chapter_relationship_state(
+            chapter_plan=chapter_plan,
+        )
 
         planning_entry.scene_ids = list(chapter_state.generated_scene_ids)
         planning_entry.segment_ids = list(chapter_state.generated_segment_ids)
@@ -437,6 +455,35 @@ class VideoPlanningMixin:
             chapter_state.exit_state = self._build_story_memory_exit_state(
                 chapter_segments[-1] if chapter_segments else None
             )
+            chapter_state.carry_over_summary = self._build_story_memory_chapter_carry_over_summary(
+                chapter_plan=VideoSegmentPlanSchema.model_validate(
+                    {"scenes": [item.model_dump() for item in chapter_scenes]}
+                )
+                if chapter_scenes
+                else VideoSegmentPlanSchema.model_validate({"scenes": []}),
+                chapter_state=chapter_state,
+            )
+            chapter_state.carry_over_visuals = self._build_story_memory_chapter_carry_over_visuals(
+                chapter_plan=VideoSegmentPlanSchema.model_validate(
+                    {"scenes": [item.model_dump() for item in chapter_scenes]}
+                )
+                if chapter_scenes
+                else VideoSegmentPlanSchema.model_validate({"scenes": []}),
+            )
+            chapter_state.carry_over_props = self._build_story_memory_chapter_carry_over_props(
+                chapter_plan=VideoSegmentPlanSchema.model_validate(
+                    {"scenes": [item.model_dump() for item in chapter_scenes]}
+                )
+                if chapter_scenes
+                else VideoSegmentPlanSchema.model_validate({"scenes": []}),
+            )
+            chapter_state.relationship_state = self._build_story_memory_chapter_relationship_state(
+                chapter_plan=VideoSegmentPlanSchema.model_validate(
+                    {"scenes": [item.model_dump() for item in chapter_scenes]}
+                )
+                if chapter_scenes
+                else VideoSegmentPlanSchema.model_validate({"scenes": []}),
+            )
             chapter_state.generated_scene_ids = [item.scene_id for item in chapter_scenes]
             chapter_state.generated_segment_ids = [item.segment_id for item in chapter_segments]
             planning_entry.scene_ids = list(chapter_state.generated_scene_ids)
@@ -471,9 +518,7 @@ class VideoPlanningMixin:
             "scene_id": segment.scene_id,
             "scene_title": segment.scene_title,
             "summary": self._compact_story_memory_text(segment.summary, limit=100),
-            "carry_over_characters": list(
-                segment.end_frame_characters or segment.involved_characters
-            ),
+            "carry_over_characters": list(segment.end_frame_characters),
             "end_state_lock": self._compact_story_memory_text(
                 segment.shot_state.end_state_lock,
                 limit=100,
@@ -514,6 +559,81 @@ class VideoPlanningMixin:
             active_costume_state=active_costume_state,
             active_relationship_state=active_relationship_state,
             carry_over_visuals=carry_over_visuals,
+        )
+
+    def _build_story_memory_chapter_carry_over_summary(
+        self,
+        *,
+        chapter_plan: VideoSegmentPlanSchema,
+        chapter_state: StoryMemoryChapterState,
+    ) -> str:
+        if not chapter_plan.segments:
+            return self._compact_story_memory_text(
+                chapter_state.chapter_summary or chapter_state.chapter_title,
+                limit=100,
+            )
+        last_segment = chapter_plan.segments[-1]
+        summary_parts = [
+            self._compact_story_memory_text(last_segment.summary, limit=60),
+            self._compact_story_memory_text(last_segment.shot_state.end_state_lock, limit=60),
+        ]
+        scene_location = self._compact_story_memory_text(last_segment.scene_bible.location, limit=40)
+        if scene_location:
+            summary_parts.append(f"停留场域：{scene_location}")
+        return self._compact_story_memory_text(
+            "；".join(part for part in summary_parts if part),
+            limit=140,
+        )
+
+    def _build_story_memory_chapter_carry_over_visuals(
+        self,
+        *,
+        chapter_plan: VideoSegmentPlanSchema,
+    ) -> list[str]:
+        if not chapter_plan.segments:
+            return []
+        last_segment = chapter_plan.segments[-1]
+        return self._unique_story_memory_items(
+            [
+                *last_segment.scene_bible.background_anchors,
+                *last_segment.scene_bible.dominant_palette,
+                self._compact_story_memory_text(last_segment.scene_anchor, limit=50),
+            ],
+            limit=5,
+        )
+
+    def _build_story_memory_chapter_carry_over_props(
+        self,
+        *,
+        chapter_plan: VideoSegmentPlanSchema,
+    ) -> list[str]:
+        if not chapter_plan.segments:
+            return []
+        last_segment = chapter_plan.segments[-1]
+        return self._unique_story_memory_items(
+            [
+                *last_segment.scene_bible.fixed_props,
+                self._compact_story_memory_text(last_segment.shot_state.prop_continuity, limit=50),
+            ],
+            limit=4,
+        )
+
+    def _build_story_memory_chapter_relationship_state(
+        self,
+        *,
+        chapter_plan: VideoSegmentPlanSchema,
+    ) -> list[str]:
+        if not chapter_plan.segments:
+            return []
+        opening_segment = chapter_plan.segments[0]
+        ending_segment = chapter_plan.segments[-1]
+        return self._unique_story_memory_items(
+            [
+                self._compact_story_memory_text(opening_segment.summary, limit=60),
+                self._compact_story_memory_text(ending_segment.summary, limit=60),
+                self._compact_story_memory_text(ending_segment.shot_state.emotion_progression, limit=60),
+            ],
+            limit=3,
         )
 
     def _merge_chapter_segment_plans(
@@ -1104,8 +1224,70 @@ class VideoPlanningMixin:
     ) -> VideoSegmentPlanSchema:
         normalized_segments: list[VideoSegmentSchema] = []
         for segment in plan.segments:
+            if self._segment_already_normalized_for_seedance(segment):
+                normalized_segments.append(self._sanitize_seedance_ready_segment(segment))
+                continue
             normalized_segments.extend(self._expand_segment_for_seedance(segment))
         return VideoSegmentPlanSchema(segments=normalized_segments)
+
+    def _segment_already_normalized_for_seedance(
+        self,
+        segment: VideoSegmentSchema,
+    ) -> bool:
+        return bool(segment.source_segment_id.strip())
+
+    def _sanitize_seedance_ready_segment(
+        self,
+        segment: VideoSegmentSchema,
+    ) -> VideoSegmentSchema:
+        shot_state = segment.shot_state.model_copy(
+            update={
+                "framing": self._strip_internal_segment_markers(segment.shot_state.framing),
+                "camera_motion": self._strip_internal_segment_markers(segment.shot_state.camera_motion),
+                "blocking": self._strip_internal_segment_markers(segment.shot_state.blocking),
+                "action_progression": self._strip_internal_segment_markers(segment.shot_state.action_progression),
+                "emotion_progression": self._strip_internal_segment_markers(segment.shot_state.emotion_progression),
+                "prop_continuity": self._strip_internal_segment_markers(segment.shot_state.prop_continuity),
+                "screen_direction": self._strip_internal_segment_markers(segment.shot_state.screen_direction),
+                "end_state_lock": self._strip_internal_segment_markers(segment.shot_state.end_state_lock),
+            }
+        )
+        continuity_link = segment.continuity_link.model_copy(
+            update={
+                "opening_match": self._strip_internal_segment_markers(segment.continuity_link.opening_match),
+                "allowed_changes": self._strip_internal_segment_markers(segment.continuity_link.allowed_changes),
+                "transition_reason": self._strip_internal_segment_markers(segment.continuity_link.transition_reason),
+                "carry_over_elements": [
+                    self._strip_internal_segment_markers(item)
+                    for item in segment.continuity_link.carry_over_elements
+                    if self._strip_internal_segment_markers(item)
+                ],
+            }
+        )
+        return segment.model_copy(
+            update={
+                "title": self._strip_internal_segment_markers(segment.title) or segment.title,
+                "summary": self._strip_internal_segment_markers(segment.summary) or segment.summary,
+                "narration": self._strip_internal_segment_markers(segment.narration) or segment.narration,
+                "subtitle_lines": [
+                    self._strip_internal_segment_markers(item)
+                    for item in segment.subtitle_lines
+                    if self._strip_internal_segment_markers(item)
+                ],
+                "timed_beats": [
+                    self._strip_internal_segment_markers(item)
+                    for item in segment.timed_beats
+                    if self._strip_internal_segment_markers(item)
+                ],
+                "scene_prompt": self._strip_internal_segment_markers(segment.scene_prompt) or segment.scene_prompt,
+                "start_frame_prompt": self._strip_internal_segment_markers(segment.start_frame_prompt) or segment.start_frame_prompt,
+                "mid_frame_prompt": self._strip_internal_segment_markers(segment.mid_frame_prompt),
+                "end_frame_prompt": self._strip_internal_segment_markers(segment.end_frame_prompt) or segment.end_frame_prompt,
+                "transition_hint": self._normalize_transition_hint(segment.transition_hint),
+                "shot_state": shot_state,
+                "continuity_link": continuity_link,
+            }
+        )
 
     def _expand_segment_for_seedance(
         self,
@@ -1173,6 +1355,9 @@ class VideoPlanningMixin:
                         "shot_state": self._retarget_shot_state(
                             segment.shot_state,
                             focus_summary=segment.summary,
+                            opening_focus=self._extract_beat_descriptions(timed_beats)[0]
+                            if self._extract_beat_descriptions(timed_beats)
+                            else segment.summary,
                             closing_focus=self._extract_beat_descriptions(timed_beats)[-1]
                             if self._extract_beat_descriptions(timed_beats)
                             else segment.summary,
@@ -1191,7 +1376,10 @@ class VideoPlanningMixin:
                             )
                             or self._normalize_transition_mode_from_hint(segment.transition_hint),
                             focus_summary=segment.summary,
-                            end_state_lock=self._shot_state_value(segment.shot_state, "end_state_lock")
+                            opening_focus=self._extract_beat_descriptions(timed_beats)[0]
+                            if self._extract_beat_descriptions(timed_beats)
+                            else segment.summary,
+                            closing_focus=self._shot_state_value(segment.shot_state, "end_state_lock")
                             or segment.summary,
                             segment_index=1,
                             segment_count=1,
@@ -1213,6 +1401,7 @@ class VideoPlanningMixin:
         narration_chunks = self._chunk_narration(narration, split_count)
 
         expanded_segments: list[VideoSegmentSchema] = []
+        previous_closing_focus = ""
         for index, clip_duration in enumerate(split_durations, start=1):
             beat_descriptions = beat_chunks[index - 1] or [segment.summary]
             dialogue_lines = dialogue_chunks[index - 1]
@@ -1238,7 +1427,7 @@ class VideoPlanningMixin:
                 segment.model_copy(
                     update={
                         "segment_id": f"{segment.segment_id}_{index:02d}",
-                        "title": f"{segment.title} / 第{index}段",
+                        "title": self._strip_internal_segment_markers(segment.title) or segment.title,
                         "summary": focus_summary,
                         "narration": narration,
                         "dialogue_lines": dialogue_lines,
@@ -1250,23 +1439,23 @@ class VideoPlanningMixin:
                         ),
                         "sound_effects": sound_effect_chunks[index - 1] or segment.sound_effects[:1],
                         "timed_beats": timed_beats_chunk,
-                        "scene_prompt": (
-                            f"{segment.scene_prompt} 这一小段重点呈现：{focus_summary}"
-                        ),
-                        "start_frame_prompt": (
-                            f"{segment.start_frame_prompt} 开场重点：{beat_descriptions[0]}"
-                        ),
+                        "scene_prompt": self._strip_internal_segment_markers(segment.scene_prompt) or segment.scene_prompt,
+                        "start_frame_prompt": self._strip_internal_segment_markers(segment.start_frame_prompt) or segment.start_frame_prompt,
                         "mid_frame_prompt": (
                             (
-                                f"{segment.mid_frame_prompt or self._build_default_mid_frame_prompt(segment, focus_summary)} "
-                                f"中段重点：{focus_summary}"
+                                self._strip_internal_segment_markers(
+                                    segment.mid_frame_prompt
+                                    or self._build_default_mid_frame_prompt(segment, focus_summary)
+                                )
+                                or (
+                                    segment.mid_frame_prompt
+                                    or self._build_default_mid_frame_prompt(segment, focus_summary)
+                                )
                             )
                             if requires_mid_frame
                             else ""
                         ),
-                        "end_frame_prompt": (
-                            f"{segment.end_frame_prompt} 收束重点：{beat_descriptions[-1]}"
-                        ),
+                        "end_frame_prompt": self._strip_internal_segment_markers(segment.end_frame_prompt) or segment.end_frame_prompt,
                         "duration_seconds": clip_duration,
                         "requires_mid_frame": requires_mid_frame,
                         "transition_hint": (
@@ -1281,6 +1470,7 @@ class VideoPlanningMixin:
                         "shot_state": self._retarget_shot_state(
                             segment.shot_state,
                             focus_summary=focus_summary,
+                            opening_focus=previous_closing_focus or beat_descriptions[0],
                             closing_focus=beat_descriptions[-1],
                             segment_index=index,
                             segment_count=split_count,
@@ -1305,13 +1495,15 @@ class VideoPlanningMixin:
                                 or self._normalize_transition_mode_from_hint(segment.transition_hint)
                             ),
                             focus_summary=focus_summary,
-                            end_state_lock=beat_descriptions[-1],
+                            opening_focus=previous_closing_focus or beat_descriptions[0],
+                            closing_focus=beat_descriptions[-1],
                             segment_index=index,
                             segment_count=split_count,
                         ),
                     }
                 )
             )
+            previous_closing_focus = beat_descriptions[-1]
 
         return expanded_segments
 
@@ -1362,16 +1554,11 @@ class VideoPlanningMixin:
         frame_characters: list[str],
         involved_characters: list[str],
     ) -> list[str]:
-        normalized = [
+        return [
             name
             for name in frame_characters
             if name and name in involved_characters
         ]
-        if normalized:
-            return normalized
-        if len(involved_characters) == 1:
-            return list(involved_characters)
-        return []
 
     def _merge_unique_character_names(
         self,
@@ -1751,6 +1938,7 @@ class VideoPlanningMixin:
         shot_state: ShotStateSchema | object,
         *,
         focus_summary: str,
+        opening_focus: str,
         closing_focus: str,
         segment_index: int,
         segment_count: int,
@@ -1772,22 +1960,27 @@ class VideoPlanningMixin:
                 )
             }
         )
-        action_progression = str(base_payload.get("action_progression", "") or focus_summary)
-        end_state_lock = str(base_payload.get("end_state_lock", "") or closing_focus)
-        emotion_progression = str(base_payload.get("emotion_progression", "") or focus_summary)
-        note = (
-            f" 当前子片段：第{segment_index}/{segment_count}段，重点：{focus_summary}。"
-            if segment_count > 1
-            else ""
+        action_progression = self._strip_internal_segment_markers(
+            str(base_payload.get("action_progression", "") or focus_summary)
         )
+        end_state_lock = self._strip_internal_segment_markers(
+            str(base_payload.get("end_state_lock", "") or closing_focus)
+        )
+        emotion_progression = self._strip_internal_segment_markers(
+            str(base_payload.get("emotion_progression", "") or focus_summary)
+        )
+        if segment_count > 1:
+            action_progression = self._strip_internal_segment_markers(focus_summary) or action_progression
+            end_state_lock = self._strip_internal_segment_markers(closing_focus) or end_state_lock
+            emotion_progression = self._strip_internal_segment_markers(
+                emotion_progression or opening_focus or focus_summary
+            )
         return ShotStateSchema.model_validate(
             {
                 **base_payload,
-                "action_progression": f"{action_progression}{note}".strip(),
-                "emotion_progression": f"{emotion_progression}{note}".strip(),
-                "end_state_lock": (
-                    f"{end_state_lock}{note} 收束状态：{closing_focus}。"
-                ).strip(),
+                "action_progression": action_progression,
+                "emotion_progression": emotion_progression,
+                "end_state_lock": end_state_lock,
             }
         )
 
@@ -1798,7 +1991,8 @@ class VideoPlanningMixin:
         previous_segment_id: str,
         transition_mode: str,
         focus_summary: str,
-        end_state_lock: str,
+        opening_focus: str,
+        closing_focus: str,
         segment_index: int,
         segment_count: int,
     ) -> ContinuityLinkSchema:
@@ -1824,14 +2018,9 @@ class VideoPlanningMixin:
         normalized_mode = transition_mode.strip().lower()
         if normalized_mode not in {"start", "continue", "cut"}:
             normalized_mode = "start"
-        note = (
-            f" 当前子片段：第{segment_index}/{segment_count}段。"
-            if segment_count > 1
-            else ""
-        )
-        opening_match = str(base_payload.get("opening_match", "") or "")
+        opening_match = self._strip_internal_segment_markers(str(base_payload.get("opening_match", "") or ""))
         if normalized_mode == "continue":
-            opening_match = opening_match or f"开场先承接上一段尾部：{end_state_lock}"
+            opening_match = opening_match or f"开场先承接上一段尾部：{self._strip_internal_segment_markers(opening_focus)}"
         else:
             opening_match = opening_match if normalized_mode == "cut" else ""
         carry_over_elements = list(base_payload.get("carry_over_elements", []))
@@ -1842,18 +2031,18 @@ class VideoPlanningMixin:
                 **base_payload,
                 "previous_segment_id": previous_segment_id if normalized_mode == "continue" else "",
                 "transition_mode": normalized_mode,
-                "opening_match": f"{opening_match}{note}".strip(),
+                "opening_match": opening_match,
                 "carry_over_elements": carry_over_elements if normalized_mode == "continue" else [],
                 "allowed_changes": (
-                    str(base_payload.get("allowed_changes", "") or "")
+                    self._strip_internal_segment_markers(str(base_payload.get("allowed_changes", "") or ""))
                     or (
-                        f"承接开场后，允许把动作推进到：{focus_summary}"
+                        f"承接开场后，允许把动作推进到：{self._strip_internal_segment_markers(focus_summary)}"
                         if normalized_mode == "continue"
                         else ("允许切到新的动作与镜头状态" if normalized_mode == "cut" else "作为起始段建立新的连续性基线")
                     )
                 ),
                 "transition_reason": (
-                    str(base_payload.get("transition_reason", "") or "")
+                    self._strip_internal_segment_markers(str(base_payload.get("transition_reason", "") or ""))
                     or (
                         "同一场景或同一动作链的连续推进"
                         if normalized_mode == "continue"

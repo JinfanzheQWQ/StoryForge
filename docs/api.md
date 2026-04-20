@@ -186,8 +186,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 这一步依赖已经完成且未过期的 `project.scene_structure`，并会在已有 scene skeleton 的基础上继续生成：
 
 - `character_image_manifest.json`
+- `scene_structure_source.json`
 - 最终版 `scene_plan.json`
 - `segment_plan.json`
+- `segment_contract_progress.json`
 - `scene_image_manifest.json`
 - `seedance_manifest.json`
 - `continuity_report.json`
@@ -196,6 +198,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 最终版 `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
 - `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
+- `scene_structure_source.json` 是恢复专用的原始 scene skeleton 快照
+- `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 记录进度、失败位置和恢复状态；每完成一个 chunk 就会回写一次 checkpoint
 
 请求示例：
 
@@ -204,7 +208,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_task_id": "story-task-id",
   "use_llm": true,
-  "continuity_review_mode": "auto"
+  "continuity_review_mode": "auto",
+  "resume_from_progress": false
 }
 ```
 
@@ -214,33 +219,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `continuity_review_mode` 可选 `off / auto / on`
 - `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
 - 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
+- `resume_from_progress = true` 时，会复用 `segment_contract_progress.json` 里已落盘的 chunk 规划与失败位置，只继续未完成 chunk / scene / chapter，不能和 `segment_id / scene_id / master_only / merge_only` 混用
+- `resume_from_progress = true` 要求 checkpoint 包含 `scene/chunk` 级进度结构
 - 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode` 复用已有 queued / running / completed 任务
-
-#### `POST /v1/projects/story-analysis`
-
-创建兼容模式下的“生成结构化信息”任务。
-
-这个接口仍会基于当前 `story_source.json` 生成完整结构化与视频规划产物，但内部实现已经改成串行执行：
-
-- `project.scene_structure`
-- `project.segment_contracts`
-
-请求示例：
-
-```json
-{
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "source_task_id": "story-task-id",
-  "use_llm": true,
-  "continuity_review_mode": "auto"
-}
-```
-
-说明：
-
-- 新页面默认优先调用分步接口；这个兼容接口主要保留给旧调用方与一键式串行执行场景
-- `continuity_review_mode` 的语义与 `project.segment_contracts` 一致
-- 幂等去重会把 `continuity_review_mode` 计入判定；同一正文修订下，切换模式后会创建新的兼容结构化任务
 
 #### `POST /v1/projects/characters`
 
@@ -294,11 +275,11 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `segment_id` 可选
 - `scene_id` 可选
 - `master_only` 可选
-- 不传时表示沿用旧的整批执行方式
+- 不传时表示对当前 run 执行整批场景图任务
 - 传入后表示只生成单个 segment 的首帧 / 中段锚点帧 / 尾帧
 - 传入 `scene_id + master_only = true` 时，只会重生成该 scene 的 `scene_master_frame`
 - `master_only = true` 不能与 `segment_id` 同时提交，也必须配合 `scene_id`
-- 该模式会强制跳过旧的“母图已完成则直接复用”逻辑，重新调用 Seedream 并把结果回写到 `scene_plan.json` 与 `scene_image_manifest.json`
+- 该模式会重新调用 Seedream 并把结果回写到 `scene_plan.json` 与 `scene_image_manifest.json`
 - 对同一 `source_task_id + segment_id`，如果已经有 queued / running 任务，后端会直接返回已有任务
 - 对同一 `source_task_id + scene_id + master_only`，如果已经有 queued / running 任务，后端也会直接返回已有任务
 
@@ -429,10 +410,6 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   - `has_more_batches`
 - 这个接口不会新建任何媒体任务；它只更新合同与报告，后续是否重跑 `project.scenes` / `project.videos` 仍由用户手动决定
 
-#### `POST /v1/projects/images`
-
-兼容接口。会连续执行“角色图 + 场景图”两步。
-
 #### `GET /v1/projects/{project_id}/story-source/{source_task_id}`
 
 读取某个 story run 当前的可编辑小说正文。
@@ -444,13 +421,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 更新后会：
 
 - 重写 `story_source.json`
-- 清除旧的 `novel_package.json`、`novel_audit.json`、角色图、场景图、视频等派生产物
-- 清除旧的 `continuity_repair_*.json`
+- 清除当前 `novel_package.json`、`novel_audit.json`、角色图、场景图、视频等派生产物
+- 清除当前 `continuity_repair_*.json`
 - 让前端把场景结构、分段合同与媒体阶段视为“待重新生成”
-
-#### `POST /v1/projects/novel-to-video`
-
-兼容接口。会一口气执行整条链路。
 
 ### 任务
 
@@ -487,6 +460,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `error` 为失败时的可展示原因，前端会直接展示它。
 - 阶段任务会在提交时继承 `pipeline_root_task_id`，并通过 `payload.pipeline_root_task_id` 与 `result.pipeline_root_task_id` 指向同一条 story run。
 - `result.story_source_revision` 用于判断场景结构、分段合同、图片和视频是否仍对应当前正文。
+- `project.segment_contracts` 的 `result` 现在可能额外带 `segment_contract_progress_path` 与 `segment_contract_progress`
+- `segment_contract_progress` 会包含 `status / total_chapters / total_scenes / total_chunks / completed_chapters / completed_scene_count / completed_chunk_count / failed_chapter_number / failed_scene_id / failed_chunk_id / resume_ready / chapters[]`
+- `chapters[].scenes[]` 下会继续带 `chunks[]`、`running_chunk_id`、`failed_chunk_id`
+- 分段合同失败时，`error` 会尽量带上 `chapter / scene_id / chunk_id` 上下文，前端可直接展示失败位置
 - `project.scenes` 的单段任务会带 `segment_id`；场景母图重生成任务会带 `scene_id` 和 `master_only = true`
 - `project.scenes` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部关键帧；内部连续性修复链路还可进一步附带受影响 `segment_ids`，把重跑范围缩小到 scene 内局部片段
 - `project.videos` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部视频片段

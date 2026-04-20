@@ -3,10 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from storyforge.core.io import read_json
+from storyforge.core.io import read_json, to_jsonable
 from storyforge.application.task_support import (
     build_requested_image_error,
-    build_requested_media_error,
     build_requested_video_error,
     refresh_artifact_revision_for_tasks,
     load_novel_package,
@@ -23,21 +22,19 @@ from storyforge.application.task_support import (
 from storyforge.application.tasks import QueuedTask, TaskExecutionError, utc_now
 from storyforge.domains.novel.contracts import StoryBrief
 from storyforge.pipelines.story_pipeline import (
-    run_story_analysis_pipeline,
     run_story_generation_pipeline,
     run_story_scene_structure_pipeline,
     run_story_segment_contracts_pipeline,
 )
 from storyforge.pipelines.video_pipeline import (
     run_character_image_pipeline,
-    run_image_pipeline,
     run_scene_continuity_repair_pipeline,
     run_segment_continuity_repair_pipeline,
     run_video_merge_pipeline,
     run_scene_image_pipeline,
-    run_video_pipeline,
     run_video_render_pipeline,
 )
+from storyforge.pipelines.video_planning import load_segment_contract_progress
 
 if TYPE_CHECKING:
     from storyforge.application.task_runtime import TaskExecutionContext
@@ -78,65 +75,6 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
         "continuity_review_mode": continuity_review_mode,
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    return response
-
-
-def run_story_analysis_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
-    source_task = resolve_source_task(context, task)
-    output_dir = resolve_output_dir(source_task)
-    story_source = load_story_source(source_task)
-    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
-    llm_provider, llm_model = resolve_llm_selection(task, source_task)
-    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
-    pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
-    partial_response = {
-        "project_id": task.project_id,
-        "story_title": story_source.title,
-        "output_dir": str(output_dir),
-        "story_source_path": str(source_task.result["story_source_path"]),
-        "story_source_revision": str(source_task.result.get("story_source_revision", utc_now())),
-        "pipeline_stage": "story_analysis_started",
-        "task_stage": "story_analysis",
-        "pipeline_root_task_id": pipeline_root_task_id,
-        "source_task_id": str(task.payload["source_task_id"]),
-        "artifact_revision": utc_now(),
-        "continuity_review_mode": continuity_review_mode,
-    }
-    persist_task_progress(context, task, partial_response)
-
-    analysis_result = run_story_analysis_pipeline(
-        story_source=story_source,
-        config=context.config,
-        project_root=context.project_root,
-        use_llm=use_llm,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        continuity_review_mode=continuity_review_mode,
-        output_root=output_dir,
-    )
-    response = {
-        **partial_response,
-        "story_title": analysis_result.novel_package.outline.title,
-        "novel_package_path": str(analysis_result.novel_package_path),
-        "novel_audit_path": str(analysis_result.novel_audit_path),
-        "story_memory_path": str(analysis_result.story_memory_path),
-        "character_bible_path": str(analysis_result.character_bible_path),
-        "character_images_path": str(analysis_result.character_images_path),
-        "scene_plan_path": str(analysis_result.scene_plan_path),
-        "segment_plan_path": str(analysis_result.segment_plan_path),
-        "scene_images_path": str(analysis_result.scene_images_path),
-        "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
-        "pipeline_stage": "story_analysis_completed",
-    }
-    response = _build_completed_stage_response(response)
-    _store_stage_result(context, task, response)
-    _sync_stage_result(
-        context,
-        task=task,
-        pipeline_root_task_id=pipeline_root_task_id,
-        result=response,
-        mode="propagate",
-    )
     return response
 
 
@@ -205,6 +143,7 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    resume_from_progress = bool(task.payload.get("resume_from_progress", False))
     partial_response = _start_stage_task(
         context,
         task,
@@ -215,17 +154,44 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
     )
+    if resume_from_progress:
+        partial_response["resume_from_progress"] = True
+        persist_task_progress(context, task, partial_response)
 
-    segment_contracts_result = run_story_segment_contracts_pipeline(
-        novel_package=novel_package,
-        config=context.config,
-        project_root=context.project_root,
-        use_llm=use_llm,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        continuity_review_mode=continuity_review_mode,
-        output_root=output_dir,
-    )
+    def progress_callback(progress) -> None:
+        _persist_stage_update(
+            context,
+            task,
+            partial_response,
+            pipeline_stage="segment_contracts_started",
+            **_build_segment_contract_progress_result(output_dir, progress),
+        )
+
+    try:
+        segment_contracts_result = run_story_segment_contracts_pipeline(
+            novel_package=novel_package,
+            config=context.config,
+            project_root=context.project_root,
+            use_llm=use_llm,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            continuity_review_mode=continuity_review_mode,
+            output_root=output_dir,
+            resume_from_progress=resume_from_progress,
+            progress_callback=progress_callback,
+        )
+    except Exception as exc:
+        failure_progress = load_segment_contract_progress(output_dir)
+        failure_response = {
+            **partial_response,
+            **_build_stage_reset_fields(clear_character_assets=False),
+            **_build_segment_contract_output_paths(output_dir),
+            **_build_segment_contract_progress_result(output_dir, failure_progress),
+            "story_title": novel_package.outline.title,
+            "pipeline_stage": "segment_contracts_failed",
+        }
+        raise TaskExecutionError(str(exc), result=failure_response) from exc
+
     response = {
         **partial_response,
         **_build_stage_reset_fields(clear_character_assets=False),
@@ -235,9 +201,14 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         "character_images_path": str(segment_contracts_result.character_images_path),
         "scene_plan_path": str(segment_contracts_result.scene_plan_path),
         "segment_plan_path": str(segment_contracts_result.segment_plan_path),
+        "segment_contract_progress_path": str(segment_contracts_result.segment_contract_progress_path),
         "scene_images_path": str(segment_contracts_result.scene_images_path),
         "seedance_manifest_path": str(segment_contracts_result.seedance_manifest_path),
         "pipeline_stage": "segment_contracts_completed",
+        **_build_segment_contract_progress_result(
+            output_dir,
+            segment_contracts_result.video_planning.segment_contract_progress,
+        ),
     }
     response = _build_completed_stage_response(response)
     _store_stage_result(context, task, response)
@@ -248,60 +219,6 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         result=response,
         mode="propagate",
     )
-    return response
-
-
-def run_images_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
-    source_task = resolve_source_task(context, task)
-    output_dir = resolve_output_dir(source_task)
-    novel_package = load_novel_package(source_task)
-    use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
-    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
-    pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
-    partial_response = _start_stage_task(
-        context,
-        task,
-        source_task=source_task,
-        output_dir=output_dir,
-        task_stage="images",
-        pipeline_stage="image_generation_started",
-        pipeline_root_task_id=pipeline_root_task_id,
-        continuity_review_mode=continuity_review_mode,
-    )
-
-    image_result = run_image_pipeline(
-        novel_package=novel_package,
-        config=context.config,
-        project_root=context.project_root,
-        output_root=output_dir,
-        use_llm=use_llm,
-        submit_images=True,
-    )
-    response = {
-        **partial_response,
-        "story_title": image_result.project_package.title,
-        "output_dir": str(image_result.output_dir),
-        "character_bible_path": str(image_result.character_bible_path),
-        "character_images_path": str(image_result.character_images_path),
-        "scene_plan_path": str(image_result.scene_plan_path),
-        "segment_plan_path": str(image_result.segment_plan_path),
-        "scene_images_path": str(image_result.scene_images_path),
-        "seedream_execution_path": str(image_result.seedream_execution_path),
-        "seedance_manifest_path": str(image_result.manifest_path),
-        "pipeline_stage": "images_completed",
-    }
-    response = _build_completed_stage_response(response)
-    _store_stage_result(context, task, response)
-    _sync_stage_result(
-        context,
-        task=task,
-        pipeline_root_task_id=pipeline_root_task_id,
-        result=response,
-        mode="propagate",
-    )
-    image_error = build_requested_image_error(image_result.seedream_execution)
-    if image_error:
-        raise TaskExecutionError(image_error, result=response)
     return response
 
 
@@ -808,119 +725,6 @@ def run_continuity_repair_batch_task(
     return response
 
 
-def run_full_pipeline_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
-    brief = StoryBrief.from_dict(task.payload["brief"])
-    use_llm = bool(task.payload.get("use_llm", True))
-    llm_provider, llm_model = resolve_llm_selection(task)
-    continuity_review_mode = resolve_continuity_review_mode(task)
-    submit_seedance = bool(task.payload.get("submit_seedance", False))
-    output_root = _build_story_output_root(context, task)
-
-    story_result = run_story_generation_pipeline(
-        brief=brief,
-        config=context.config,
-        project_root=context.project_root,
-        use_llm=use_llm,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        output_root=output_root,
-    )
-    partial_response: dict[str, object] = {
-        "project_id": task.project_id,
-        "story_title": story_result.story_source.title,
-        "output_dir": str(story_result.output_dir),
-        "story_source_path": str(story_result.story_source_path),
-        "story_source_revision": utc_now(),
-        "pipeline_stage": "story_source_completed",
-        "task_stage": "full",
-        "pipeline_root_task_id": task.task_id,
-        "source_task_id": task.task_id,
-        "artifact_revision": utc_now(),
-        "continuity_review_mode": continuity_review_mode,
-    }
-    persist_task_progress(context, task, partial_response)
-
-    analysis_result = run_story_analysis_pipeline(
-        story_source=story_result.story_source,
-        config=context.config,
-        project_root=context.project_root,
-        use_llm=use_llm,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        continuity_review_mode=continuity_review_mode,
-        output_root=story_result.output_dir,
-    )
-    partial_response.update(
-        {
-            "story_title": analysis_result.novel_package.outline.title,
-            "novel_package_path": str(analysis_result.novel_package_path),
-            "novel_audit_path": str(analysis_result.novel_audit_path),
-            "story_memory_path": str(analysis_result.story_memory_path),
-            "character_bible_path": str(analysis_result.character_bible_path),
-            "character_images_path": str(analysis_result.character_images_path),
-            "scene_plan_path": str(analysis_result.scene_plan_path),
-            "segment_plan_path": str(analysis_result.segment_plan_path),
-            "scene_images_path": str(analysis_result.scene_images_path),
-            "seedance_manifest_path": str(analysis_result.seedance_manifest_path),
-            "pipeline_stage": "story_analysis_completed",
-            "artifact_revision": utc_now(),
-            "continuity_review_mode": continuity_review_mode,
-        }
-    )
-    persist_task_progress(context, task, partial_response)
-
-    video_result = run_video_pipeline(
-        novel_package=analysis_result.novel_package,
-        config=context.config,
-        project_root=context.project_root,
-        output_root=story_result.output_dir,
-        use_llm=use_llm,
-        submit_seedance=submit_seedance,
-        continuity_review_mode=continuity_review_mode,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-    )
-
-    response: dict[str, object] = {
-        "project_id": task.project_id,
-        "story_title": analysis_result.novel_package.outline.title,
-        "output_dir": str(story_result.output_dir),
-        "story_source_path": str(story_result.story_source_path),
-        "story_source_revision": partial_response["story_source_revision"],
-        "novel_package_path": str(analysis_result.novel_package_path),
-        "novel_audit_path": str(analysis_result.novel_audit_path),
-        "story_memory_path": str(analysis_result.story_memory_path),
-        "character_bible_path": str(analysis_result.character_bible_path),
-        "character_images_path": str(analysis_result.character_images_path),
-        "scene_images_path": str(analysis_result.scene_images_path),
-        "seedream_execution_path": str(video_result.seedream_execution_path),
-        "seedance_manifest_path": str(video_result.manifest_path),
-        "seedance_execution_path": str(video_result.seedance_execution_path),
-        "scene_plan_path": str(video_result.scene_plan_path),
-        "segment_plan_path": str(video_result.segment_plan_path),
-        "rendered_clips": [str(path) for path in video_result.rendered_clip_paths],
-        "full_story_path": (
-            str(video_result.full_story_path) if video_result.full_story_path else None
-        ),
-        "pipeline_stage": "video_completed",
-        "task_stage": "full",
-        "pipeline_root_task_id": task.task_id,
-        "source_task_id": task.task_id,
-        "artifact_revision": utc_now(),
-        "seedance_submitted": video_result.seedance_execution.submitted,
-        "continuity_review_mode": continuity_review_mode,
-    }
-    context.project_store.mark_task_result(task.project_id, task.task_id, response)
-    media_error = build_requested_media_error(
-        requested=submit_seedance,
-        seedream_execution=video_result.seedream_execution,
-        seedance_execution=video_result.seedance_execution,
-    )
-    if media_error:
-        raise TaskExecutionError(media_error, result=response)
-    return response
-
-
 def _build_story_output_root(context: TaskExecutionContext, task: QueuedTask) -> Path:
     return (
         context.project_root
@@ -1052,6 +856,8 @@ def _build_stage_reset_fields(*, clear_character_assets: bool) -> dict[str, obje
     fields: dict[str, object] = {
         "character_images_path": None,
         "segment_plan_path": None,
+        "segment_contract_progress_path": None,
+        "segment_contract_progress": None,
         "scene_images_path": None,
         "seedream_execution_path": None,
         "scene_seedream_execution_path": None,
@@ -1065,6 +871,37 @@ def _build_stage_reset_fields(*, clear_character_assets: bool) -> dict[str, obje
     if clear_character_assets:
         fields["character_seedream_execution_path"] = None
     return fields
+
+
+def _build_segment_contract_output_paths(output_dir: Path) -> dict[str, object]:
+    return {
+        "story_memory_path": str(output_dir / "story_memory.json"),
+        "character_bible_path": str(output_dir / "character_visual_bible.json"),
+        "character_images_path": str(output_dir / "character_image_manifest.json"),
+        "scene_plan_path": str(output_dir / "scene_plan.json"),
+        "segment_plan_path": str(output_dir / "segment_plan.json"),
+        "segment_contract_progress_path": str(output_dir / "segment_contract_progress.json"),
+        "scene_images_path": str(output_dir / "scene_image_manifest.json"),
+        "seedance_manifest_path": str(output_dir / "seedance_manifest.json"),
+    }
+
+
+def _build_segment_contract_progress_result(
+    output_dir: Path,
+    progress,
+) -> dict[str, object]:
+    progress_payload = progress
+    if progress_payload is None:
+        progress_payload = load_segment_contract_progress(output_dir)
+    if progress_payload is None:
+        return {
+            "segment_contract_progress_path": str(output_dir / "segment_contract_progress.json"),
+            "segment_contract_progress": None,
+        }
+    return {
+        "segment_contract_progress_path": str(output_dir / "segment_contract_progress.json"),
+        "segment_contract_progress": to_jsonable(progress_payload),
+    }
 
 
 def _build_repair_plan_only_response(

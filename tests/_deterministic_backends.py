@@ -18,6 +18,7 @@ from storyforge.domains.novel.service import NovelGeneratorService
 from storyforge.domains.video.schemas import (
     ChapterSceneStructureSchema,
     SceneContinuityRepairSchema,
+    SceneSegmentChunkPlanSchema,
     SceneSegmentContractBatchSchema,
     SegmentContinuityRepairSchema,
     VideoSegmentPlanSchema,
@@ -397,6 +398,8 @@ class DeterministicVideoBackend:
             return self._build_character_visual_bible(request)
         if task == "video-chapter-scene-planner":
             return self._build_scene_structure(request)
+        if task == "video-scene-chunk-planner":
+            return self._build_scene_chunk_plan(request)
         if task == "video-scene-segment-planner":
             return self._build_scene_segment_contracts(request)
         if task == "video-segment-planner":
@@ -481,6 +484,7 @@ class DeterministicVideoBackend:
         allowed_names = self._allowed_names(request.user_prompt)
         focus_characters = allowed_names[:2] or ["主角"]
         first_character = focus_characters[0]
+        requires_mid_frame = len(focus_characters) >= 2
         summary = f"{scene_id} 的核心事件。"
         return SceneSegmentContractBatchSchema.model_validate(
             {
@@ -495,14 +499,14 @@ class DeterministicVideoBackend:
                         "summary": summary,
                         "involved_characters": focus_characters,
                         "start_frame_characters": [first_character],
-                        "mid_frame_characters": [],
+                        "mid_frame_characters": focus_characters if requires_mid_frame else [],
                         "end_frame_characters": [first_character],
                         "narration": summary,
                         "dialogue_lines": [],
                         "subtitle_lines": [summary],
                         "timed_beats": [f"0-6秒：{summary}"],
                         "duration_seconds": 6,
-                        "requires_mid_frame": False,
+                        "requires_mid_frame": requires_mid_frame,
                         "transition_hint": "auto",
                         "shot_state": {
                             "framing": "中景",
@@ -517,11 +521,32 @@ class DeterministicVideoBackend:
                         "continuity_link": {
                             "previous_segment_id": "",
                             "transition_mode": "start",
-                            "opening_match": "",
+                            "opening_match": f"{first_character} 已在当前场景开场站定，面向镜头右前方。",
                             "carry_over_elements": [],
                             "allowed_changes": "建立新的场景与动作基线",
                             "transition_reason": "场景起始段",
                         },
+                    }
+                ],
+            }
+        )
+
+    def _build_scene_chunk_plan(self, request: PromptRequest):
+        scene_id = str(request.metadata.get("scene_id", "")).strip() or "ch01-sc01"
+        chapter_number = int(request.metadata.get("chapter_number", 1) or 1)
+        return SceneSegmentChunkPlanSchema.model_validate(
+            {
+                "scene_id": scene_id,
+                "chapter_number": chapter_number,
+                "chunks": [
+                    {
+                        "chunk_id": f"{scene_id}-chunk01",
+                        "order_index": 1,
+                        "title": f"{scene_id} / 分块 1",
+                        "summary": f"{scene_id} 的连续推进。",
+                        "must_cover": [f"{scene_id} 的核心动作"],
+                        "transition_goal": "推进到当前 scene 的下一状态。",
+                        "expected_segment_count": 1,
                     }
                 ],
             }
@@ -539,6 +564,7 @@ class DeterministicVideoBackend:
             segment_id = f"{scene_id}-seg01"
             summary = chapter_summary or f"{chapter_title} 的核心事件。"
             first_character = focus_characters[0]
+            requires_mid_frame = len(focus_characters) >= 2
             scenes.append(
                 {
                     "scene_id": scene_id,
@@ -581,7 +607,7 @@ class DeterministicVideoBackend:
                             "continuity_link": {
                                 "previous_segment_id": "",
                                 "transition_mode": "start",
-                                "opening_match": "",
+                                "opening_match": f"{first_character} 已在当前场景开场站定，面向镜头右前方。",
                                 "carry_over_elements": [],
                                 "allowed_changes": "建立新的场景与动作基线",
                                 "transition_reason": "场景起始段",
@@ -590,7 +616,7 @@ class DeterministicVideoBackend:
                             "summary": summary,
                             "involved_characters": focus_characters,
                             "start_frame_characters": [first_character],
-                            "mid_frame_characters": [],
+                            "mid_frame_characters": focus_characters if requires_mid_frame else [],
                             "end_frame_characters": [first_character],
                             "narration": summary,
                             "dialogue_lines": [],
@@ -600,10 +626,14 @@ class DeterministicVideoBackend:
                             "timed_beats": [f"0-6秒：{summary}"],
                             "scene_prompt": f"{story_title}，{summary}，保持环境和角色关系清晰",
                             "start_frame_prompt": f"{first_character} 在场景中开场入镜",
-                            "mid_frame_prompt": "",
+                            "mid_frame_prompt": (
+                                f"{'、'.join(focus_characters)} 在中段形成明确关系推进"
+                                if requires_mid_frame
+                                else ""
+                            ),
                             "end_frame_prompt": f"{first_character} 在尾部完成动作定格",
                             "duration_seconds": 6,
-                            "requires_mid_frame": False,
+                            "requires_mid_frame": requires_mid_frame,
                             "transition_hint": "auto",
                         }
                     ],

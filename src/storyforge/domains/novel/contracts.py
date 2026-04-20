@@ -61,23 +61,6 @@ class CharacterVoiceProfile:
             forbidden_voice_changes=list(raw.get("forbidden_voice_changes", [])),
         )
 
-    @classmethod
-    def from_legacy_voice_style(cls, voice_style: str) -> "CharacterVoiceProfile":
-        summary = voice_style.strip()
-        return cls(
-            voice_style=summary,
-            timbre=summary or "保持已建立的角色音色",
-            speaking_rate="中速，情绪紧张时略微加快",
-            emotional_baseline="克制稳定",
-            accent_or_texture="普通话，咬字清晰",
-            dialogue_delivery="以短句推进信息，不突然切换播音腔",
-            forbidden_voice_changes=[
-                "不要突然变得更尖更幼",
-                "不要突然变得更粗更老",
-                "不要忽快忽慢或改成夸张表演腔",
-            ],
-        )
-
     def resolved_voice_style(self) -> str:
         if self.voice_style.strip():
             return self.voice_style.strip()
@@ -101,12 +84,13 @@ class CharacterProfile:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "CharacterProfile":
-        voice_style = raw.get("voice_style", "")
         voice_profile_raw = raw.get("voice_profile")
-        if isinstance(voice_profile_raw, dict) and voice_profile_raw:
-            voice_profile = CharacterVoiceProfile.from_dict(voice_profile_raw)
-        else:
-            voice_profile = CharacterVoiceProfile.from_legacy_voice_style(voice_style)
+        if not isinstance(voice_profile_raw, dict) or not voice_profile_raw:
+            raise ValueError(
+                "CharacterProfile.from_dict 需要结构化 voice_profile；旧版仅 voice_style 数据已不再支持。"
+            )
+        voice_profile = CharacterVoiceProfile.from_dict(voice_profile_raw)
+        voice_style = str(raw.get("voice_style", "") or "").strip()
         if not voice_style:
             voice_style = voice_profile.resolved_voice_style()
         return cls(

@@ -96,6 +96,41 @@ class ChapterSceneStructureSchema(BaseModel):
         return raw
 
 
+class SceneSegmentChunkSchema(BaseModel):
+    chunk_id: str = Field(description="场景内分块 ID")
+    order_index: int = Field(description="分块顺序，从 1 开始")
+    title: str = Field(description="分块标题")
+    summary: str = Field(description="分块摘要")
+    must_cover: list[str] = Field(
+        default_factory=list,
+        description="本分块必须覆盖的关键动作、对白或情绪点",
+    )
+    transition_goal: str = Field(default="", description="本分块结束时应推进到的状态")
+    expected_segment_count: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="该分块预期拆成的 segment 数，通常 1-3",
+    )
+
+
+class SceneSegmentChunkPlanSchema(BaseModel):
+    scene_id: str = Field(default="", description="所属场景 ID")
+    chapter_number: int = Field(default=0, description="所属章节")
+    chunks: list[SceneSegmentChunkSchema] = Field(description="当前场景的分块大纲")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_input_payload(cls, raw):
+        if isinstance(raw, list):
+            return {"chunks": _normalize_scene_segment_chunks(raw)}
+        if isinstance(raw, dict) and isinstance(raw.get("chunks"), list):
+            payload = dict(raw)
+            payload["chunks"] = _normalize_scene_segment_chunks(raw.get("chunks", []))
+            return payload
+        return raw
+
+
 class SceneSegmentContractSchema(BaseModel):
     segment_id: str = Field(description="片段 ID")
     chapter_number: int = Field(description="所属章节")
@@ -109,7 +144,10 @@ class SceneSegmentContractSchema(BaseModel):
     narration: str = Field(default="", description="该片段旁白")
     dialogue_lines: list[str] = Field(default_factory=list, description="该片段对白")
     subtitle_lines: list[str] = Field(default_factory=list, description="该片段硬字幕")
-    timed_beats: list[str] = Field(default_factory=list, description="该片段时间节拍")
+    timed_beats: list[str] = Field(
+        min_length=1,
+        description="该片段时间节拍，必填，且每条都应包含具体秒数范围",
+    )
     duration_seconds: int = Field(description="建议时长")
     requires_mid_frame: bool = Field(default=False, description="是否需要中段锚点帧")
     transition_hint: str = Field(default="auto", description="continue / cut / auto")
@@ -485,48 +523,47 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
         payload = _coerce_mapping(raw_segment)
         if payload is None:
             continue
-        normalized.append(
-            {
-                "segment_id": str(payload.get("segment_id") or f"segment-{index:02d}").strip()
-                or f"segment-{index:02d}",
-                "chapter_number": int(payload.get("chapter_number") or 0),
-                "scene_id": str(payload.get("scene_id") or "").strip(),
-                "title": str(payload.get("title") or f"片段 {index}").strip() or f"片段 {index}",
-                "summary": str(payload.get("summary") or "").strip(),
-                "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
-                "start_frame_characters": _normalize_name_list(payload.get("start_frame_characters", [])),
-                "mid_frame_characters": _normalize_name_list(payload.get("mid_frame_characters", [])),
-                "end_frame_characters": _normalize_name_list(payload.get("end_frame_characters", [])),
-                "narration": str(payload.get("narration") or "").strip(),
-                "dialogue_lines": [
-                    str(item).strip()
-                    for item in payload.get("dialogue_lines", [])
-                    if str(item).strip()
-                ],
-                "subtitle_lines": [
-                    str(item).strip()
-                    for item in payload.get("subtitle_lines", [])
-                    if str(item).strip()
-                ],
-                "timed_beats": [
-                    str(item).strip()
-                    for item in payload.get("timed_beats", [])
-                    if str(item).strip()
-                ],
-                "duration_seconds": int(payload.get("duration_seconds") or 0),
-                "requires_mid_frame": bool(payload.get("requires_mid_frame", False)),
-                "transition_hint": str(payload.get("transition_hint") or "auto").strip() or "auto",
-                "shot_state": _normalize_shot_state(
-                    payload.get("shot_state"),
-                    default_summary=str(payload.get("summary") or ""),
-                    default_prompt="",
-                    scene_anchor_default="",
-                ),
-                "continuity_link": _normalize_continuity_link(
-                    payload.get("continuity_link"),
-                ),
-            }
-        )
+        normalized_payload = {
+            "segment_id": str(payload.get("segment_id") or f"segment-{index:02d}").strip()
+            or f"segment-{index:02d}",
+            "chapter_number": int(payload.get("chapter_number") or 0),
+            "scene_id": str(payload.get("scene_id") or "").strip(),
+            "title": str(payload.get("title") or f"片段 {index}").strip() or f"片段 {index}",
+            "summary": str(payload.get("summary") or "").strip(),
+            "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
+            "start_frame_characters": _normalize_name_list(payload.get("start_frame_characters", [])),
+            "mid_frame_characters": _normalize_name_list(payload.get("mid_frame_characters", [])),
+            "end_frame_characters": _normalize_name_list(payload.get("end_frame_characters", [])),
+            "narration": str(payload.get("narration") or "").strip(),
+            "dialogue_lines": [
+                str(item).strip()
+                for item in payload.get("dialogue_lines", [])
+                if str(item).strip()
+            ],
+            "subtitle_lines": [
+                str(item).strip()
+                for item in payload.get("subtitle_lines", [])
+                if str(item).strip()
+            ],
+            "timed_beats": [
+                str(item).strip()
+                for item in payload.get("timed_beats", [])
+                if str(item).strip()
+            ],
+            "duration_seconds": int(payload.get("duration_seconds") or 0),
+            "requires_mid_frame": bool(payload.get("requires_mid_frame", False)),
+            "transition_hint": str(payload.get("transition_hint") or "auto").strip() or "auto",
+            "shot_state": _normalize_shot_state(
+                payload.get("shot_state"),
+                default_summary=str(payload.get("summary") or ""),
+                default_prompt="",
+                scene_anchor_default="",
+            ),
+            "continuity_link": _normalize_continuity_link(
+                payload.get("continuity_link"),
+            ),
+        }
+        normalized.append(normalized_payload)
     return normalized
 
 
@@ -612,6 +649,38 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
     normalized = list(grouped.values())
     for scene in normalized:
         scene["involved_characters"] = _collect_scene_characters(scene.get("segments", []))
+    return normalized
+
+
+def _normalize_scene_segment_chunks(raw_chunks: list[object]) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for index, raw_chunk in enumerate(raw_chunks, start=1):
+        payload = _coerce_mapping(raw_chunk)
+        if payload is None:
+            continue
+        must_cover = payload.get("must_cover", [])
+        normalized.append(
+            {
+                "chunk_id": str(
+                    payload.get("chunk_id")
+                    or payload.get("id")
+                    or f"chunk-{index:02d}"
+                ).strip()
+                or f"chunk-{index:02d}",
+                "order_index": int(payload.get("order_index") or payload.get("index") or index),
+                "title": str(payload.get("title") or f"分块 {index}").strip() or f"分块 {index}",
+                "summary": str(payload.get("summary") or "").strip(),
+                "must_cover": [
+                    str(item).strip()
+                    for item in must_cover
+                    if str(item).strip()
+                ]
+                if isinstance(must_cover, list)
+                else [],
+                "transition_goal": str(payload.get("transition_goal") or "").strip(),
+                "expected_segment_count": int(payload.get("expected_segment_count") or 1),
+            }
+        )
     return normalized
 
 

@@ -148,14 +148,16 @@ async function submitSceneStructureFromButton(button) {
 }
 
 async function submitSegmentContractsFromButton(button) {
+  const resumeFromProgress = button.dataset.resumeFromProgress === "true";
   await submitStageFromButton(
     button,
     "/v1/projects/segment-contracts",
     withContinuityReviewMode(button.dataset.generateSegmentContracts, {
       project_id: button.dataset.storySourceProject,
       source_task_id: button.dataset.generateSegmentContracts,
+      ...(resumeFromProgress ? { resume_from_progress: true } : {}),
     }),
-    "分段合同任务已创建",
+    resumeFromProgress ? "分段合同恢复任务已创建" : "分段合同任务已创建",
     "分段合同任务提交失败。",
   );
 }

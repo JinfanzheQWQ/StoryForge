@@ -7,6 +7,8 @@ import {
 } from "../story_source.js";
 import {
   buildArtifactPendingMessage,
+  buildSegmentContractFailureLabel,
+  buildSegmentContractProgressLabel,
   buildOverviewNote,
   buildTaskErrorMessage,
   chip,
@@ -14,6 +16,7 @@ import {
   escapeAttr,
   escapeHtml,
   formatShortTime,
+  getSegmentContractProgress,
   getRunStageStatus,
   getStorySourceRevision,
   kindLabel,
@@ -28,16 +31,16 @@ const DOCUMENT_META = {
   "story_source.json": {
     title: "故事正文源文件",
     category: "小说源",
-    summary: "当前版本的事实文本源。保存正文后，结构化分析和媒体阶段都从这里继续。",
+    summary: "当前版本的事实文本源。保存正文后，场景结构、分段合同和媒体阶段都从这里继续。",
   },
   "novel_package.json": {
-    title: "小说分析总包",
-    category: "小说分析",
-    summary: "运行态最小小说包，包含角色卡、章节规划和正文摘录，是图片与视频阶段的正式输入。",
+    title: "结构规划总包",
+    category: "结构规划",
+    summary: "运行态最小小说包，包含角色卡、章节规划和正文摘录，是分段合同、图片与视频阶段的正式输入。",
   },
   "novel_audit.json": {
-    title: "小说分析审计包",
-    category: "小说分析",
+    title: "结构规划审计包",
+    category: "结构规划",
     summary: "保存 review、workflow_trace，以及从运行包中剥离的分析上下文，主要用于排错和人工审阅。",
   },
   "character_visual_bible.json": {
@@ -55,10 +58,20 @@ const DOCUMENT_META = {
     category: "视频规划",
     summary: "定义章节下的 scene 层，以及每个 scene 内部的多个视频片段，并记录 scene_master_frame 的 prompt、路径和状态。",
   },
+  "scene_structure_source.json": {
+    title: "场景结构恢复快照",
+    category: "视频规划",
+    summary: "保存分段合同开始前的原始 scene skeleton，仅供失败恢复时从当前位置继续，不参与图片和视频执行。",
+  },
   "segment_plan.json": {
     title: "片段执行索引",
     category: "视频规划",
     summary: "保留给图片与视频执行阶段使用的 flat segment 索引，便于逐段生成和重试。",
+  },
+  "segment_contract_progress.json": {
+    title: "分段合同进度",
+    category: "视频规划",
+    summary: "按 scene 记录分段合同执行进度、失败位置和断点恢复状态，用于失败后继续生成。",
   },
   "scene_image_manifest.json": {
     title: "场景帧任务清单",
@@ -129,6 +142,33 @@ function renderContinuityModeOptions(selectedMode) {
   ).join("");
 }
 
+function resolveSegmentContractsUiState(segmentContractsTask, segmentContractsStatus) {
+  const progress = getSegmentContractProgress(segmentContractsTask);
+  const progressLabel = buildSegmentContractProgressLabel(progress);
+  const failureLabel = buildSegmentContractFailureLabel(progress);
+  const resumeFromProgress = (
+    segmentContractsStatus === "failed"
+    && Boolean(progress?.resume_ready)
+  );
+  const buttonLabel =
+    segmentContractsStatus === "completed"
+      ? "分段合同已完成"
+      : resumeFromProgress
+        ? "从失败位置继续"
+        : segmentContractsStatus === "failed" || segmentContractsStatus === "stale"
+          ? "重新生成分段合同"
+          : segmentContractsStatus === "running"
+            ? progressLabel ? `分段合同生成中 · ${progressLabel}` : "分段合同生成中"
+            : "生成分段合同";
+  return {
+    progress,
+    progressLabel,
+    failureLabel,
+    resumeFromProgress,
+    buttonLabel,
+  };
+}
+
 function renderStageFailureList(run, storySourceRevision) {
   const failedStages = [
     ["场景结构", run.latestSceneStructureTask],
@@ -164,7 +204,7 @@ function renderStageFailureList(run, storySourceRevision) {
   `;
 }
 
-const DOCUMENT_GROUP_ORDER = ["小说源", "小说分析", "视频规划", "视频提交", "执行报告", "其他文件"];
+const DOCUMENT_GROUP_ORDER = ["小说源", "结构规划", "视频规划", "视频提交", "执行报告", "其他文件"];
 
 function groupDocuments(items) {
   const groups = new Map();
@@ -549,9 +589,7 @@ function resolveRepairRemainingActions(run, repairTask, storySourceRevision) {
         repairTask,
         storySourceRevision,
         (task) => (
-          task.task_type === "project.images"
-          || task.task_type === "project.build"
-          || (
+          (
             task.task_type === "project.scenes"
             && !task.payload?.master_only
             && !task.payload?.segment_id
@@ -577,8 +615,7 @@ function resolveRepairRemainingActions(run, repairTask, storySourceRevision) {
         repairTask,
         storySourceRevision,
         (task) => (
-          task.task_type === "project.build"
-          || (
+          (
             task.task_type === "project.videos"
             && !task.payload?.merge_only
             && !task.payload?.segment_id
@@ -1268,6 +1305,15 @@ function renderStoryTab(task, context, run = null) {
   const storySourceRevision = run ? getStorySourceRevision(run.rootTask) : storySource.story_source_revision;
   const sceneStructureStatus = run ? getRunStageStatus(run.latestSceneStructureTask, storySourceRevision) : "idle";
   const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
+  const segmentContractsTask = run?.latestSegmentContractsTask || null;
+  const segmentContractsError = buildTaskErrorMessage(segmentContractsTask);
+  const {
+    progress: segmentContractsProgress,
+    progressLabel: segmentContractsProgressLabel,
+    failureLabel: segmentContractsFailureLabel,
+    resumeFromProgress: resumeSegmentContractsFromProgress,
+    buttonLabel: resolvedSegmentContractsLabel,
+  } = resolveSegmentContractsUiState(segmentContractsTask, segmentContractsStatus);
   const canGenerateSceneStructure =
     !meta.loading
     && !meta.saving
@@ -1287,20 +1333,39 @@ function renderStoryTab(task, context, run = null) {
         : sceneStructureStatus === "running"
           ? "场景结构生成中"
           : "生成场景结构";
-  const segmentContractsLabel =
-    segmentContractsStatus === "completed"
-      ? "分段合同已完成"
-      : segmentContractsStatus === "stale"
-        ? "重新生成分段合同"
-        : segmentContractsStatus === "running"
-          ? "分段合同生成中"
-          : "生成分段合同";
+  const segmentContractsLabel = resolvedSegmentContractsLabel;
   const statusText =
     meta.message
     || (sceneStructureStatus === "stale"
       ? "故事文本已变更，旧的场景结构结果已失效。请保存后重新生成场景结构。"
       : segmentContractsStatus === "stale"
         ? "分段合同已失效。请先重新生成场景结构，再继续生成分段合同。"
+        : segmentContractsStatus === "running"
+          ? (
+            segmentContractsProgressLabel
+              ? `分段合同正在生成，当前已完成 ${segmentContractsProgressLabel}。页面会自动刷新。`
+              : "分段合同正在生成，页面会自动刷新。"
+          )
+          : segmentContractsStatus === "failed"
+            ? (
+              resumeSegmentContractsFromProgress
+                ? [
+                  segmentContractsFailureLabel
+                    ? `分段合同中断：${segmentContractsFailureLabel}。`
+                    : "分段合同生成中断。",
+                  segmentContractsProgressLabel ? `当前已完成 ${segmentContractsProgressLabel}。` : "",
+                  "可以直接从失败位置继续，无需整次重跑。",
+                  segmentContractsError ? `失败原因：${segmentContractsError}` : "",
+                ]
+                  .filter(Boolean)
+                  .join("")
+                : [
+                  "分段合同生成失败。",
+                  segmentContractsError ? `失败原因：${segmentContractsError}` : "",
+                ]
+                  .filter(Boolean)
+                  .join("")
+              )
         : segmentContractsStatus === "completed"
           ? "场景结构和分段合同都已完成。继续生成角色图，或修改并保存正文后重新规划。"
           : sceneStructureStatus === "completed"
@@ -1313,7 +1378,7 @@ function renderStoryTab(task, context, run = null) {
         <div class="story-editor-head">
           <div>
             <h4>可编辑小说正文</h4>
-            <p class="asset-note">这一层是当前版本的事实文本源。保存后，后续结构化 JSON、角色图、场景图和视频都应基于这份正文重新生成。</p>
+            <p class="asset-note">这一层是当前版本的事实文本源。保存后，后续场景结构、分段合同、角色图、场景图和视频都应基于这份正文重新生成。</p>
           </div>
           <div class="story-editor-actions">
             <button
@@ -1339,6 +1404,7 @@ function renderStoryTab(task, context, run = null) {
               class="secondary"
               data-story-source-project="${escapeAttr(locator.projectId)}"
               data-generate-segment-contracts="${escapeAttr(locator.sourceTaskId)}"
+              data-resume-from-progress="${resumeSegmentContractsFromProgress ? "true" : "false"}"
               ${canGenerateSegmentContracts ? "" : "disabled"}
             >
               ${escapeHtml(segmentContractsLabel)}
@@ -1350,6 +1416,9 @@ function renderStoryTab(task, context, run = null) {
           ${chip(`文本 ${meta.dirty ? "待保存" : "已保存"}`)}
           ${chip(`场景结构 ${stageStatusLabel(sceneStructureStatus)}`)}
           ${chip(`分段合同 ${stageStatusLabel(segmentContractsStatus)}`)}
+          ${segmentContractsProgressLabel ? chip(`分段进度 ${segmentContractsProgressLabel}`) : ""}
+          ${segmentContractsFailureLabel ? chip(segmentContractsFailureLabel) : ""}
+          ${segmentContractsProgress?.resume_ready ? chip("支持失败后继续") : ""}
           ${storySource.story_source_revision ? chip(`修订 ${formatShortTime(storySource.story_source_revision)}`) : ""}
         </div>
         <p
@@ -1573,7 +1642,7 @@ function renderVideosTab(task, artifacts, context, run = null) {
 
 export function renderRunStageActions(run) {
   const rootTask = run.rootTask;
-  if (!rootTask || rootTask.task_type === "project.build") {
+  if (!rootTask) {
     return "";
   }
 
@@ -1589,6 +1658,13 @@ export function renderRunStageActions(run) {
     ? getStorySourceMeta(storyLocator.projectId, storyLocator.sourceTaskId)
     : { dirty: false, loading: false, saving: false };
   const sceneStructureReady = sceneStructureStatus === "completed";
+  const segmentContractsTask = run.latestSegmentContractsTask;
+  const {
+    progressLabel: segmentContractsProgressLabel,
+    failureLabel: segmentContractsFailureLabel,
+    resumeFromProgress: resumeSegmentContractsFromProgress,
+    buttonLabel: resolvedSegmentContractsButtonLabel,
+  } = resolveSegmentContractsUiState(segmentContractsTask, segmentContractsStatus);
   const segmentContractsReady = segmentContractsStatus === "completed";
   const canGenerateSceneStructure =
     rootTask.status === "completed"
@@ -1618,20 +1694,23 @@ export function renderRunStageActions(run) {
         : sceneStructureStatus === "running"
           ? "场景结构生成中"
           : "生成场景结构";
-  const segmentContractsButtonLabel =
-    segmentContractsStatus === "failed" || segmentContractsStatus === "stale"
-      ? "重新生成分段合同"
-      : segmentContractsStatus === "completed"
-        ? "分段合同已完成"
-        : segmentContractsStatus === "running"
-          ? "分段合同生成中"
-          : "生成分段合同";
+  const segmentContractsButtonLabel = resolvedSegmentContractsButtonLabel;
   const characterButtonLabel =
     characterStatus === "failed" || characterStatus === "stale" ? "重新生成角色图" : characterStatus === "completed" ? "角色图已完成" : characterStatus === "running" ? "角色图生成中" : "生成角色图";
+  const segmentContractsStepNote =
+    segmentContractsFailureLabel
+      ? segmentContractsProgressLabel
+        ? `${segmentContractsFailureLabel} · 已完成 ${segmentContractsProgressLabel}`
+        : segmentContractsFailureLabel
+      : segmentContractsStatus === "running" && segmentContractsProgressLabel
+        ? `当前进度 ${segmentContractsProgressLabel}`
+        : segmentContractsStatus === "completed" && segmentContractsProgressLabel
+          ? `章节完成 ${segmentContractsProgressLabel}`
+          : "scene 拆 segment";
   const steps = [
     ["01", "小说正文", rootTask.status, "先确认故事文本"],
     ["02", "场景结构", sceneStructureStatus, "章节拆 scene"],
-    ["03", "分段合同", segmentContractsStatus, "scene 拆 segment"],
+    ["03", "分段合同", segmentContractsStatus, segmentContractsStepNote],
     ["04", "角色图", characterStatus, "生成角色定妆"],
     ["05", "场景图", sceneStatus, plannedSegments.length ? `${readySceneCount}/${plannedSegments.length} 段已就绪` : "在时间线中逐段生成"],
     ["06", "视频", videoStatus, plannedSegments.length ? `${readyVideoCount}/${plannedSegments.length} 段已出片` : "在时间线中逐段生成"],
@@ -1682,6 +1761,7 @@ export function renderRunStageActions(run) {
             class="secondary"
             data-story-source-project="${escapeAttr(rootTask.project_id)}"
             data-generate-segment-contracts="${escapeAttr(rootTask.task_id)}"
+            data-resume-from-progress="${resumeSegmentContractsFromProgress ? "true" : "false"}"
             ${canGenerateSegmentContracts ? "" : "disabled"}
           >
             ${escapeHtml(segmentContractsButtonLabel)}

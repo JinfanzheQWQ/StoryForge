@@ -156,37 +156,6 @@ def refresh_artifact_revision_for_tasks(
         context.task_store.update_result(task_id, updated_result)
         context.project_store.mark_task_result(record.project_id, task_id, updated_result)
 
-
-def build_requested_media_error(
-    requested: bool,
-    seedream_execution: object | None,
-    seedance_execution: object,
-) -> str:
-    if not requested:
-        return ""
-
-    errors: list[str] = []
-    if seedream_execution is None:
-        errors.append("Seedream did not return an execution report.")
-    else:
-        seedream_submitted = bool(getattr(seedream_execution, "submitted", False))
-        seedream_failed_count = int(getattr(seedream_execution, "failed_count", 0))
-        if not seedream_submitted or seedream_failed_count > 0:
-            errors.append(
-                "Seedream media generation failed: "
-                f"submitted={seedream_submitted}, "
-                f"generated_count={getattr(seedream_execution, 'generated_count', 0)}, "
-                f"failed_count={seedream_failed_count}, "
-                f"note={getattr(seedream_execution, 'note', '')}"
-            )
-
-    seedance_error = build_requested_video_error(seedance_execution)
-    if seedance_error:
-        errors.append(seedance_error)
-
-    return " | ".join(errors)
-
-
 def build_requested_image_error(seedream_execution: object | None) -> str:
     if seedream_execution is None:
         return "Seedream did not return an execution report."

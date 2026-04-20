@@ -26,6 +26,8 @@ from storyforge.application.container import AppContainer  # noqa: E402
 from storyforge.application.projects import ProjectRecord, ProjectStore  # noqa: E402
 from storyforge.application.task_runtime import TaskExecutionContext, build_task_handler  # noqa: E402
 from storyforge.application.tasks import AsyncTaskQueue, QueuedTask, TaskRecord, TaskStore, utc_now  # noqa: E402
+from storyforge.domains.video.errors import VideoStructuredGenerationError  # noqa: E402
+from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
 from _deterministic_backends import (  # noqa: E402
     DeterministicStoryBackend,
     DeterministicVideoBackend,
@@ -321,6 +323,39 @@ class ApiTestCase(unittest.TestCase):
             time.sleep(0.05)
         return payload
 
+    def _run_structuring_pipeline(
+        self,
+        client: TestClient,
+        *,
+        project_id: str,
+        source_task_id: str,
+        continuity_review_mode: str | None = None,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        scene_payload: dict[str, object] = {
+            "project_id": project_id,
+            "source_task_id": source_task_id,
+            "use_llm": True,
+        }
+        if continuity_review_mode is not None:
+            scene_payload["continuity_review_mode"] = continuity_review_mode
+        scene_response = client.post("/v1/projects/scene-structure", json=scene_payload)
+        self.assertEqual(scene_response.status_code, 202)
+        scene_task = self._wait_for_completion(client, scene_response.json()["task_id"])
+        self.assertEqual(scene_task["status"], "completed")
+
+        segment_payload: dict[str, object] = {
+            "project_id": project_id,
+            "source_task_id": source_task_id,
+            "use_llm": True,
+        }
+        if continuity_review_mode is not None:
+            segment_payload["continuity_review_mode"] = continuity_review_mode
+        segment_response = client.post("/v1/projects/segment-contracts", json=segment_payload)
+        self.assertEqual(segment_response.status_code, 202)
+        segment_task = self._wait_for_completion(client, segment_response.json()["task_id"])
+        self.assertEqual(segment_task["status"], "completed")
+        return scene_task, segment_task
+
     def test_web_console_bootstrap(self) -> None:
         config_path = self._create_test_config()
         app = create_app(project_root=ROOT, config_path=config_path)
@@ -367,7 +402,7 @@ class ApiTestCase(unittest.TestCase):
         app = create_app(project_root=ROOT, config_path=config_path)
         with TestClient(app) as client:
             response = client.post(
-                "/v1/projects/novel-to-video",
+                "/v1/projects/novel",
                 json={
                     "brief": {
                         "title_hint": "测试故事",
@@ -381,7 +416,6 @@ class ApiTestCase(unittest.TestCase):
                         "style_keywords": ["暴雨", "车站", "霓虹"],
                     },
                     "use_llm": True,
-                    "submit_seedance": False,
                     "llm_provider": "openai",
                     "llm_model": "gpt-5.4",
                     "continuity_review_mode": "on",
@@ -389,19 +423,24 @@ class ApiTestCase(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 202)
             project_id = response.json()["project_id"]
-            task_id = response.json()["task_id"]
-            payload = self._wait_for_completion(client, task_id)
+            source_task_id = response.json()["task_id"]
+            payload = self._wait_for_completion(client, source_task_id)
 
             self.assertEqual(payload["status"], "completed")
             self.assertEqual(payload["project_id"], project_id)
             self.assertEqual(payload["payload"]["llm_provider"], "openai")
             self.assertEqual(payload["payload"]["llm_model"], "gpt-5.4")
             self.assertEqual(payload["payload"]["continuity_review_mode"], "on")
-            self.assertIn("seedance_manifest_path", payload["result"])
-            self.assertIn("seedance_execution_path", payload["result"])
-            self.assertIn("rendered_clips", payload["result"])
+            self.assertEqual(payload["result"]["pipeline_stage"], "story_source_completed")
 
-            artifacts_response = client.get(f"/v1/tasks/{task_id}/artifacts")
+            _, segment_task = self._run_structuring_pipeline(
+                client,
+                project_id=project_id,
+                source_task_id=source_task_id,
+                continuity_review_mode="on",
+            )
+
+            artifacts_response = client.get(f"/v1/tasks/{source_task_id}/artifacts")
             self.assertEqual(artifacts_response.status_code, 200)
             artifacts = artifacts_response.json()
             self.assertTrue(artifacts["available"])
@@ -430,7 +469,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertIsInstance(artifacts["continuity_segment_groups"], list)
 
             first_planned_segment = artifacts["planned_segments"][0]
-            continuity_report_path = Path(payload["result"]["output_dir"]) / "continuity_report.json"
+            continuity_report_path = Path(segment_task["result"]["output_dir"]) / "continuity_report.json"
             continuity_payload = json.loads(continuity_report_path.read_text(encoding="utf-8"))
             continuity_payload["status"] = "critical"
             continuity_payload["review_mode_requested"] = "on"
@@ -526,7 +565,7 @@ class ApiTestCase(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            artifacts_response = client.get(f"/v1/tasks/{task_id}/artifacts")
+            artifacts_response = client.get(f"/v1/tasks/{source_task_id}/artifacts")
             self.assertEqual(artifacts_response.status_code, 200)
             artifacts = artifacts_response.json()
             scene_group = next(
@@ -566,8 +605,21 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(project_detail_response.status_code, 200)
             project_detail = project_detail_response.json()
             self.assertEqual(project_detail["project_id"], project_id)
-            self.assertEqual(project_detail["tasks"][0]["task_id"], task_id)
+            self.assertEqual(project_detail["tasks"][0]["task_id"], segment_task["task_id"])
             self.assertEqual(project_detail["tasks"][0]["project_id"], project_id)
+            self.assertEqual(project_detail["latest_task_id"], segment_task["task_id"])
+            self.assertEqual(
+                {item["task_id"] for item in project_detail["tasks"]},
+                {
+                    source_task_id,
+                    segment_task["task_id"],
+                    next(
+                        item["task_id"]
+                        for item in project_detail["tasks"]
+                        if item["task_type"] == "project.scene_structure"
+                    ),
+                },
+            )
 
     def test_story_job_accepts_openai_selection(self) -> None:
         config_path = self._create_test_config()
@@ -602,88 +654,6 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(payload["payload"]["llm_model"], "gpt-5.4")
             self.assertEqual(payload["payload"]["continuity_review_mode"], "off")
             self.assertEqual(payload["result"]["pipeline_stage"], "story_source_completed")
-
-    @patch("storyforge.application.task_handlers.run_video_pipeline")
-    def test_story_artifacts_are_available_while_task_is_still_running(self, mock_run_video_pipeline) -> None:
-        def fake_run_video_pipeline(*args, **kwargs):
-            output_dir = kwargs["output_root"]
-            scene_plan_path = output_dir / "scene_plan.json"
-            segment_plan_path = output_dir / "segment_plan.json"
-            seedream_execution_path = output_dir / "seedream_scene_execution.json"
-            manifest_path = output_dir / "seedance_manifest.json"
-            seedance_execution_path = output_dir / "seedance_execution.json"
-            time.sleep(0.3)
-            scene_plan_path.write_text("{}", encoding="utf-8")
-            segment_plan_path.write_text("{}", encoding="utf-8")
-            seedream_execution_path.write_text("{}", encoding="utf-8")
-            manifest_path.write_text("{}", encoding="utf-8")
-            seedance_execution_path.write_text("{}", encoding="utf-8")
-            return SimpleNamespace(
-                seedream_execution_path=seedream_execution_path,
-                manifest_path=manifest_path,
-                seedance_execution_path=seedance_execution_path,
-                scene_plan_path=scene_plan_path,
-                segment_plan_path=segment_plan_path,
-                rendered_clip_paths=[],
-                full_story_path=None,
-                seedance_execution=SimpleNamespace(submitted=False),
-                seedream_execution=None,
-            )
-
-        mock_run_video_pipeline.side_effect = fake_run_video_pipeline
-
-        config_path = self._create_test_config()
-        app = create_app(project_root=ROOT, config_path=config_path)
-        with TestClient(app) as client:
-            response = client.post(
-                "/v1/projects/novel-to-video",
-                json={
-                    "brief": {
-                        "title_hint": "实时展示测试",
-                        "idea": "一名调查员在夜雨中追查失踪列车。",
-                        "genre": "悬疑",
-                        "tone": "压迫、电影感",
-                        "target_audience": "成年读者",
-                        "chapter_count": 2,
-                        "total_word_target": 3000,
-                        "must_include": ["失踪列车"],
-                        "style_keywords": ["暴雨", "站台"],
-                    },
-                    "use_llm": True,
-                    "submit_seedance": False,
-                },
-            )
-            self.assertEqual(response.status_code, 202)
-            task_id = response.json()["task_id"]
-
-            running_payload: dict[str, object] | None = None
-            for _ in range(40):
-                task_response = client.get(f"/v1/tasks/{task_id}")
-                self.assertEqual(task_response.status_code, 200)
-                payload = task_response.json()
-                if (
-                    payload["status"] == "running"
-                    and isinstance(payload.get("result"), dict)
-                    and payload["result"].get("pipeline_stage") == "story_analysis_completed"
-                ):
-                    running_payload = payload
-                    break
-                time.sleep(0.02)
-
-            self.assertIsNotNone(running_payload)
-            artifacts_response = client.get(f"/v1/tasks/{task_id}/artifacts")
-            self.assertEqual(artifacts_response.status_code, 200)
-            artifacts = artifacts_response.json()
-            self.assertTrue(artifacts["available"])
-            self.assertTrue(artifacts["documents"])
-            self.assertNotIn("chapters", artifacts)
-            document_names = {item["name"] for item in artifacts["documents"]}
-            self.assertIn("story_source.json", document_names)
-            self.assertIn("novel_package.json", document_names)
-            self.assertIn("novel_audit.json", document_names)
-
-            final_payload = self._wait_for_completion(client, task_id)
-            self.assertEqual(final_payload["status"], "completed")
 
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
@@ -1109,17 +1079,11 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
-                json={
-                    "project_id": project_id,
-                    "source_task_id": source_task_id,
-                    "use_llm": True,
-                },
+            self._run_structuring_pipeline(
+                client,
+                project_id=project_id,
+                source_task_id=source_task_id,
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             segment_id = artifacts["planned_segments"][0]["segment_id"]
@@ -1221,17 +1185,11 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
-                json={
-                    "project_id": project_id,
-                    "source_task_id": source_task_id,
-                    "use_llm": True,
-                },
+            self._run_structuring_pipeline(
+                client,
+                project_id=project_id,
+                source_task_id=source_task_id,
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             scene_id = artifacts["planned_segments"][0]["scene_id"]
@@ -1308,17 +1266,11 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
-                json={
-                    "project_id": project_id,
-                    "source_task_id": source_task_id,
-                    "use_llm": True,
-                },
+            self._run_structuring_pipeline(
+                client,
+                project_id=project_id,
+                source_task_id=source_task_id,
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             segment_id = artifacts["planned_segments"][0]["segment_id"]
@@ -1377,17 +1329,11 @@ class ApiTestCase(unittest.TestCase):
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
 
-            analysis_response = client.post(
-                "/v1/projects/story-analysis",
-                json={
-                    "project_id": project_id,
-                    "source_task_id": source_task_id,
-                    "use_llm": True,
-                },
+            self._run_structuring_pipeline(
+                client,
+                project_id=project_id,
+                source_task_id=source_task_id,
             )
-            self.assertEqual(analysis_response.status_code, 202)
-            analysis_task_id = analysis_response.json()["task_id"]
-            self.assertEqual(self._wait_for_completion(client, analysis_task_id)["status"], "completed")
 
             artifacts = client.get(f"/v1/tasks/{source_task_id}/artifacts").json()
             scene_id = artifacts["planned_segments"][0]["scene_id"]
@@ -1637,7 +1583,7 @@ class ApiTestCase(unittest.TestCase):
         app = create_app(project_root=ROOT, config_path=config_path)
         with TestClient(app) as client:
             response = client.post(
-                "/v1/projects/novel-to-video",
+                "/v1/projects/novel",
                 json={
                     "brief": {
                         "title_hint": "极短篇测试",
@@ -1651,7 +1597,6 @@ class ApiTestCase(unittest.TestCase):
                         "style_keywords": ["夜雨", "空车厢"],
                     },
                     "use_llm": True,
-                    "submit_seedance": False,
                 },
             )
             self.assertEqual(response.status_code, 202)
@@ -2123,6 +2068,168 @@ class ApiTestCase(unittest.TestCase):
                 {task["result"]["pipeline_root_task_id"] for task in detail["tasks"] if task["result"]},
                 {story_task_id},
             )
+
+    def test_segment_contracts_failure_returns_progress_and_resume_job_succeeds(self) -> None:
+        config_path = self._create_test_config()
+
+        with TestClient(create_app(config_path=config_path)) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "断点续跑接口测试",
+                        "idea": "一个调查员分三章逐步逼近真相。",
+                        "genre": "悬疑",
+                        "tone": "清晰克制",
+                        "chapter_count": 3,
+                        "total_word_target": 1800,
+                        "must_include": ["调查推进"],
+                        "style_keywords": ["连续推进"],
+                    }
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            story_task_id = story_response.json()["task_id"]
+            story_payload = self._wait_for_completion(client, story_task_id)
+            self.assertEqual(story_payload["status"], "completed")
+            project_id = story_payload["project_id"]
+
+            scene_structure_response = client.post(
+                "/v1/projects/scene-structure",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                },
+            )
+            self.assertEqual(scene_structure_response.status_code, 202)
+            scene_structure_task_id = scene_structure_response.json()["task_id"]
+            scene_structure_payload = self._wait_for_completion(client, scene_structure_task_id)
+            self.assertEqual(
+                scene_structure_payload["status"],
+                "completed",
+            )
+            output_dir = Path(scene_structure_payload["result"]["output_dir"])
+            scene_plan_path = output_dir / "scene_plan.json"
+            scene_plan_payload = json.loads(scene_plan_path.read_text(encoding="utf-8"))
+            scene_entries = list(scene_plan_payload.get("scenes", []))
+            scene_two_inserted = False
+            for index, scene in enumerate(list(scene_entries)):
+                if int(scene.get("chapter_number", 0) or 0) != 2:
+                    continue
+                duplicate_scene = dict(scene)
+                duplicate_scene["scene_id"] = "ch02-sc02"
+                duplicate_scene["title"] = f'{scene.get("title", "场景")} / 后续'
+                duplicate_scene["summary"] = f'{scene.get("summary", "场景推进")} 后续推进。'
+                duplicate_scene["segments"] = []
+                scene_entries.insert(index + 1, duplicate_scene)
+                scene_two_inserted = True
+                break
+            self.assertTrue(scene_two_inserted)
+            scene_plan_path.write_text(
+                json.dumps({"scenes": scene_entries}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            chapter_two_scene_ids = [
+                item["scene_id"]
+                for item in scene_entries
+                if int(item.get("chapter_number", 0) or 0) == 2
+            ]
+            failed_scene_id = chapter_two_scene_ids[1]
+            original_chunk_builder = NovelToVideoService._build_scene_chunk_contract_batch
+            failed_chunk_id = f"{failed_scene_id}-chunk01"
+
+            def fail_on_second_scene_of_second_chapter(
+                service,
+                *,
+                novel_package,
+                story_memory,
+                chapter_number,
+                scene,
+                chunk,
+                previous_chunk_exit_state,
+                previous_tail_segment,
+            ):
+                if chapter_number == 2 and scene.scene_id == failed_scene_id:
+                    raise VideoStructuredGenerationError(
+                        task="video-scene-segment-planner",
+                        schema_name="SceneSegmentContractBatchSchema",
+                        attempts=3,
+                        cause=RuntimeError("scene failed"),
+                        metadata={
+                            "chapter_number": 2,
+                            "scene_id": failed_scene_id,
+                            "chunk_id": failed_chunk_id,
+                        },
+                    )
+                return original_chunk_builder(
+                    service,
+                    novel_package=novel_package,
+                    story_memory=story_memory,
+                    chapter_number=chapter_number,
+                    scene=scene,
+                    chunk=chunk,
+                    previous_chunk_exit_state=previous_chunk_exit_state,
+                    previous_tail_segment=previous_tail_segment,
+                )
+
+            with patch.object(
+                NovelToVideoService,
+                "_build_scene_chunk_contract_batch",
+                autospec=True,
+                side_effect=fail_on_second_scene_of_second_chapter,
+            ):
+                segment_contracts_response = client.post(
+                    "/v1/projects/segment-contracts",
+                    json={
+                        "project_id": project_id,
+                        "source_task_id": story_task_id,
+                    },
+                )
+                self.assertEqual(segment_contracts_response.status_code, 202)
+                failed_task_id = segment_contracts_response.json()["task_id"]
+                failed_payload = self._wait_for_completion(client, failed_task_id)
+
+            self.assertEqual(failed_payload["status"], "failed")
+            self.assertIn("chapter=2", failed_payload["error"])
+            self.assertIn(f"scene_id={failed_scene_id}", failed_payload["error"])
+            self.assertEqual(
+                failed_payload["result"]["pipeline_stage"],
+                "segment_contracts_failed",
+            )
+            progress = failed_payload["result"]["segment_contract_progress"]
+            self.assertIsNotNone(progress)
+            self.assertEqual(progress["status"], "failed")
+            self.assertEqual(progress["completed_chapters"], 1)
+            self.assertEqual(progress["failed_chapter_number"], 2)
+            self.assertEqual(progress["failed_scene_id"], failed_scene_id)
+            self.assertEqual(progress["failed_chunk_id"], failed_chunk_id)
+            self.assertTrue(progress["resume_ready"])
+            self.assertTrue(Path(failed_payload["result"]["segment_contract_progress_path"]).exists())
+
+            resume_response = client.post(
+                "/v1/projects/segment-contracts",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": story_task_id,
+                    "resume_from_progress": True,
+                },
+            )
+            self.assertEqual(resume_response.status_code, 202)
+            resume_task_id = resume_response.json()["task_id"]
+            resume_task = client.app.state.container.task_queue.store.get(resume_task_id)
+            self.assertIsNotNone(resume_task)
+            self.assertTrue(resume_task.payload["resume_from_progress"])
+
+            resumed_payload = self._wait_for_completion(client, resume_task_id)
+            self.assertEqual(resumed_payload["status"], "completed")
+            resumed_progress = resumed_payload["result"]["segment_contract_progress"]
+            self.assertEqual(resumed_progress["status"], "completed")
+            self.assertEqual(
+                resumed_progress["completed_chapters"],
+                resumed_progress["total_chapters"],
+            )
+            self.assertFalse(resumed_progress["resume_ready"])
 
 
 if __name__ == "__main__":

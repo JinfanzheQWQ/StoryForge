@@ -11,6 +11,7 @@ from storyforge.agents.base import (
     AgentBackendUnavailableError,
     PromptRequest,
     UnavailableAgentBackend,
+    attach_prompt_metrics,
 )
 from storyforge.core.io import to_jsonable
 from storyforge.core.config import SeedanceConfig
@@ -32,6 +33,7 @@ from storyforge.domains.video.planning import VideoPlanningMixin
 from storyforge.domains.video.prompting import VideoPromptingMixin
 from storyforge.domains.video.repair import VideoRepairMixin
 from storyforge.domains.video.schemas import (
+    ChapterCoveragePlanSchema,
     ChapterSceneSchema,
     ChapterSceneStructureSchema,
     CharacterVisualBibleSchema,
@@ -109,6 +111,22 @@ GENERIC_OPENING_MATCH_PHRASES = (
     "继续当前状态",
     "新场景开始",
 )
+DIRECTION_APPROACH_PATTERNS = (
+    re.compile(r"从(?:画面)?深处向(?:画面)?浅处"),
+    re.compile(r"(?:走近|靠近|接近|逼近|冲向)(?:镜头|画面前方|前景)?"),
+    re.compile(r"向(?:镜头|画面前方|画面浅处|前景|近处)"),
+    re.compile(r"由远及近"),
+    re.compile(r"朝(?:镜头|前方)走来"),
+)
+DIRECTION_RETREAT_PATTERNS = (
+    re.compile(r"从(?:画面)?浅处向(?:画面)?深处"),
+    re.compile(r"(?:走向|走进|迈向|退向)(?:远处|深处|后方)"),
+    re.compile(r"向(?:画面深处|远处|远方|深处|后方)"),
+    re.compile(r"(?:背影|身影).{0,6}(?:远去|渐远|离开)"),
+    re.compile(r"渐行渐远"),
+    re.compile(r"离镜头越来越远"),
+    re.compile(r"由近及远"),
+)
 
 
 def _normalize_similarity_text(value: str) -> str:
@@ -176,6 +194,7 @@ class NovelToVideoService(
     VideoRepairMixin,
     VideoPlanningMixin,
 ):
+    CHAPTER_EVENT_END_COVERAGE_MIN_RATIO = 0.72
     PLANNER_MIN_DURATION_SECONDS = 5
     SEEDANCE_MIN_DURATION_SECONDS = 2
     SEEDANCE_MAX_DURATION_SECONDS = 12
@@ -283,29 +302,10 @@ class NovelToVideoService(
     ):
         chapter_plans: list[VideoSegmentPlanSchema] = []
         for chapter in sorted(novel_package.outline.chapters, key=lambda item: item.number):
-            scene_structure = self._run_structured_agent(
-                schema=ChapterSceneStructureSchema,
-                request=PromptRequest(
-                    system_prompt=(
-                        "你是章节场景规划 Agent。"
-                        "请只规划当前章节有哪些 scene。"
-                        "只输出 scene 结构，不要输出 segment，不要输出图片 prompt。"
-                    ),
-                    user_prompt=self._build_chapter_scene_planner_user_prompt(
-                        novel_package,
-                        chapter_number=chapter.number,
-                        story_memory=story_memory,
-                    ),
-                    metadata={
-                        "task": "video-chapter-scene-planner",
-                        "chapter_number": chapter.number,
-                    },
-                ),
-                validator=lambda value, chapter_number=chapter.number: self._validate_chapter_scene_structure_output(
-                    value,
-                    novel_package=novel_package,
-                    chapter_number=chapter_number,
-                ),
+            scene_structure = self._plan_chapter_scene_structure(
+                novel_package=novel_package,
+                story_memory=story_memory,
+                chapter_number=chapter.number,
             )
             chapter_plan = self._build_chapter_plan_from_scene_structure(
                 novel_package=novel_package,
@@ -346,6 +346,63 @@ class NovelToVideoService(
             plan=merged_plan,
         )
         return merged_plan, story_memory
+
+    def _plan_chapter_scene_structure(
+        self,
+        *,
+        novel_package: NovelPackage,
+        story_memory,
+        chapter_number: int,
+    ) -> ChapterSceneStructureSchema:
+        chapter_event_plan = self._run_structured_agent(
+            schema=ChapterCoveragePlanSchema,
+            request=PromptRequest(
+                system_prompt=(
+                    "你是章节关键事件提取 Agent。"
+                    "请只提取当前章节里后续场景规划必须覆盖的关键推进事件。"
+                    "不要生成 scene，不要生成 segment，不要生成图片 prompt。"
+                ),
+                user_prompt=self._build_chapter_event_coverage_user_prompt(
+                    novel_package,
+                    chapter_number=chapter_number,
+                ),
+                metadata={
+                    "task": "video-chapter-event-planner",
+                    "chapter_number": chapter_number,
+                },
+            ),
+            validator=lambda value, chapter_number=chapter_number: self._validate_chapter_event_coverage_output(
+                value,
+                novel_package=novel_package,
+                chapter_number=chapter_number,
+            ),
+        )
+        return self._run_structured_agent(
+            schema=ChapterSceneStructureSchema,
+            request=PromptRequest(
+                system_prompt=(
+                    "你是章节场景规划 Agent。"
+                    "请只规划当前章节有哪些 scene。"
+                    "只输出 scene 结构，不要输出 segment，不要输出图片 prompt。"
+                ),
+                user_prompt=self._build_chapter_scene_planner_user_prompt(
+                    novel_package,
+                    chapter_number=chapter_number,
+                    story_memory=story_memory,
+                    chapter_event_plan=chapter_event_plan,
+                ),
+                metadata={
+                    "task": "video-chapter-scene-planner",
+                    "chapter_number": chapter_number,
+                },
+            ),
+            validator=lambda value, chapter_number=chapter_number, chapter_event_plan=chapter_event_plan: self._validate_chapter_scene_structure_output(
+                value,
+                novel_package=novel_package,
+                chapter_number=chapter_number,
+                chapter_event_plan=chapter_event_plan,
+            ),
+        )
 
     def _build_chapter_plan_from_scene_structure(
         self,
@@ -770,14 +827,19 @@ class NovelToVideoService(
                     "transition_mode 只能是 continue 或 cut。"
                 )
             if first_transition_mode == "continue":
-                previous_end_state = (
-                    previous_tail_segment.shot_state.end_state_lock.strip()
-                    or previous_tail_segment.shot_state.action_progression.strip()
-                    or previous_tail_segment.summary.strip()
+                previous_tail_state = self._build_scene_chunk_exit_state(previous_tail_segment)
+                previous_end_state = str(previous_tail_state.get("visible_tail_state", "") or "")
+                opening_seed = str(previous_tail_state.get("opening_match_seed", "") or "")
+                carry_over_state = " ".join(
+                    str(item).strip()
+                    for item in list(previous_tail_state.get("carry_over_elements", []) or [])
+                    if str(item).strip()
                 )
-                opening_overlap = _text_overlap_ratio(
-                    first_segment.continuity_link.opening_match.strip(),
-                    previous_end_state,
+                opening_text = first_segment.continuity_link.opening_match.strip()
+                opening_overlap = max(
+                    _text_overlap_ratio(opening_text, previous_end_state),
+                    _text_overlap_ratio(opening_text, opening_seed),
+                    _text_overlap_ratio(opening_text, carry_over_state),
                 )
                 if opening_overlap < 0.22:
                     raise ValueError(
@@ -1010,14 +1072,70 @@ class NovelToVideoService(
         self,
         tail_segment: SceneSegmentContractSchema,
     ) -> dict[str, object]:
+        visible_tail_state = (
+            tail_segment.shot_state.end_state_lock.strip()
+            or tail_segment.shot_state.action_progression.strip()
+            or tail_segment.summary.strip()
+        )
+        carry_over_elements = self._build_scene_chunk_carry_over_elements(tail_segment)
         return {
             "segment_id": tail_segment.segment_id,
             "summary": tail_segment.summary,
             "end_frame_characters": list(tail_segment.end_frame_characters),
+            "action_progression": tail_segment.shot_state.action_progression.strip(),
+            "blocking": tail_segment.shot_state.blocking.strip(),
+            "prop_continuity": tail_segment.shot_state.prop_continuity.strip(),
             "end_state_lock": tail_segment.shot_state.end_state_lock,
             "screen_direction": tail_segment.shot_state.screen_direction,
             "transition_mode": tail_segment.continuity_link.transition_mode,
+            "visible_tail_state": visible_tail_state,
+            "carry_over_elements": carry_over_elements,
+            "opening_match_seed": self._build_scene_chunk_opening_match_seed(
+                visible_tail_state=visible_tail_state,
+                carry_over_elements=carry_over_elements,
+            ),
         }
+
+    def _build_scene_chunk_carry_over_elements(
+        self,
+        tail_segment: SceneSegmentContractSchema,
+    ) -> list[str]:
+        raw_elements = [
+            f"角色：{'、'.join(tail_segment.end_frame_characters)}"
+            if tail_segment.end_frame_characters
+            else "",
+            f"站位：{tail_segment.shot_state.blocking.strip()}"
+            if tail_segment.shot_state.blocking.strip()
+            else "",
+            f"朝向：{tail_segment.shot_state.screen_direction.strip()}"
+            if tail_segment.shot_state.screen_direction.strip()
+            else "",
+            f"道具：{tail_segment.shot_state.prop_continuity.strip()}"
+            if tail_segment.shot_state.prop_continuity.strip()
+            else "",
+        ]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in raw_elements:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    def _build_scene_chunk_opening_match_seed(
+        self,
+        *,
+        visible_tail_state: str,
+        carry_over_elements: list[str],
+    ) -> str:
+        if not visible_tail_state:
+            return ""
+        if not carry_over_elements:
+            return visible_tail_state
+        compact_carry = "，".join(carry_over_elements[:3])
+        return f"{visible_tail_state}；保持{compact_carry}"
 
     def _merge_scene_chunk_contract_batches(
         self,
@@ -1101,16 +1219,155 @@ class NovelToVideoService(
             }
         )
 
+    def _chapter_story_text(
+        self,
+        *,
+        novel_package: NovelPackage,
+        chapter_number: int,
+    ) -> str:
+        draft = next(
+            (item for item in novel_package.chapters if item.number == chapter_number),
+            None,
+        )
+        if draft is not None and draft.markdown.strip():
+            return draft.markdown
+        chapter = next(
+            item for item in novel_package.outline.chapters if item.number == chapter_number
+        )
+        return chapter.summary
+
+    def _normalize_event_evidence_text(self, text: str) -> str:
+        return "".join(str(text or "").split())
+
+    def _event_evidence_position(
+        self,
+        evidence: str,
+        normalized_chapter_text: str,
+    ) -> int:
+        normalized_evidence = self._normalize_event_evidence_text(evidence)
+        if len(normalized_evidence) < 2:
+            return -1
+        return normalized_chapter_text.find(normalized_evidence)
+
+    def _supported_event_positions(
+        self,
+        evidence_tokens: list[str],
+        normalized_chapter_text: str,
+    ) -> list[int]:
+        supported_positions: list[int] = []
+        for token in evidence_tokens:
+            position = self._event_evidence_position(token, normalized_chapter_text)
+            if position >= 0:
+                supported_positions.append(position)
+        return supported_positions
+
+    def _validate_chapter_event_coverage_output(
+        self,
+        chapter_event_plan: ChapterCoveragePlanSchema,
+        *,
+        novel_package: NovelPackage,
+        chapter_number: int,
+    ) -> ChapterCoveragePlanSchema:
+        if chapter_event_plan.chapter_number not in (0, chapter_number):
+            raise ValueError(
+                f"ChapterCoveragePlanSchema.chapter_number 必须为 {chapter_number}。"
+            )
+        if not chapter_event_plan.events:
+            raise ValueError("ChapterCoveragePlanSchema.events 不能为空。")
+
+        allowed_names = {
+            item.name.strip()
+            for item in novel_package.outline.characters
+            if item.name.strip()
+        }
+        normalized_chapter_text = self._normalize_event_evidence_text(
+            self._chapter_story_text(
+                novel_package=novel_package,
+                chapter_number=chapter_number,
+            )
+        )
+        if not normalized_chapter_text:
+            raise ValueError("当前章节正文为空，无法验证关键事件覆盖。")
+
+        expected_prefix = f"ch{chapter_number:02d}-ev"
+        seen_event_ids: set[str] = set()
+        previous_position = -1
+        last_position = -1
+        for index, event in enumerate(chapter_event_plan.events, start=1):
+            expected_event_id = f"{expected_prefix}{index:02d}"
+            if event.event_id.strip() != expected_event_id:
+                raise ValueError(
+                    f"关键事件顺序必须使用连续 event_id。期望 {expected_event_id}，实际为 {event.event_id!r}。"
+                )
+            if event.event_id in seen_event_ids:
+                raise ValueError(f"关键事件 event_id 重复：{event.event_id}")
+            seen_event_ids.add(event.event_id)
+            if not event.summary.strip():
+                raise ValueError(f"关键事件 {event.event_id} 缺少 summary。")
+            evidence_tokens = [
+                item.strip()
+                for item in event.source_evidence
+                if item.strip()
+            ]
+            if not evidence_tokens:
+                raise ValueError(f"关键事件 {event.event_id} 缺少 source_evidence。")
+            supported_positions = self._supported_event_positions(
+                evidence_tokens,
+                normalized_chapter_text,
+            )
+            if not supported_positions:
+                raise ValueError(
+                    f"关键事件 {event.event_id} 的 source_evidence 无法在当前章节正文中定位。"
+                )
+            event_position = min(supported_positions)
+            if event_position < previous_position:
+                raise ValueError(
+                    f"关键事件 {event.event_id} 的正文位置早于上一事件，顺序与正文不一致。"
+                )
+            previous_position = event_position
+            last_position = max(last_position, max(supported_positions))
+            invalid_names = [
+                name
+                for name in event.involved_characters
+                if name.strip() and name.strip() not in allowed_names
+            ]
+            if invalid_names:
+                raise ValueError(
+                    f"关键事件 {event.event_id} 使用了不存在的角色名："
+                    + "、".join(invalid_names)
+                )
+
+        if (
+            len(normalized_chapter_text) >= 800
+            and last_position < int(len(normalized_chapter_text) * self.CHAPTER_EVENT_END_COVERAGE_MIN_RATIO)
+        ):
+            raise ValueError(
+                "章节关键事件没有覆盖到章节尾部的真实收束；最后一个 must-cover event 结束得过早。"
+            )
+
+        return chapter_event_plan.model_copy(update={"chapter_number": chapter_number})
+
     def _validate_chapter_scene_structure_output(
         self,
         structure: ChapterSceneStructureSchema,
         *,
         novel_package: NovelPackage,
         chapter_number: int,
+        chapter_event_plan: ChapterCoveragePlanSchema,
     ) -> ChapterSceneStructureSchema:
         if not structure.scenes:
             raise ValueError("ChapterSceneStructureSchema.scenes 不能为空。")
+        expected_event_ids = [item.event_id for item in chapter_event_plan.events]
+        event_character_map = {
+            item.event_id: {
+                name.strip()
+                for name in item.involved_characters
+                if name.strip()
+            }
+            for item in chapter_event_plan.events
+        }
         seen_scene_ids: set[str] = set()
+        covered_event_sequence: list[str] = []
         for scene in structure.scenes:
             if scene.chapter_number != chapter_number:
                 raise ValueError(
@@ -1123,6 +1380,57 @@ class NovelToVideoService(
             seen_scene_ids.add(scene.scene_id)
             if not scene.title.strip() or not scene.summary.strip():
                 raise ValueError(f"scene {scene.scene_id} 缺少 title 或 summary。")
+            if not scene.covered_event_ids:
+                raise ValueError(f"scene {scene.scene_id} 的 covered_event_ids 不能为空。")
+            if len(scene.covered_event_ids) != len(set(scene.covered_event_ids)):
+                raise ValueError(f"scene {scene.scene_id} 的 covered_event_ids 不能重复。")
+            invalid_event_ids = [
+                event_id
+                for event_id in scene.covered_event_ids
+                if event_id not in expected_event_ids
+            ]
+            if invalid_event_ids:
+                raise ValueError(
+                    f"scene {scene.scene_id} 使用了不存在的关键事件 ID："
+                    + "、".join(invalid_event_ids)
+                )
+            positions = [expected_event_ids.index(event_id) for event_id in scene.covered_event_ids]
+            if positions != list(range(positions[0], positions[0] + len(positions))):
+                raise ValueError(
+                    f"scene {scene.scene_id} 的 covered_event_ids 必须对应连续事件块，不能跳过中间事件。"
+                )
+            required_characters: set[str] = set()
+            for event_id in scene.covered_event_ids:
+                required_characters.update(event_character_map.get(event_id, set()))
+            missing_characters = sorted(
+                name for name in required_characters
+                if name not in scene.involved_characters
+            )
+            if missing_characters:
+                raise ValueError(
+                    f"scene {scene.scene_id} 覆盖了包含这些角色的关键事件，但 involved_characters 缺失："
+                    + "、".join(missing_characters)
+                )
+            covered_event_sequence.extend(scene.covered_event_ids)
+
+        if covered_event_sequence != expected_event_ids:
+            missing_event_ids = [
+                event_id for event_id in expected_event_ids
+                if event_id not in covered_event_sequence
+            ]
+            repeated_event_ids = [
+                event_id for event_id in covered_event_sequence
+                if covered_event_sequence.count(event_id) > 1
+            ]
+            details: list[str] = []
+            if missing_event_ids:
+                details.append("缺失：" + "、".join(missing_event_ids))
+            if repeated_event_ids:
+                details.append("重复：" + "、".join(dict.fromkeys(repeated_event_ids)))
+            raise ValueError(
+                "scene structure 的关键事件覆盖不完整或顺序错误。"
+                + ("；".join(details) if details else "")
+            )
         return structure
 
     def _fit_duration_to_speech_budget(
@@ -1191,6 +1499,26 @@ class NovelToVideoService(
                 )
             if not segment.timed_beats:
                 raise ValueError(f"segment {segment.segment_id} 缺少 timed_beats。")
+            narration, dialogue_lines, subtitle_lines = self._sanitize_segment_audio_tracks(
+                narration=segment.narration,
+                dialogue_lines=segment.dialogue_lines,
+                subtitle_lines=segment.subtitle_lines,
+                summary=segment.summary,
+                timed_beats=segment.timed_beats,
+                involved_characters=segment.involved_characters,
+            )
+            if (
+                narration != segment.narration
+                or dialogue_lines != list(segment.dialogue_lines)
+                or subtitle_lines != list(segment.subtitle_lines)
+            ):
+                segment = segment.model_copy(
+                    update={
+                        "narration": narration,
+                        "dialogue_lines": dialogue_lines,
+                        "subtitle_lines": subtitle_lines,
+                    }
+                )
             required_duration = self._estimate_required_speech_duration(
                 narration=segment.narration,
                 dialogue_lines=segment.dialogue_lines,
@@ -1235,15 +1563,37 @@ class NovelToVideoService(
                 timed_beats=segment.timed_beats,
                 requested=segment.requires_mid_frame,
             )
+            mid_frame_requirement_reasons = self._mid_frame_requirement_reasons(
+                involved_characters=segment.involved_characters,
+                duration_seconds=segment.duration_seconds,
+                dialogue_lines=segment.dialogue_lines,
+                timed_beats=segment.timed_beats,
+            )
             if effective_requires_mid_frame and not segment.requires_mid_frame:
+                reason_suffix = (
+                    " 触发条件："
+                    + "；".join(mid_frame_requirement_reasons)
+                    + "。"
+                    if mid_frame_requirement_reasons
+                    else ""
+                )
                 raise ValueError(
                     f"segment {segment.segment_id} 满足中段锚点帧条件时，"
                     "requires_mid_frame 必须为 true，且必须显式给出 mid_frame_characters。"
+                    + reason_suffix
                 )
             if effective_requires_mid_frame and not segment.mid_frame_characters:
+                reason_suffix = (
+                    " 当前这段之所以必须有中段锚点帧，是因为："
+                    + "；".join(mid_frame_requirement_reasons)
+                    + "。"
+                    if mid_frame_requirement_reasons
+                    else ""
+                )
                 raise ValueError(
                     f"segment {segment.segment_id} 的 mid_frame_characters 不能为空，"
                     "且只能使用 involved_characters 内角色。"
+                    + reason_suffix
                 )
             for field_name, characters in (
                 ("start_frame_characters", segment.start_frame_characters),
@@ -1262,6 +1612,57 @@ class NovelToVideoService(
                         f"{segment.segment_id} 的 {field_name} 只能使用 involved_characters 内角色："
                         + "、".join(invalid_names)
                     )
+            if effective_requires_mid_frame:
+                self._validate_mid_frame_anchor_group_continuity(
+                    segment_id=segment.segment_id,
+                    start_frame_characters=segment.start_frame_characters,
+                    mid_frame_characters=segment.mid_frame_characters,
+                    mid_frame_mode=segment.mid_frame_mode,
+                    end_frame_characters=segment.end_frame_characters,
+                )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="shot_state.framing",
+                prompt_text=segment.shot_state.framing,
+                frame_characters=segment.start_frame_characters,
+                frame_label="start_frame",
+            )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="shot_state.camera_motion",
+                prompt_text=segment.shot_state.camera_motion,
+                frame_characters=segment.start_frame_characters,
+                frame_label="start_frame",
+            )
+            if effective_requires_mid_frame:
+                self._validate_single_frame_focus_conflict(
+                    segment_id=segment.segment_id,
+                    field_name="shot_state.framing",
+                    prompt_text=segment.shot_state.framing,
+                    frame_characters=segment.mid_frame_characters,
+                    frame_label="mid_frame",
+                )
+                self._validate_single_frame_focus_conflict(
+                    segment_id=segment.segment_id,
+                    field_name="shot_state.camera_motion",
+                    prompt_text=segment.shot_state.camera_motion,
+                    frame_characters=segment.mid_frame_characters,
+                    frame_label="mid_frame",
+                )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="shot_state.framing",
+                prompt_text=segment.shot_state.framing,
+                frame_characters=segment.end_frame_characters,
+                frame_label="end_frame",
+            )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="shot_state.camera_motion",
+                prompt_text=segment.shot_state.camera_motion,
+                frame_characters=segment.end_frame_characters,
+                frame_label="end_frame",
+            )
             if not segment.continuity_link.opening_match.strip():
                 raise ValueError(f"segment {segment.segment_id} 缺少 continuity_link.opening_match。")
             opening_match = segment.continuity_link.opening_match.strip()
@@ -1324,15 +1725,23 @@ class NovelToVideoService(
     ) -> VideoSegmentSchema:
         involved_characters = list(contract.involved_characters)
         timed_beats = list(contract.timed_beats)
-        subtitle_lines = contract.subtitle_lines or self._build_subtitle_lines(
+        narration, dialogue_lines, subtitle_lines = self._sanitize_segment_audio_tracks(
             narration=contract.narration,
             dialogue_lines=contract.dialogue_lines,
+            subtitle_lines=contract.subtitle_lines,
+            summary=contract.summary,
+            timed_beats=timed_beats,
+            involved_characters=involved_characters,
+        )
+        subtitle_lines = subtitle_lines or self._build_subtitle_lines(
+            narration=narration,
+            dialogue_lines=dialogue_lines,
             timed_beats=timed_beats,
         )
         requires_mid_frame = self._should_require_mid_frame(
             involved_characters=involved_characters,
             duration_seconds=contract.duration_seconds,
-            dialogue_lines=contract.dialogue_lines,
+            dialogue_lines=dialogue_lines,
             timed_beats=timed_beats,
             requested=contract.requires_mid_frame,
         )
@@ -1355,6 +1764,7 @@ class NovelToVideoService(
             if requires_mid_frame
             else []
         )
+        mid_frame_mode = self._normalize_mid_frame_mode(contract.mid_frame_mode)
         base_segment = VideoSegmentSchema.model_validate(
             {
                 "segment_id": contract.segment_id,
@@ -1371,9 +1781,10 @@ class NovelToVideoService(
                 "involved_characters": involved_characters,
                 "start_frame_characters": start_frame_characters,
                 "mid_frame_characters": mid_frame_characters,
+                "mid_frame_mode": mid_frame_mode if requires_mid_frame else "continuous",
                 "end_frame_characters": end_frame_characters,
-                "narration": contract.narration or contract.summary,
-                "dialogue_lines": list(contract.dialogue_lines),
+                "narration": narration,
+                "dialogue_lines": dialogue_lines,
                 "subtitle_lines": subtitle_lines,
                 "timed_beats": timed_beats,
                 "sound_effects": self._build_local_sound_effects(scene.scene_bible, timed_beats),
@@ -1382,7 +1793,6 @@ class NovelToVideoService(
                     scene=scene,
                     segment_summary=contract.summary,
                 ),
-                "scene_prompt": "",
                 "start_frame_prompt": "",
                 "mid_frame_prompt": "",
                 "end_frame_prompt": "",
@@ -1391,12 +1801,10 @@ class NovelToVideoService(
                 "transition_hint": self._normalize_transition_hint(contract.transition_hint),
             }
         )
-        scene_prompt = self._build_local_scene_prompt(scene, base_segment)
         start_frame_prompt = self._build_local_start_frame_prompt(scene, base_segment)
         end_frame_prompt = self._build_local_end_frame_prompt(scene, base_segment)
         enriched_segment = base_segment.model_copy(
             update={
-                "scene_prompt": scene_prompt,
                 "start_frame_prompt": start_frame_prompt,
                 "end_frame_prompt": end_frame_prompt,
             }
@@ -1429,20 +1837,6 @@ class NovelToVideoService(
             raise ValueError(f"{field_name} 不能为空，且只能使用 involved_characters 内角色。")
         return normalized
 
-    def _build_local_scene_prompt(
-        self,
-        scene: ChapterSceneSchema,
-        segment: VideoSegmentSchema,
-    ) -> str:
-        beat_descriptions = self._extract_beat_descriptions(segment.timed_beats)
-        focus = "；".join(beat_descriptions[:2]) or segment.summary
-        characters = "、".join(segment.involved_characters) or "环境"
-        return (
-            f"{scene.title}，{focus}，角色 {characters}。"
-            f"场景基线：{self._scene_bible_brief(scene.scene_bible)}。"
-            f"镜头重点：{self._shot_state_brief(segment.shot_state)}。"
-        )
-
     def _build_local_start_frame_prompt(
         self,
         scene: ChapterSceneSchema,
@@ -1455,7 +1849,12 @@ class NovelToVideoService(
             or segment.summary
         )
         characters = "、".join(segment.start_frame_characters) or "环境"
-        return f"首帧，{characters} 开场进入 {scene.title}，{opening_focus}。"
+        sanitized_focus = self._sanitize_frame_prompt_text(
+            opening_focus,
+            segment.start_frame_characters,
+            segment.involved_characters,
+        ) or "只呈现当前帧真实可见的开场状态"
+        return f"首帧，{characters} 开场进入 {scene.title}，{sanitized_focus}。"
 
     def _build_local_end_frame_prompt(
         self,
@@ -1469,7 +1868,12 @@ class NovelToVideoService(
             or segment.summary
         )
         characters = "、".join(segment.end_frame_characters) or "环境"
-        return f"尾帧，{characters} 在 {scene.title} 收束到 {closing_focus}。"
+        sanitized_focus = self._sanitize_frame_prompt_text(
+            closing_focus,
+            segment.end_frame_characters,
+            segment.involved_characters,
+        ) or "只呈现当前帧真实可见的收束状态"
+        return f"尾帧，{characters} 在 {scene.title} 收束到 {sanitized_focus}。"
 
     def _build_local_sound_effects(
         self,
@@ -1480,15 +1884,19 @@ class NovelToVideoService(
         weather = self._scene_bible_value(scene_bible, "weather").strip()
         if weather:
             effects.append(f"{weather}环境声")
-        fixed_props = self._scene_bible_list(scene_bible, "fixed_props")
+        fixed_props = self._scene_bible_environment_fixed_props(scene_bible)
         if fixed_props:
             effects.append(f"{fixed_props[0]}相关细节声")
         beat_text = " ".join(timed_beats)
         if any(keyword in beat_text for keyword in ("走", "跑", "靠近", "停下", "转身", "拥抱")):
             effects.append("脚步与衣料摩擦声")
-        if not effects:
-            effects.append("环境底噪")
-        return effects[:3]
+        sanitized_effects = self._sanitize_segment_sound_effects(
+            effects,
+            scene_bible=scene_bible,
+        )
+        if not sanitized_effects:
+            sanitized_effects = ["环境底噪"]
+        return sanitized_effects[:3]
 
     def _build_local_music_direction(
         self,
@@ -1595,10 +2003,13 @@ class NovelToVideoService(
                     item.involved_characters,
                     voice_map,
                 ),
-                sound_effects=item.sound_effects,
+                sound_effects=self._sanitize_segment_sound_effects(
+                    item.sound_effects,
+                    scene_bible=item.scene_bible,
+                    prop_continuity=item.shot_state.prop_continuity,
+                ),
                 music_direction=item.music_direction,
                 timed_beats=item.timed_beats,
-                scene_prompt=item.scene_prompt,
                 start_frame_prompt=item.start_frame_prompt,
                 mid_frame_prompt=item.mid_frame_prompt,
                 end_frame_prompt=item.end_frame_prompt,
@@ -1914,11 +2325,92 @@ class NovelToVideoService(
                 "mid_frame_characters 必须严格跟随片段中间那一拍真实出镜的人物，"
                 "不要直接照搬整个 scene cast，也不要把只在尾帧才出现的人提前写进中段帧。"
             )
+        if "不能只保留首尾同组角色的一部分" in normalized_error:
+            retry_note += (
+                " 这次失败说明中段锚点把同一组多人角色写丢了。"
+                "如果首帧和尾帧是同一组双人或多人，而中段只是其中一人的反应特写或动作插入镜头，"
+                "就必须把 `mid_frame_mode` 明确设成 `insert_cut`，"
+                "并把 `timed_beats`、`mid_frame_prompt`、`shot_state.camera_motion` 都写成"
+                "“从双人主镜头切入单人特写，再切回双人主镜头”的完整运镜。"
+                "如果不是插入镜头，就继续保留整组角色；"
+                "不要出现没有声明 insert_cut 的“首尾两人，中段只剩其中一人”。"
+            )
+            anchor_group_match = re.search(
+                r"首尾帧固定角色组为\s*(?P<anchors>[^，。]+)\s*，但中段写成了\s*(?P<mid>[^。]+)",
+                normalized_error,
+            )
+            if anchor_group_match:
+                anchor_names = str(anchor_group_match.group("anchors") or "").strip()
+                mid_names = str(anchor_group_match.group("mid") or "").strip()
+                if anchor_names and mid_names:
+                    retry_note += (
+                        f" 本次按二选一修正即可："
+                        f"如果中段仍是连续主镜头，就把 `mid_frame_characters` 改回 `{anchor_names}`，"
+                        "并写 `mid_frame_mode=continuous`；"
+                        f"如果中段确实只拍 `{mid_names}` 的插入特写，"
+                        "就保留该中段角色，但必须写 `mid_frame_mode=insert_cut`，"
+                        f"并让 `timed_beats` 明确成“先 {anchor_names} 同框 -> 再切 {mid_names} 单人 -> 最后回到 {anchor_names} 同框”。"
+                        "不要再输出“首尾整组、中段只剩一人、但 mid_frame_mode 仍是 continuous”的半对半错结构。"
+                    )
+        if "多人同帧时仍要求单人特写" in normalized_error or "单帧里重复出现" in normalized_error:
+            retry_note += (
+                " 这次失败说明某一帧的人物构图自相矛盾。"
+                "如果某一帧是双人或多人同框，就不要再写“某角色侧脸特写 / 大特写 / 单人近景”。"
+                "尤其 `shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 共享的镜头约束，"
+                "只要 start/mid/end 任一帧会出现双人，就不要在这两个字段里写指向某一个角色的特写动作。"
+                "同一帧里同一角色只能出现一次；需要单人特写时，就把该帧的 frame_characters 改成单人，"
+                "或者改写成双人同构图下的自然表情表现。"
+                "例如：如果 start_frame 是 `苏晴、林远`，就不要写“推向苏晴侧脸特写”；"
+                "应改成“轻微前推，保持两人同框并捕捉苏晴表情变化”。"
+            )
+            multi_focus_match = re.search(
+                r"segment\s+(?P<segment_id>\S+)\s+的\s+(?P<field_name>[^\s]+)\s+在\s+"
+                r"(?P<frame_label>start_frame|mid_frame|end_frame)\s*"
+                r"\((?P<frame_names>[^)]+)\)\s*多人同帧时仍要求单人特写",
+                normalized_error,
+            )
+            if multi_focus_match:
+                field_name = str(multi_focus_match.group("field_name") or "").strip()
+                frame_label = str(multi_focus_match.group("frame_label") or "").strip()
+                frame_names = str(multi_focus_match.group("frame_names") or "").strip()
+                if field_name and frame_label and frame_names:
+                    focus_name = frame_names.split("、", 1)[0].strip() or frame_names
+                    retry_note += (
+                        f" 本次直接按这条修：当前报错的是 `{field_name}` 在 `{frame_label}`，"
+                        f"该帧角色是 `{frame_names}`。"
+                        f"如果 `{frame_label}` 仍要求 `{frame_names}` 同框，"
+                        f"就把 `{field_name}` 改写成共享镜头语言，"
+                        f"例如“轻微前推，保持 {frame_names} 同框，只通过站位和表情差异突出 {focus_name} 情绪变化”；"
+                        f"不要再写“推向 {focus_name} 侧脸特写”“聚焦到 {focus_name} 脸部”这类单人特写句。"
+                    )
         if "缺少 continuity_link.opening_match" in normalized_error or "opening_match 过于空泛" in normalized_error:
             retry_note += (
                 " 这次失败说明 opening_match 不合格。"
                 "无论是 start 还是 continue，opening_match 都必须写成可拍到的开场状态，"
                 "不要留空，也不要写“承接上一段继续”“场景开始”这类空话。"
+            )
+        if "首段 opening_match 没有明确承接上一 chunk 尾部状态" in normalized_error:
+            retry_note += (
+                " 这次失败说明跨 chunk 首段没有把上一 chunk 的尾部状态真正复现到开场画面里。"
+                "请直接复用 `上一 chunk 退出状态 JSON` 里的 `visible_tail_state`、"
+                "`opening_match_seed` 和 `carry_over_elements`，"
+                "把当前首段的 continuity_link.opening_match 改写成可拍到的承接句。"
+                "优先写清角色仍保持的站位、朝向、道具和动作停点，"
+                "例如“承接上一 chunk 尾部，陈默仍停在长椅旁微微回头，保持刚听见脚步声后停住的姿态”。"
+                "不要只写“继续推进到会面”“承接上一段尾部”这类抽象总结。"
+            )
+        if (
+            "covered_event_ids" in normalized_error
+            or "关键事件覆盖" in normalized_error
+            or "章节关键事件" in normalized_error
+            or "must-cover event" in normalized_error
+            or "source_evidence 无法在当前章节正文中定位" in normalized_error
+        ):
+            retry_note += (
+                " 这次失败说明当前章节的 scene 没有完整覆盖关键事件。"
+                "本次必须严格对齐关键事件列表：每个 scene 都要填写 covered_event_ids，"
+                "所有 covered_event_ids 拼接后必须与关键事件顺序完全一致，"
+                "尤其不能漏掉章节后半段的关系落点、动作结果或结尾决定。"
             )
         if "重复表达同一事件" in normalized_error or "adjacent_segment_duplicate" in normalized_error:
             retry_note += (
@@ -1953,6 +2445,14 @@ class NovelToVideoService(
                 schema=schema,
                 attempt=attempt,
                 last_error=last_error,
+            )
+            attempt_request = attach_prompt_metrics(attempt_request)
+            request.metadata.update(
+                {
+                    "system_prompt_chars": attempt_request.metadata["system_prompt_chars"],
+                    "user_prompt_chars": attempt_request.metadata["user_prompt_chars"],
+                    "total_prompt_chars": attempt_request.metadata["total_prompt_chars"],
+                }
             )
             try:
                 response = self.backend.generate_structured(attempt_request, schema)
@@ -2069,10 +2569,38 @@ class NovelToVideoService(
                 raise ValueError(
                     f"segment {segment.segment_id} requires_mid_frame=true 时缺少 mid_frame_characters。"
                 )
+            self._validate_segment_direction_consistency(
+                segment_id=segment.segment_id,
+                screen_direction=segment.shot_state.screen_direction,
+                end_state_lock=segment.shot_state.end_state_lock,
+                end_frame_prompt=segment.end_frame_prompt,
+                timed_beats=segment.timed_beats,
+            )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="start_frame_prompt",
+                prompt_text=segment.start_frame_prompt,
+                frame_characters=segment.start_frame_characters,
+                frame_label="start_frame",
+            )
+            if segment.requires_mid_frame:
+                self._validate_single_frame_focus_conflict(
+                    segment_id=segment.segment_id,
+                    field_name="mid_frame_prompt",
+                    prompt_text=segment.mid_frame_prompt,
+                    frame_characters=segment.mid_frame_characters,
+                    frame_label="mid_frame",
+                )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="end_frame_prompt",
+                prompt_text=segment.end_frame_prompt,
+                frame_characters=segment.end_frame_characters,
+                frame_label="end_frame",
+            )
             fields_to_check = [
                 segment.summary,
                 segment.narration,
-                segment.scene_prompt,
                 segment.start_frame_prompt,
                 segment.mid_frame_prompt,
                 segment.end_frame_prompt,
@@ -2101,6 +2629,125 @@ class NovelToVideoService(
                 + "、".join(str(item) for item in missing_chapters)
             )
         return plan
+
+    def _validate_single_frame_focus_conflict(
+        self,
+        *,
+        segment_id: str,
+        field_name: str,
+        prompt_text: str,
+        frame_characters: list[str],
+        frame_label: str,
+    ) -> None:
+        if not self._has_multi_character_single_subject_focus(
+            prompt_text,
+            frame_characters,
+        ):
+            return
+        frame_names = "、".join(
+            str(name).strip()
+            for name in frame_characters
+            if str(name).strip()
+        ) or "未知角色"
+        raise ValueError(
+            f"segment {segment_id} 的 {field_name} 在 {frame_label} "
+            f"({frame_names}) 多人同帧时仍要求单人特写，"
+            "这会导致同一角色在单帧里重复出现。"
+        )
+
+    def _extract_direction_semantics(self, text: str) -> set[str]:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return set()
+        semantics: set[str] = set()
+        if any(pattern.search(normalized) for pattern in DIRECTION_APPROACH_PATTERNS):
+            semantics.add("approach")
+        if any(pattern.search(normalized) for pattern in DIRECTION_RETREAT_PATTERNS):
+            semantics.add("retreat")
+        return semantics
+
+    def _validate_segment_direction_consistency(
+        self,
+        *,
+        segment_id: str,
+        screen_direction: str,
+        end_state_lock: str,
+        end_frame_prompt: str,
+        timed_beats: list[str],
+    ) -> None:
+        screen_semantics = self._extract_direction_semantics(screen_direction)
+        tail_reference_text = " ".join(
+            item
+            for item in (
+                end_state_lock,
+                end_frame_prompt,
+                timed_beats[-1] if timed_beats else "",
+            )
+            if str(item or "").strip()
+        )
+        tail_semantics = self._extract_direction_semantics(tail_reference_text)
+        if len(screen_semantics) >= 2:
+            raise ValueError(
+                f"segment {segment_id} 的 shot_state.screen_direction 同时包含靠近镜头和远离镜头的相反方向语义："
+                f"{screen_direction.strip()!r}。"
+            )
+        if len(tail_semantics) >= 2:
+            raise ValueError(
+                f"segment {segment_id} 的尾部收束文本同时包含靠近镜头和远离镜头的相反方向语义："
+                f"{tail_reference_text.strip()!r}。"
+            )
+        if not screen_semantics or not tail_semantics:
+            return
+        if screen_semantics == tail_semantics:
+            return
+        raise ValueError(
+            f"segment {segment_id} 的 shot_state.screen_direction 与尾部收束方向冲突。"
+            f"screen_direction={screen_direction.strip()!r}；"
+            f"end_state/end_frame={tail_reference_text.strip()!r}。"
+            "请统一为同一运动轴线，不要一边写靠近镜头，一边又写背影远去或走向深处。"
+        )
+
+    def _validate_mid_frame_anchor_group_continuity(
+        self,
+        *,
+        segment_id: str,
+        start_frame_characters: list[str],
+        mid_frame_characters: list[str],
+        mid_frame_mode: str,
+        end_frame_characters: list[str],
+    ) -> None:
+        normalized_start = [str(name).strip() for name in start_frame_characters if str(name).strip()]
+        normalized_end = [str(name).strip() for name in end_frame_characters if str(name).strip()]
+        start_anchor = set(normalized_start)
+        end_anchor = set(normalized_end)
+        if len(start_anchor) < 2 or start_anchor != end_anchor:
+            return
+        mid_anchor = {str(name).strip() for name in mid_frame_characters if str(name).strip()}
+        if not mid_anchor:
+            return
+        if start_anchor.issubset(mid_anchor):
+            return
+        if start_anchor.isdisjoint(mid_anchor):
+            return
+        if self._normalize_mid_frame_mode(mid_frame_mode) == "insert_cut":
+            return
+        anchor_names = "、".join(normalized_start)
+        mid_names = "、".join(
+            str(name).strip()
+            for name in mid_frame_characters
+            if str(name).strip()
+        ) or "空"
+        raise ValueError(
+            f"segment {segment_id} 的 mid_frame_characters 不能只保留首尾同组角色的一部分。"
+            f"首尾帧固定角色组为 {anchor_names}，但中段写成了 {mid_names}。"
+            "如果中段仍是这组角色的连续表演，就必须保留整组角色；"
+            "如果中段是其中一人的插入特写，就必须把 mid_frame_mode 设为 insert_cut，"
+            "并显式写出从双人镜头切入再切回双人镜头的运镜；"
+            "否则就不要只保留其中一人。"
+        )
+
+    def _normalize_mid_frame_mode(self, value: str) -> str:
+        return "insert_cut" if str(value or "").strip().lower() == "insert_cut" else "continuous"
 
     def _validate_segment_continuity_repair(
         self,
@@ -2141,10 +2788,46 @@ class NovelToVideoService(
         if not candidate.end_frame_characters:
             raise ValueError("end_frame_characters 不能为空。")
         if candidate.requires_mid_frame:
+            self._validate_mid_frame_anchor_group_continuity(
+                segment_id=candidate.segment_id,
+                start_frame_characters=candidate.start_frame_characters,
+                mid_frame_characters=candidate.mid_frame_characters,
+                mid_frame_mode=candidate.mid_frame_mode,
+                end_frame_characters=candidate.end_frame_characters,
+            )
+        self._validate_segment_direction_consistency(
+            segment_id=candidate.segment_id,
+            screen_direction=candidate.shot_state.screen_direction,
+            end_state_lock=candidate.shot_state.end_state_lock,
+            end_frame_prompt=candidate.end_frame_prompt,
+            timed_beats=candidate.timed_beats,
+        )
+        self._validate_single_frame_focus_conflict(
+            segment_id=candidate.segment_id,
+            field_name="start_frame_prompt",
+            prompt_text=candidate.start_frame_prompt,
+            frame_characters=candidate.start_frame_characters,
+            frame_label="start_frame",
+        )
+        self._validate_single_frame_focus_conflict(
+            segment_id=candidate.segment_id,
+            field_name="end_frame_prompt",
+            prompt_text=candidate.end_frame_prompt,
+            frame_characters=candidate.end_frame_characters,
+            frame_label="end_frame",
+        )
+        if candidate.requires_mid_frame:
             if not candidate.mid_frame_prompt.strip():
                 raise ValueError("requires_mid_frame=true 时 mid_frame_prompt 不能为空。")
             if not candidate.mid_frame_characters:
                 raise ValueError("requires_mid_frame=true 时 mid_frame_characters 不能为空。")
+            self._validate_single_frame_focus_conflict(
+                segment_id=candidate.segment_id,
+                field_name="mid_frame_prompt",
+                prompt_text=candidate.mid_frame_prompt,
+                frame_characters=candidate.mid_frame_characters,
+                frame_label="mid_frame",
+            )
 
         duration_seconds = self._normalize_seedance_duration(candidate.duration_seconds)
         if duration_seconds != candidate.duration_seconds:
@@ -2263,12 +2946,12 @@ class NovelToVideoService(
         )
         candidate = target_schema.model_copy(
             update={
-                "scene_prompt": repair_patch.scene_prompt.strip(),
                 "start_frame_prompt": repair_patch.start_frame_prompt.strip(),
                 "mid_frame_prompt": repair_patch.mid_frame_prompt.strip(),
                 "end_frame_prompt": repair_patch.end_frame_prompt.strip(),
                 "start_frame_characters": list(repair_patch.start_frame_characters),
                 "mid_frame_characters": list(repair_patch.mid_frame_characters),
+                "mid_frame_mode": self._normalize_mid_frame_mode(repair_patch.mid_frame_mode),
                 "end_frame_characters": list(repair_patch.end_frame_characters),
                 "narration": repair_patch.narration.strip(),
                 "dialogue_lines": list(repair_patch.dialogue_lines),
@@ -2306,6 +2989,11 @@ class NovelToVideoService(
                     normalized_segment.mid_frame_characters
                     if requires_mid_frame
                     else []
+                ),
+                "mid_frame_mode": (
+                    self._normalize_mid_frame_mode(normalized_segment.mid_frame_mode)
+                    if requires_mid_frame
+                    else "continuous"
                 ),
                 "subtitle_lines": (
                     normalized_segment.subtitle_lines
@@ -2366,12 +3054,12 @@ class NovelToVideoService(
         original_payload = to_jsonable(original_segment)
         repaired_payload = repaired_segment.model_dump()
         tracked_fields = [
-            "scene_prompt",
             "start_frame_prompt",
             "mid_frame_prompt",
             "end_frame_prompt",
             "start_frame_characters",
             "mid_frame_characters",
+            "mid_frame_mode",
             "end_frame_characters",
             "narration",
             "dialogue_lines",

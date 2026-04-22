@@ -11,6 +11,8 @@ from storyforge.api.schemas import (
     ContinuityIssueSummaryResponse,
     ContinuitySummaryResponse,
     PlannedSegmentArtifactResponse,
+    PromptReferenceBindingResponse,
+    SubmittedRequestResponse,
     StoryBriefInput,
     TaskArtifactsResponse,
     UiBootstrapResponse,
@@ -72,6 +74,8 @@ def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
         available_llm_options=_build_available_llm_options(config),
         seedream_model=config.seedream.model,
         seedance_model=config.seedance.model,
+        seedream_watermark=config.seedream.watermark,
+        seedance_watermark=config.seedance.watermark,
     )
 
 
@@ -146,6 +150,7 @@ def build_task_artifacts(
     planned_segments = _collect_planned_segments(
         output_dir=output_dir,
         output_root=resolved_output_root,
+        character_images=character_images,
         scene_frames=scene_frames,
         rendered_clips=rendered_clips,
     )
@@ -242,6 +247,7 @@ def _collect_planned_segments(
     *,
     output_dir: Path,
     output_root: Path,
+    character_images: list[ArtifactItem],
     scene_frames: list[ArtifactItem],
     rendered_clips: list[ArtifactItem],
 ) -> list[PlannedSegmentArtifactResponse]:
@@ -257,8 +263,13 @@ def _collect_planned_segments(
         return _build_inferred_planned_segments(scene_frames, rendered_clips)
     scene_task_map = load_scene_image_task_map(output_dir)
     clip_map = load_seedance_clip_map(output_dir)
+    scene_task_by_scene: dict[str, object] = {}
+    for task in scene_task_map.values():
+        if task.scene_id and task.scene_id not in scene_task_by_scene:
+            scene_task_by_scene[task.scene_id] = task
     scene_frame_map = {item.path: item for item in scene_frames}
     rendered_clip_map = {item.path: item for item in rendered_clips}
+    character_image_map = {item.path: item for item in character_images}
     scene_master_map = {
         scene.scene_id: _resolve_manifest_artifact(
             getattr(scene, "scene_master_frame_path", ""),
@@ -267,13 +278,31 @@ def _collect_planned_segments(
         )
         for scene in getattr(plan, "scenes", [])
     }
+    scene_request_map = {
+        scene.scene_id: (
+            _build_submitted_request_response(
+                getattr(scene, "scene_master_request_info", {}),
+            )
+            or _build_derived_scene_master_request_response(
+                prompt_text=str(getattr(scene, "scene_master_frame_prompt", "") or ""),
+                scene_master_frame=scene_master_map.get(scene.scene_id),
+                provider=str(getattr(scene_task_by_scene.get(scene.scene_id), "provider", "") or "seedream"),
+            )
+        )
+        for scene in getattr(plan, "scenes", [])
+    }
     planned_segments: list[PlannedSegmentArtifactResponse] = []
 
     for segment in segments:
         scene_task = scene_task_map.get(segment.segment_id)
         clip_task = clip_map.get(segment.segment_id)
+        requires_mid_frame = bool(getattr(segment, "requires_mid_frame", False))
         start_frame = _resolve_manifest_artifact(scene_task.start_frame_path if scene_task else "", output_root, scene_frame_map)
-        mid_frame = _resolve_manifest_artifact(scene_task.mid_frame_path if scene_task else "", output_root, scene_frame_map)
+        mid_frame = (
+            _resolve_manifest_artifact(scene_task.mid_frame_path if scene_task else "", output_root, scene_frame_map)
+            if requires_mid_frame
+            else None
+        )
         end_frame = _resolve_manifest_artifact(scene_task.end_frame_path if scene_task else "", output_root, scene_frame_map)
         rendered_clip = _resolve_rendered_clip_artifact(clip_task, output_root, rendered_clip_map)
         scene_ready = bool(
@@ -281,7 +310,7 @@ def _collect_planned_segments(
             and scene_task.start_frame_url
             and scene_task.end_frame_url
             and (
-                not scene_task.requires_mid_frame
+                not requires_mid_frame
                 or bool(scene_task.mid_frame_url)
             )
         )
@@ -302,17 +331,422 @@ def _collect_planned_segments(
                 summary=segment.summary,
                 chapter_number=segment.chapter_number,
                 duration_seconds=segment.duration_seconds,
-                requires_mid_frame=segment.requires_mid_frame,
+                requires_mid_frame=requires_mid_frame,
+                mid_frame_mode=getattr(segment, "mid_frame_mode", "continuous"),
                 scene_master_frame=scene_master_map.get(segment.scene_id),
                 start_frame=start_frame,
                 mid_frame=mid_frame,
                 end_frame=end_frame,
                 rendered_clip=rendered_clip,
+                scene_master_frame_prompt=scene_task.scene_master_frame_prompt if scene_task else "",
+                start_frame_prompt=scene_task.start_frame_prompt if scene_task else segment.start_frame_prompt,
+                mid_frame_prompt=(
+                    (scene_task.mid_frame_prompt if scene_task else segment.mid_frame_prompt)
+                    if requires_mid_frame
+                    else ""
+                ),
+                end_frame_prompt=scene_task.end_frame_prompt if scene_task else segment.end_frame_prompt,
+                video_prompt=clip_task.prompt if clip_task else "",
+                submitted_video_prompt=clip_task.submitted_prompt if clip_task else "",
+                submitted_prompt_variant=clip_task.submit_variant if clip_task else "",
+                submitted_reference_bindings=_build_prompt_reference_bindings(
+                    clip_task.submitted_reference_bindings if clip_task else [],
+                ),
+                scene_master_frame_request=scene_request_map.get(segment.scene_id),
+                start_frame_request=(
+                    _build_submitted_request_response(
+                        scene_task.start_frame_request_info if scene_task else {},
+                    )
+                    or _build_derived_scene_frame_request_response(
+                        provider=str(getattr(scene_task, "provider", "") or "seedream"),
+                        prompt=str(getattr(scene_task, "start_frame_prompt", "") or ""),
+                        frame_kind="start",
+                        scene_task=scene_task,
+                        scene_task_map=scene_task_map,
+                        scene_frame_map=scene_frame_map,
+                        scene_master_frame=scene_master_map.get(segment.scene_id),
+                        character_image_map=character_image_map,
+                        start_frame=start_frame,
+                        mid_frame=mid_frame,
+                    )
+                ),
+                mid_frame_request=(
+                    (
+                        _build_submitted_request_response(
+                            scene_task.mid_frame_request_info if scene_task else {},
+                        )
+                        or _build_derived_scene_frame_request_response(
+                            provider=str(getattr(scene_task, "provider", "") or "seedream"),
+                            prompt=str(getattr(scene_task, "mid_frame_prompt", "") or ""),
+                            frame_kind="mid",
+                            scene_task=scene_task,
+                            scene_task_map=scene_task_map,
+                            scene_frame_map=scene_frame_map,
+                            scene_master_frame=scene_master_map.get(segment.scene_id),
+                            character_image_map=character_image_map,
+                            start_frame=start_frame,
+                            mid_frame=mid_frame,
+                        )
+                    )
+                    if requires_mid_frame
+                    else None
+                ),
+                end_frame_request=(
+                    _build_submitted_request_response(
+                        scene_task.end_frame_request_info if scene_task else {},
+                    )
+                    or _build_derived_scene_frame_request_response(
+                        provider=str(getattr(scene_task, "provider", "") or "seedream"),
+                        prompt=str(getattr(scene_task, "end_frame_prompt", "") or ""),
+                        frame_kind="end",
+                        scene_task=scene_task,
+                        scene_task_map=scene_task_map,
+                        scene_frame_map=scene_frame_map,
+                        scene_master_frame=scene_master_map.get(segment.scene_id),
+                        character_image_map=character_image_map,
+                        start_frame=start_frame,
+                        mid_frame=mid_frame,
+                    )
+                ),
+                video_request=(
+                    _build_submitted_request_response(
+                        clip_task.submitted_request_info if clip_task else {},
+                    )
+                    or _build_legacy_video_request_response(
+                        clip_task,
+                        start_frame=start_frame,
+                        mid_frame=mid_frame,
+                        end_frame=end_frame,
+                    )
+                ),
                 scene_ready=scene_ready,
                 video_ready=video_ready,
             )
         )
     return planned_segments
+
+
+def _build_prompt_reference_bindings(
+    bindings: object,
+) -> list[PromptReferenceBindingResponse]:
+    if not isinstance(bindings, list):
+        return []
+    normalized: list[PromptReferenceBindingResponse] = []
+    for item in bindings:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            PromptReferenceBindingResponse(
+                label=str(item.get("label", "") or ""),
+                kind=str(item.get("kind", "") or ""),
+                description=str(item.get("description", "") or ""),
+                url=str(item.get("url", "") or ""),
+            )
+        )
+    return normalized
+
+
+def _build_submitted_request_response(
+    request_info: object,
+) -> SubmittedRequestResponse | None:
+    if not isinstance(request_info, dict):
+        return None
+    payload = request_info.get("payload")
+    reference_bindings = _build_prompt_reference_bindings(
+        request_info.get("reference_bindings", []),
+    )
+    endpoint = str(request_info.get("endpoint", "") or "")
+    provider = str(request_info.get("provider", "") or "")
+    variant = str(request_info.get("variant", "") or "")
+    if not provider and not endpoint and not variant and not isinstance(payload, dict) and not reference_bindings:
+        return None
+    return SubmittedRequestResponse(
+        provider=provider,
+        endpoint=endpoint,
+        variant=variant,
+        payload=payload if isinstance(payload, dict) else {},
+        reference_bindings=reference_bindings,
+    )
+
+
+def _build_legacy_video_request_response(
+    clip_task,
+    *,
+    start_frame: ArtifactItem | None,
+    mid_frame: ArtifactItem | None,
+    end_frame: ArtifactItem | None,
+) -> SubmittedRequestResponse | None:
+    if clip_task is None:
+        return None
+    prompt = str(
+        getattr(clip_task, "submitted_prompt", "") or getattr(clip_task, "prompt", "") or ""
+    ).strip()
+    reference_bindings = _build_video_reference_bindings(
+        clip_task,
+        start_frame=start_frame,
+        mid_frame=mid_frame,
+        end_frame=end_frame,
+    )
+    if not prompt and not reference_bindings:
+        return None
+    content: list[dict[str, object]] = []
+    if prompt:
+        content.append({"type": "text", "text": prompt})
+    for item in reference_bindings:
+        if not item.url:
+            continue
+        content.append(
+            {
+                "role": "reference_image",
+                "type": "image_url",
+                "image_url": {"url": item.url},
+            }
+        )
+    return SubmittedRequestResponse(
+        provider="seedance",
+        endpoint="",
+        variant=str(getattr(clip_task, "submit_variant", "") or "derived_from_manifest"),
+        payload={
+            "mode": "derived_from_manifest",
+            "content": content,
+            "ratio": str(getattr(clip_task, "aspect_ratio", "") or ""),
+            "duration": int(getattr(clip_task, "duration_seconds", 0) or 0),
+            "generate_audio": bool(getattr(clip_task, "with_audio", True)),
+        },
+        reference_bindings=reference_bindings,
+    )
+
+
+def _build_derived_scene_master_request_response(
+    *,
+    prompt_text: str,
+    scene_master_frame: ArtifactItem | None,
+    provider: str,
+) -> SubmittedRequestResponse | None:
+    prompt = str(prompt_text or "").strip()
+    if not prompt and scene_master_frame is None:
+        return None
+    return SubmittedRequestResponse(
+        provider=provider or "seedream",
+        endpoint="",
+        variant="derived_from_manifest",
+        payload={
+            "mode": "derived_from_manifest",
+            "prompt": prompt,
+            "reference_images": [],
+        },
+        reference_bindings=[],
+    )
+
+
+def _build_derived_scene_frame_request_response(
+    *,
+    provider: str,
+    prompt: str,
+    frame_kind: str,
+    scene_task,
+    scene_task_map: dict[str, object],
+    scene_frame_map: dict[str, ArtifactItem],
+    scene_master_frame: ArtifactItem | None,
+    character_image_map: dict[str, ArtifactItem],
+    start_frame: ArtifactItem | None,
+    mid_frame: ArtifactItem | None,
+) -> SubmittedRequestResponse | None:
+    if scene_task is None:
+        return None
+    prompt_text = str(prompt or "").strip()
+    reference_bindings = _build_scene_frame_reference_bindings(
+        frame_kind=frame_kind,
+        scene_task=scene_task,
+        scene_task_map=scene_task_map,
+        scene_frame_map=scene_frame_map,
+        scene_master_frame=scene_master_frame,
+        character_image_map=character_image_map,
+        start_frame=start_frame,
+        mid_frame=mid_frame,
+    )
+    if not prompt_text and not reference_bindings:
+        return None
+    return SubmittedRequestResponse(
+        provider=provider or "seedream",
+        endpoint="",
+        variant="derived_from_manifest",
+        payload={
+            "mode": "derived_from_manifest",
+            "frame": frame_kind,
+            "prompt": prompt_text,
+            "reference_images": [item.url for item in reference_bindings if item.url],
+        },
+        reference_bindings=reference_bindings,
+    )
+
+
+def _build_scene_frame_reference_bindings(
+    *,
+    frame_kind: str,
+    scene_task,
+    scene_task_map: dict[str, object],
+    scene_frame_map: dict[str, ArtifactItem],
+    scene_master_frame: ArtifactItem | None,
+    character_image_map: dict[str, ArtifactItem],
+    start_frame: ArtifactItem | None,
+    mid_frame: ArtifactItem | None,
+) -> list[PromptReferenceBindingResponse]:
+    bindings: list[dict[str, str]] = []
+    if scene_master_frame is not None and scene_master_frame.url:
+        bindings.append(
+            {
+                "label": f"图片{len(bindings) + 1}",
+                "kind": "scene_master",
+                "description": "场景母图参考，用于锁定当前 scene 的环境、空间和光线基线。",
+                "url": scene_master_frame.url,
+            }
+        )
+    frame_characters = _frame_character_names(scene_task, frame_kind)
+    for artifact in _resolve_character_reference_artifacts(
+        scene_task=scene_task,
+        frame_characters=frame_characters,
+        character_image_map=character_image_map,
+    ):
+        if not artifact.url:
+            continue
+        bindings.append(
+            {
+                "label": f"图片{len(bindings) + 1}",
+                "kind": "character",
+                "description": "角色参考图，用于锁定当前帧真实出镜角色的定妆、服装和外观。",
+                "url": artifact.url,
+            }
+        )
+    temporal_artifact = _resolve_temporal_reference_artifact(
+        frame_kind=frame_kind,
+        scene_task=scene_task,
+        scene_task_map=scene_task_map,
+        scene_frame_map=scene_frame_map,
+        start_frame=start_frame,
+        mid_frame=mid_frame,
+    )
+    if temporal_artifact is not None and temporal_artifact.url:
+        bindings.append(
+            {
+                "label": f"图片{len(bindings) + 1}",
+                "kind": "temporal",
+                "description": "时间承接参考，用上一帧或上一段画面锁定动作与镜头衔接。",
+                "url": temporal_artifact.url,
+            }
+        )
+    return _build_prompt_reference_bindings(bindings)
+
+
+def _frame_character_names(scene_task, frame_kind: str) -> list[str]:
+    mapping = {
+        "start": getattr(scene_task, "start_frame_characters", []),
+        "mid": getattr(scene_task, "mid_frame_characters", []),
+        "end": getattr(scene_task, "end_frame_characters", []),
+    }
+    raw_names = mapping.get(frame_kind, [])
+    if isinstance(raw_names, list):
+        return [str(item).strip() for item in raw_names if str(item).strip()]
+    return []
+
+
+def _resolve_character_reference_artifacts(
+    *,
+    scene_task,
+    frame_characters: list[str],
+    character_image_map: dict[str, ArtifactItem],
+) -> list[ArtifactItem]:
+    candidates = [
+        character_image_map[path]
+        for path in getattr(scene_task, "reference_images", [])
+        if path in character_image_map
+    ]
+    if not frame_characters:
+        return candidates[:1] if len(candidates) == 1 else []
+    selected: list[ArtifactItem] = []
+    used_paths: set[str] = set()
+    for name in frame_characters:
+        matched = next(
+            (
+                item
+                for item in candidates
+                if item.path not in used_paths and _character_artifact_matches_name(item, name)
+            ),
+            None,
+        )
+        if matched is None:
+            continue
+        used_paths.add(matched.path)
+        selected.append(matched)
+    if selected:
+        return selected
+    return candidates[:1] if len(candidates) == 1 else candidates
+
+
+def _character_artifact_matches_name(artifact: ArtifactItem, character_name: str) -> bool:
+    name = str(character_name or "").strip()
+    if not name:
+        return False
+    return name in artifact.name or name in artifact.path
+
+
+def _resolve_temporal_reference_artifact(
+    *,
+    frame_kind: str,
+    scene_task,
+    scene_task_map: dict[str, object],
+    scene_frame_map: dict[str, ArtifactItem],
+    start_frame: ArtifactItem | None,
+    mid_frame: ArtifactItem | None,
+) -> ArtifactItem | None:
+    if frame_kind == "start":
+        if not getattr(scene_task, "reuse_previous_end_frame", False):
+            return None
+        source_segment_id = str(getattr(scene_task, "continuity_source_segment_id", "") or "").strip()
+        if not source_segment_id:
+            return None
+        previous_task = scene_task_map.get(source_segment_id)
+        previous_end_path = str(getattr(previous_task, "end_frame_path", "") or "").strip() if previous_task else ""
+        return scene_frame_map.get(previous_end_path)
+    if frame_kind == "mid":
+        return start_frame
+    if frame_kind == "end":
+        return mid_frame or start_frame
+    return None
+
+
+def _build_video_reference_bindings(
+    clip_task,
+    *,
+    start_frame: ArtifactItem | None,
+    mid_frame: ArtifactItem | None,
+    end_frame: ArtifactItem | None,
+) -> list[PromptReferenceBindingResponse]:
+    bindings: list[dict[str, str]] = []
+    ordered = [
+        ("start", start_frame),
+        ("mid", mid_frame),
+        ("end", end_frame),
+    ]
+    descriptions = {
+        "start": "开场视觉锚点，视频必须从这张图对应的构图、角色关系与动作状态自然起步。",
+        "mid": "中段视觉锚点，镜头推进过程中必须自然经过这张图对应的中间状态，不要跳过或弱化。",
+        "end": "收束视觉锚点，片尾必须落到这张图对应的构图、角色关系与动作结果。",
+    }
+    for kind, artifact in ordered:
+        if artifact is None or not artifact.url:
+            continue
+        bindings.append(
+            {
+                "label": f"图片{len(bindings) + 1}",
+                "kind": kind,
+                "description": descriptions[kind],
+                "url": artifact.url,
+            }
+        )
+    return _build_prompt_reference_bindings(bindings)
+
+
 def _resolve_manifest_artifact(
     relative_path: str,
     output_root: Path,

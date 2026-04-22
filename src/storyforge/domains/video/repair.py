@@ -600,7 +600,6 @@ class VideoRepairMixin:
                             self._replace_character_aliases(item, alias_map)
                             for item in segment.timed_beats
                         ],
-                        "scene_prompt": self._replace_character_aliases(segment.scene_prompt, alias_map),
                         "start_frame_prompt": self._replace_character_aliases(
                             segment.start_frame_prompt,
                             alias_map,
@@ -718,7 +717,6 @@ class VideoRepairMixin:
                 segment.title,
                 segment.summary,
                 segment.narration,
-                segment.scene_prompt,
                 segment.start_frame_prompt,
                 segment.end_frame_prompt,
                 segment.scene_bible.location,

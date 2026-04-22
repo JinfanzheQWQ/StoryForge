@@ -131,10 +131,26 @@ def run_scene_image_pipeline(
 
     scene_execution_path = output_dir / "seedream_scene_execution.json"
 
+    merged_scene_images = _merge_scene_image_tasks_for_write(
+        planning.project_package.scene_images,
+        planning.scene_images_path,
+        selected_segment_ids=selected_segment_ids,
+        selected_scene_ids=selected_scene_ids,
+    )
+    manifest_selected_segment_ids = set() if master_only else selected_segment_ids
+    merged_manifest = _merge_seedance_manifest_for_write(
+        planning.manifest,
+        planning.manifest_path,
+        selected_segment_ids=manifest_selected_segment_ids,
+    )
+    planning.project_package.scene_images = merged_scene_images
+    planning.project_package.seedance_manifest = merged_manifest
+    planning.manifest = merged_manifest
+
     write_json(planning.character_images_path, planning.project_package.character_images)
     write_json(planning.scene_plan_path, {"scenes": planning.project_package.scenes})
-    write_json(planning.scene_images_path, planning.project_package.scene_images)
-    write_json(planning.manifest_path, planning.manifest)
+    write_json(planning.scene_images_path, merged_scene_images)
+    write_json(planning.manifest_path, merged_manifest)
     write_json(scene_execution_path, scene_execution)
     write_continuity_report(
         output_dir,
@@ -156,7 +172,7 @@ def run_scene_image_pipeline(
         character_seedream_execution_path=character_execution_path,
         scene_seedream_execution_path=scene_execution_path,
         project_package=planning.project_package,
-        manifest=planning.manifest,
+        manifest=merged_manifest,
         seedream_execution=combined_execution,
     )
 
@@ -480,10 +496,17 @@ def run_video_render_pipeline(
         force_submit=submit_seedance,
         segment_ids=selected_segment_ids,
     )
+    merged_manifest = _merge_seedance_manifest_for_write(
+        manifest,
+        manifest_path,
+        selected_segment_ids=selected_segment_ids,
+    )
+    planning.project_package.seedance_manifest = merged_manifest
+    planning.manifest = merged_manifest
 
     seedance_execution_path = output_dir / "seedance_execution.json"
 
-    write_json(manifest_path, manifest)
+    write_json(manifest_path, merged_manifest)
     write_json(seedance_execution_path, seedance_execution)
     write_continuity_report(
         output_dir,
@@ -493,7 +516,7 @@ def run_video_render_pipeline(
         llm_model=llm_model,
     )
 
-    selected_clips = resolve_selected_manifest_clips(manifest, selected_segment_ids)
+    selected_clips = resolve_selected_manifest_clips(merged_manifest, selected_segment_ids)
     rendered_clip_paths = [
         Path(clip.downloaded_path)
         for clip in selected_clips
@@ -508,7 +531,7 @@ def run_video_render_pipeline(
         seedance_execution_path=seedance_execution_path,
         rendered_clip_paths=rendered_clip_paths,
         full_story_path=full_story_path,
-        manifest=manifest,
+        manifest=merged_manifest,
         seedance_execution=seedance_execution,
     )
 
@@ -643,6 +666,260 @@ def _resolve_selected_segment_ids(
             + ", ".join(unknown_segment_ids)
         )
     return resolved_segment_ids
+
+
+def _load_scene_image_tasks_from_path(path: Path) -> list[SceneImageTask]:
+    if not path.exists():
+        return []
+    payload = read_json(path)
+    if not isinstance(payload, list):
+        return []
+    return [SceneImageTask.from_dict(item) for item in payload if isinstance(item, dict)]
+
+
+def _load_seedance_manifest_from_path(path: Path) -> SeedanceManifest | None:
+    if not path.exists():
+        return None
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        return None
+    return SeedanceManifest.from_dict(payload)
+
+
+def _merge_scene_image_tasks_for_write(
+    current_tasks: list[SceneImageTask],
+    path: Path,
+    *,
+    selected_segment_ids: set[str] | None,
+    selected_scene_ids: set[str] | None,
+) -> list[SceneImageTask]:
+    latest_tasks = _load_scene_image_tasks_from_path(path)
+    latest_by_segment = {item.segment_id: item for item in latest_tasks}
+    current_by_segment = {item.segment_id: item for item in current_tasks}
+    ordered_segment_ids = list(current_by_segment)
+    ordered_segment_ids.extend(
+        segment_id for segment_id in latest_by_segment if segment_id not in current_by_segment
+    )
+
+    merged_tasks: list[SceneImageTask] = []
+    for segment_id in ordered_segment_ids:
+        current_task = current_by_segment.get(segment_id)
+        latest_task = latest_by_segment.get(segment_id)
+        if current_task is None:
+            merged_tasks.append(latest_task)
+            continue
+        if latest_task is None:
+            merged_tasks.append(current_task)
+            continue
+        prefer_current = _should_prefer_current_segment_state(
+            segment_id=segment_id,
+            scene_id=current_task.scene_id,
+            selected_segment_ids=selected_segment_ids,
+            selected_scene_ids=selected_scene_ids,
+        )
+        primary, secondary = (
+            (current_task, latest_task) if prefer_current else (latest_task, current_task)
+        )
+        merged_tasks.append(_merge_scene_image_task(primary, secondary))
+    return merged_tasks
+
+
+def _merge_seedance_manifest_for_write(
+    current_manifest: SeedanceManifest,
+    path: Path,
+    *,
+    selected_segment_ids: set[str] | None,
+) -> SeedanceManifest:
+    latest_manifest = _load_seedance_manifest_from_path(path)
+    if latest_manifest is None:
+        return current_manifest
+
+    latest_by_segment = {item.segment_id: item for item in latest_manifest.clips}
+    current_by_segment = {item.segment_id: item for item in current_manifest.clips}
+    ordered_segment_ids = list(current_by_segment)
+    ordered_segment_ids.extend(
+        segment_id for segment_id in latest_by_segment if segment_id not in current_by_segment
+    )
+
+    merged_clips: list[SeedanceClipTask] = []
+    for segment_id in ordered_segment_ids:
+        current_clip = current_by_segment.get(segment_id)
+        latest_clip = latest_by_segment.get(segment_id)
+        if current_clip is None:
+            merged_clips.append(latest_clip)
+            continue
+        if latest_clip is None:
+            merged_clips.append(current_clip)
+            continue
+        prefer_current = _should_prefer_current_segment_state(
+            segment_id=segment_id,
+            scene_id="",
+            selected_segment_ids=selected_segment_ids,
+            selected_scene_ids=None,
+        )
+        primary, secondary = (
+            (current_clip, latest_clip) if prefer_current else (latest_clip, current_clip)
+        )
+        merged_clips.append(_merge_seedance_clip_task(primary, secondary))
+
+    merged_notes = list(current_manifest.notes)
+    merged_notes.extend(note for note in latest_manifest.notes if note not in merged_notes)
+    return SeedanceManifest(
+        title=current_manifest.title or latest_manifest.title,
+        model=current_manifest.model or latest_manifest.model,
+        base_url=current_manifest.base_url or latest_manifest.base_url,
+        clips=merged_clips,
+        notes=merged_notes,
+    )
+
+
+def _should_prefer_current_segment_state(
+    *,
+    segment_id: str,
+    scene_id: str,
+    selected_segment_ids: set[str] | None,
+    selected_scene_ids: set[str] | None,
+) -> bool:
+    if selected_scene_ids:
+        return scene_id in selected_scene_ids
+    if selected_segment_ids is None:
+        return True
+    return segment_id in selected_segment_ids
+
+
+def _merge_scene_image_task(
+    preferred: SceneImageTask,
+    fallback: SceneImageTask,
+) -> SceneImageTask:
+    payload = to_jsonable(preferred)
+    fallback_payload = to_jsonable(fallback)
+    payload["status"] = _prefer_nondefault_status(
+        payload.get("status", "planned"),
+        fallback_payload.get("status", "planned"),
+    )
+    payload["scene_master_frame_status"] = _prefer_nondefault_status(
+        payload.get("scene_master_frame_status", "planned"),
+        fallback_payload.get("scene_master_frame_status", "planned"),
+    )
+    for field_name in (
+        "scene_master_frame_url",
+        "start_frame_url",
+        "mid_frame_url",
+        "end_frame_url",
+    ):
+        payload[field_name] = _prefer_nonempty_string(
+            payload.get(field_name, ""),
+            fallback_payload.get(field_name, ""),
+        )
+    payload["scene_master_frame_error"] = _merge_runtime_error(
+        preferred_error=payload.get("scene_master_frame_error", ""),
+        fallback_error=fallback_payload.get("scene_master_frame_error", ""),
+        chosen_status=payload["scene_master_frame_status"],
+    )
+    payload["error"] = _merge_runtime_error(
+        preferred_error=payload.get("error", ""),
+        fallback_error=fallback_payload.get("error", ""),
+        chosen_status=payload["status"],
+    )
+    for field_name in (
+        "start_frame_request_info",
+        "mid_frame_request_info",
+        "end_frame_request_info",
+    ):
+        payload[field_name] = _prefer_nonempty_mapping(
+            payload.get(field_name, {}),
+            fallback_payload.get(field_name, {}),
+        )
+    return SceneImageTask.from_dict(payload)
+
+
+def _merge_seedance_clip_task(
+    preferred: SeedanceClipTask,
+    fallback: SeedanceClipTask,
+) -> SeedanceClipTask:
+    payload = to_jsonable(preferred)
+    fallback_payload = to_jsonable(fallback)
+    payload["submit_status"] = _prefer_nondefault_status(
+        payload.get("submit_status", "planned"),
+        fallback_payload.get("submit_status", "planned"),
+    )
+    payload["remote_status"] = _prefer_nondefault_status(
+        payload.get("remote_status", "planned"),
+        fallback_payload.get("remote_status", "planned"),
+    )
+    for field_name in (
+        "start_frame_url",
+        "mid_frame_url",
+        "end_frame_url",
+        "submitted_prompt",
+        "submit_variant",
+        "remote_task_id",
+        "video_url",
+        "cover_url",
+        "downloaded_path",
+    ):
+        payload[field_name] = _prefer_nonempty_string(
+            payload.get(field_name, ""),
+            fallback_payload.get(field_name, ""),
+        )
+    payload["submitted_reference_bindings"] = _prefer_nonempty_list(
+        payload.get("submitted_reference_bindings", []),
+        fallback_payload.get("submitted_reference_bindings", []),
+    )
+    payload["submitted_request_info"] = _prefer_nonempty_mapping(
+        payload.get("submitted_request_info", {}),
+        fallback_payload.get("submitted_request_info", {}),
+    )
+    payload["error"] = _merge_runtime_error(
+        preferred_error=payload.get("error", ""),
+        fallback_error=fallback_payload.get("error", ""),
+        chosen_status=payload["remote_status"],
+    )
+    return SeedanceClipTask.from_dict(payload)
+
+
+def _prefer_nondefault_status(preferred: object, fallback: object) -> str:
+    preferred_value = str(preferred or "planned")
+    fallback_value = str(fallback or "planned")
+    if preferred_value != "planned":
+        return preferred_value
+    return fallback_value
+
+
+def _prefer_nonempty_string(preferred: object, fallback: object) -> str:
+    preferred_value = str(preferred or "").strip()
+    if preferred_value:
+        return preferred_value
+    return str(fallback or "").strip()
+
+
+def _prefer_nonempty_list(preferred: object, fallback: object) -> list[str]:
+    preferred_value = list(preferred or [])
+    if preferred_value:
+        return preferred_value
+    return list(fallback or [])
+
+
+def _prefer_nonempty_mapping(preferred: object, fallback: object) -> dict[str, object]:
+    preferred_value = dict(preferred or {})
+    if preferred_value:
+        return preferred_value
+    return dict(fallback or {})
+
+
+def _merge_runtime_error(
+    *,
+    preferred_error: object,
+    fallback_error: object,
+    chosen_status: object,
+) -> str:
+    preferred_value = str(preferred_error or "").strip()
+    if preferred_value:
+        return preferred_value
+    status_value = str(chosen_status or "").strip().lower()
+    if status_value in {"failed", "cancelled", "canceled", "rejected"}:
+        return str(fallback_error or "").strip()
+    return ""
 
 
 def _collect_scene_repair_issues(
@@ -942,7 +1219,6 @@ def _reset_seedance_clip_task_for_repair(task: SeedanceClipTask) -> SeedanceClip
         "start_frame_url": "",
         "mid_frame_url": "",
         "end_frame_url": "",
-        "reference_image_urls": [],
         "remote_task_id": "",
         "submit_status": "planned",
         "remote_status": "planned",

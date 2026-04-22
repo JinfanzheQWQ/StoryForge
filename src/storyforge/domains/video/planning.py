@@ -35,6 +35,32 @@ from storyforge.domains.video.schemas import (
 
 
 class VideoPlanningMixin:
+    DESCRIPTIVE_NARRATION_ACTION_KEYWORDS = (
+        "停下脚步",
+        "转身",
+        "抬头",
+        "低头",
+        "看向",
+        "望向",
+        "走近",
+        "递上",
+        "伸手",
+        "深吸一口气",
+        "稍作停顿",
+        "开始说话",
+        "轻声说出",
+        "轻声诉说",
+        "继续轻声诉说",
+    )
+    NARRATION_FIRST_PERSON_MARKERS = (
+        "我",
+        "我们",
+        "自己",
+        "心里",
+        "想起",
+        "记得",
+        "忽然觉得",
+    )
     SCENE_MASTER_TIME_KEYWORDS = [
         "清晨",
         "早晨",
@@ -794,6 +820,7 @@ class VideoPlanningMixin:
             summary=scene.summary,
             scene_anchor=scene.scene_anchor,
             involved_characters=list(scene.involved_characters),
+            covered_event_ids=list(scene.covered_event_ids),
             segments=list(scene.segments),
             scene_bible=enriched_scene_bible,
             scene_master_frame_path=(
@@ -851,12 +878,14 @@ class VideoPlanningMixin:
             for item in self._scene_bible_list(source_scene_bible, "fixed_props")
             if not self._contains_scene_master_human_signal(item, scene.involved_characters)
         ]
+        fixed_props = self._filter_environment_fixed_props(fixed_props)
         environment_text = "；".join(environment_clauses)
         inferred_fixed_props = self._extract_scene_master_keyword_hits(
             [*source_environment_texts, *environment_clauses, *scene_anchor_tokens],
             self.SCENE_MASTER_PROP_KEYWORDS,
             max_items=4,
         )
+        inferred_fixed_props = self._filter_environment_fixed_props(inferred_fixed_props)
         inferred_palette = self._extract_scene_master_keyword_hits(
             [*source_environment_texts, environment_text, *environment_clauses, *scene_anchor_tokens],
             self.SCENE_MASTER_PALETTE_KEYWORDS,
@@ -865,9 +894,11 @@ class VideoPlanningMixin:
         if not location:
             location = self._infer_scene_master_location(scene, environment_clauses)
         if not time_window:
-            time_window = self._match_scene_keyword(
+            time_window = self._infer_scene_master_time_window(
                 environment_text,
-                self.SCENE_MASTER_TIME_KEYWORDS,
+                *source_environment_texts,
+                *environment_clauses,
+                *scene_anchor_tokens,
             )
         if not weather:
             weather = self._match_scene_keyword(
@@ -876,7 +907,7 @@ class VideoPlanningMixin:
             )
         if not lighting:
             lighting = self._match_scene_keyword(
-                environment_text,
+                "；".join([environment_text, *source_environment_texts, *environment_clauses, *scene_anchor_tokens]),
                 self.SCENE_MASTER_LIGHTING_KEYWORDS,
             )
         if not spatial_layout:
@@ -956,7 +987,6 @@ class VideoPlanningMixin:
         for segment in scene.segments:
             source_texts.extend(
                 [
-                    segment.scene_prompt,
                     segment.start_frame_prompt,
                     segment.mid_frame_prompt,
                     segment.end_frame_prompt,
@@ -1008,6 +1038,30 @@ class VideoPlanningMixin:
                 return normalized[:24]
         return ""
 
+    def _infer_scene_master_time_window(self, *texts: str) -> str:
+        combined = "；".join(str(item or "").strip() for item in texts if str(item or "").strip())
+        if not combined:
+            return ""
+        direct = self._match_scene_keyword(combined, self.SCENE_MASTER_TIME_KEYWORDS)
+        if direct:
+            return direct
+        inferred_pairs = [
+            ("晨光", "清晨"),
+            ("晨雾", "清晨"),
+            ("朝阳", "早晨"),
+            ("夕阳", "下午"),
+            ("斜阳", "下午"),
+            ("日落", "傍晚"),
+            ("暮色", "傍晚"),
+            ("夜色", "夜晚"),
+            ("月光", "夜晚"),
+            ("霓虹", "夜晚"),
+        ]
+        for cue, value in inferred_pairs:
+            if cue in combined:
+                return value
+        return ""
+
     def _extract_scene_master_keyword_hits(
         self,
         texts: list[str],
@@ -1044,10 +1098,6 @@ class VideoPlanningMixin:
         tasks: list[SceneImageTask] = []
         previous_segment: VideoSegment | None = None
         for segment in segments:
-            scene_character_lock = self._build_scene_character_lock(
-                segment.involved_characters,
-                profile_map,
-            )
             start_frame_characters = self._normalize_frame_character_list(
                 segment.start_frame_characters,
                 segment.involved_characters,
@@ -1095,6 +1145,7 @@ class VideoPlanningMixin:
                         summary=segment.scene_summary,
                         scene_anchor=segment.scene_anchor,
                         involved_characters=list(segment.involved_characters),
+                        covered_event_ids=[],
                         segments=[segment],
                         scene_bible=segment.scene_bible,
                     ),
@@ -1111,10 +1162,10 @@ class VideoPlanningMixin:
                     segment.mid_frame_prompt or self._build_default_mid_frame_prompt(segment),
                     effective_mid_frame_characters,
                     "中段锚点帧",
-                    self._build_scene_character_lock(effective_mid_frame_characters, profile_map),
-                    self._scene_bible_prompt_context(segment.scene_bible),
-                    self._shot_state_prompt_context(segment.shot_state),
-                    self._continuity_link_prompt_context(segment.continuity_link),
+                    involved_characters=segment.involved_characters,
+                    scene_bible=segment.scene_bible,
+                    shot_state=segment.shot_state,
+                    continuity_link=segment.continuity_link,
                 )
                 if requires_mid_frame
                 else ""
@@ -1124,31 +1175,26 @@ class VideoPlanningMixin:
                     segment_id=segment.segment_id,
                     scene_id=segment.scene_id,
                     scene_title=segment.scene_title,
-                    scene_prompt=self._stylize_scene_prompt(
-                        segment.scene_prompt,
-                        segment,
-                        scene_character_lock,
-                    ),
                     scene_master_frame_prompt=scene_master_frame_prompt,
                     scene_master_frame_path=scene_master_frame_path,
                     start_frame_prompt=self._stylize_frame_prompt(
                         segment.start_frame_prompt,
                         start_frame_characters,
                         "首帧",
-                        self._build_scene_character_lock(start_frame_characters, profile_map),
-                        self._scene_bible_prompt_context(segment.scene_bible),
-                        self._shot_state_prompt_context(segment.shot_state),
-                        self._continuity_link_prompt_context(segment.continuity_link),
+                        involved_characters=segment.involved_characters,
+                        scene_bible=segment.scene_bible,
+                        shot_state=segment.shot_state,
+                        continuity_link=segment.continuity_link,
                     ),
                     mid_frame_prompt=mid_frame_prompt,
                     end_frame_prompt=self._stylize_frame_prompt(
                         segment.end_frame_prompt,
                         end_frame_characters,
                         "尾帧",
-                        self._build_scene_character_lock(end_frame_characters, profile_map),
-                        self._scene_bible_prompt_context(segment.scene_bible),
-                        self._shot_state_prompt_context(segment.shot_state),
-                        self._continuity_link_prompt_context(segment.continuity_link),
+                        involved_characters=segment.involved_characters,
+                        scene_bible=segment.scene_bible,
+                        shot_state=segment.shot_state,
+                        continuity_link=segment.continuity_link,
                     ),
                     reference_images=reference_images,
                     start_frame_path=f"{output_dir}/assets/frames/{segment.segment_id}_start.png",
@@ -1200,7 +1246,6 @@ class VideoPlanningMixin:
                 aspect_ratio=self.aspect_ratio,
                 with_audio=self.seedance_config.with_audio,
                 output_path=f"{output_dir}/rendered/{item.segment_id}.mp4",
-                reference_image_paths=self._merge_unique_paths(scene_map[item.segment_id].reference_images),
             )
             for item in segments
         ]
@@ -1212,7 +1257,7 @@ class VideoPlanningMixin:
             notes=[
                 "先生成角色图，再让场景生图阶段引用角色图作为 reference。",
                 "多人同框、长时长或镜头推进明显的片段会额外生成中段锚点帧。",
-                "每个视频片段使用首帧、尾帧，以及必要时的中段锚点图共同约束视觉连续性。",
+                "每个视频片段只使用首帧、尾帧，以及必要时的中段锚点图共同约束视觉连续性。",
                 "每个片段都会输出旁白、对白、音效和音乐方向，再编译成 Seedance 音视频 prompt。",
                 "Seedance 负责生成视频与自带音频，无需单独 TTS。",
             ],
@@ -1279,10 +1324,14 @@ class VideoPlanningMixin:
                     for item in segment.timed_beats
                     if self._strip_internal_segment_markers(item)
                 ],
-                "scene_prompt": self._strip_internal_segment_markers(segment.scene_prompt) or segment.scene_prompt,
                 "start_frame_prompt": self._strip_internal_segment_markers(segment.start_frame_prompt) or segment.start_frame_prompt,
                 "mid_frame_prompt": self._strip_internal_segment_markers(segment.mid_frame_prompt),
                 "end_frame_prompt": self._strip_internal_segment_markers(segment.end_frame_prompt) or segment.end_frame_prompt,
+                "sound_effects": self._sanitize_segment_sound_effects(
+                    segment.sound_effects,
+                    scene_bible=segment.scene_bible,
+                    prop_continuity=segment.shot_state.prop_continuity,
+                ),
                 "transition_hint": self._normalize_transition_hint(segment.transition_hint),
                 "shot_state": shot_state,
                 "continuity_link": continuity_link,
@@ -1293,14 +1342,26 @@ class VideoPlanningMixin:
         self,
         segment: VideoSegmentSchema,
     ) -> list[VideoSegmentSchema]:
-        narration = segment.narration.strip() or segment.summary
+        narration, dialogue_lines, subtitle_lines = self._sanitize_segment_audio_tracks(
+            narration=segment.narration,
+            dialogue_lines=segment.dialogue_lines,
+            subtitle_lines=segment.subtitle_lines,
+            summary=segment.summary,
+            timed_beats=segment.timed_beats,
+            involved_characters=segment.involved_characters,
+        )
+        sound_effects = self._sanitize_segment_sound_effects(
+            segment.sound_effects,
+            scene_bible=segment.scene_bible,
+            prop_continuity=segment.shot_state.prop_continuity,
+        )
         requested_duration = max(
             segment.duration_seconds,
             self.PLANNER_MIN_DURATION_SECONDS,
             self._estimate_required_speech_duration(
                 narration=narration,
-                dialogue_lines=segment.dialogue_lines,
-                subtitle_lines=segment.subtitle_lines,
+                dialogue_lines=dialogue_lines,
+                subtitle_lines=subtitle_lines,
             ),
         )
         normalized_duration = min(requested_duration, self.SEEDANCE_MAX_DURATION_SECONDS)
@@ -1308,21 +1369,21 @@ class VideoPlanningMixin:
             beat=segment.summary,
             chapter_summary=segment.summary,
             narration=narration,
-            dialogue_lines=segment.dialogue_lines,
-            sound_effects=segment.sound_effects,
+            dialogue_lines=dialogue_lines,
+            sound_effects=sound_effects,
             duration_seconds=requested_duration,
         )
 
         if requested_duration <= self.SEEDANCE_MAX_DURATION_SECONDS:
-            subtitle_lines = segment.subtitle_lines or self._build_subtitle_lines(
+            subtitle_lines = subtitle_lines or self._build_subtitle_lines(
                 narration=narration,
-                dialogue_lines=segment.dialogue_lines,
+                dialogue_lines=dialogue_lines,
                 timed_beats=timed_beats,
             )
             requires_mid_frame = self._should_require_mid_frame(
                 involved_characters=segment.involved_characters,
                 duration_seconds=normalized_duration,
-                dialogue_lines=segment.dialogue_lines,
+                dialogue_lines=dialogue_lines,
                 timed_beats=timed_beats,
                 requested=segment.requires_mid_frame,
             )
@@ -1336,8 +1397,10 @@ class VideoPlanningMixin:
                     update={
                         "duration_seconds": normalized_duration,
                         "narration": narration,
+                        "dialogue_lines": dialogue_lines,
                         "timed_beats": timed_beats,
                         "subtitle_lines": subtitle_lines,
+                        "sound_effects": sound_effects,
                         "mid_frame_prompt": (
                             (
                                 segment.mid_frame_prompt
@@ -1392,12 +1455,19 @@ class VideoPlanningMixin:
         source_segment_id = segment.source_segment_id or segment.segment_id
         split_durations = self._distribute_duration(requested_duration, split_count)
         beat_chunks = self._chunk_list(self._extract_beat_descriptions(timed_beats), split_count)
-        dialogue_chunks = self._chunk_dialogue_lines(segment.dialogue_lines, split_count)
+        dialogue_chunks = self._chunk_dialogue_lines(dialogue_lines, split_count)
         subtitle_source = self._split_subtitle_source(
-            segment.subtitle_lines or [narration],
+            subtitle_lines or ([narration] if narration else []),
         )
         subtitle_chunks = self._chunk_list(subtitle_source, split_count)
-        sound_effect_chunks = self._chunk_list(segment.sound_effects, split_count)
+        sound_effect_chunks = self._chunk_list(
+            self._sanitize_segment_sound_effects(
+                segment.sound_effects,
+                scene_bible=segment.scene_bible,
+                prop_continuity=segment.shot_state.prop_continuity,
+            ),
+            split_count,
+        )
         narration_chunks = self._chunk_narration(narration, split_count)
 
         expanded_segments: list[VideoSegmentSchema] = []
@@ -1405,10 +1475,7 @@ class VideoPlanningMixin:
         for index, clip_duration in enumerate(split_durations, start=1):
             beat_descriptions = beat_chunks[index - 1] or [segment.summary]
             dialogue_lines = dialogue_chunks[index - 1]
-            narration = (
-                narration_chunks[index - 1]
-                or self._build_default_subsegment_narration(segment.summary, index, split_count)
-            )
+            narration = narration_chunks[index - 1]
             timed_beats_chunk = self._retime_beat_descriptions(beat_descriptions, clip_duration)
             requires_mid_frame = self._should_require_mid_frame(
                 involved_characters=segment.involved_characters,
@@ -1439,7 +1506,6 @@ class VideoPlanningMixin:
                         ),
                         "sound_effects": sound_effect_chunks[index - 1] or segment.sound_effects[:1],
                         "timed_beats": timed_beats_chunk,
-                        "scene_prompt": self._strip_internal_segment_markers(segment.scene_prompt) or segment.scene_prompt,
                         "start_frame_prompt": self._strip_internal_segment_markers(segment.start_frame_prompt) or segment.start_frame_prompt,
                         "mid_frame_prompt": (
                             (
@@ -1517,15 +1583,32 @@ class VideoPlanningMixin:
     ) -> bool:
         if requested:
             return True
-        if len(involved_characters) >= 2:
-            return True
-        if duration_seconds >= 8:
-            return True
-        if len(dialogue_lines) >= 2:
-            return True
-        if len(self._extract_beat_descriptions(timed_beats)) >= 3:
+        if self._mid_frame_requirement_reasons(
+            involved_characters=involved_characters,
+            duration_seconds=duration_seconds,
+            dialogue_lines=dialogue_lines,
+            timed_beats=timed_beats,
+        ):
             return True
         return False
+
+    def _mid_frame_requirement_reasons(
+        self,
+        *,
+        involved_characters: list[str],
+        duration_seconds: int,
+        dialogue_lines: list[str],
+        timed_beats: list[str],
+    ) -> list[str]:
+        reasons: list[str] = []
+        if duration_seconds >= 8:
+            reasons.append(f"时长为 {duration_seconds} 秒")
+        if len(dialogue_lines) >= 2:
+            reasons.append(f"对白共有 {len(dialogue_lines)} 句")
+        beat_count = len(self._extract_beat_descriptions(timed_beats))
+        if beat_count >= 3:
+            reasons.append(f"timed_beats 共有 {beat_count} 拍")
+        return reasons
 
     def _build_default_mid_frame_prompt(
         self,
@@ -1539,14 +1622,19 @@ class VideoPlanningMixin:
                 segment.involved_characters,
             )
         ) or "环境"
+        mid_frame_mode = "insert_cut" if str(getattr(segment, "mid_frame_mode", "") or "").strip().lower() == "insert_cut" else "continuous"
+        if mid_frame_mode == "insert_cut":
+            return (
+                f"中段插入镜头帧，角色：{characters}，"
+                f"从主镜头短促切入，重点捕捉 {focus} 里的单人反应、手部动作、眼神停顿或局部状态。"
+                "只描述这一拍真正可见的人物、动作停点和空间关系。"
+                "该镜头必须能自然切回同一 scene 的主关系镜头，不要把它写成少人版主镜头。"
+            )
         return (
             f"中段锚点帧，角色：{characters}，"
             f"镜头推进到片段中段，重点呈现 {focus}，"
-            f"保持与当前片段首尾帧一致的场景、角色关系和动作方向。"
-            f"场景圣经：{self._scene_bible_brief(segment.scene_bible)}。"
-            f"镜头状态：{self._shot_state_brief(segment.shot_state)}。"
-            f"连续性：{self._continuity_link_brief(segment.continuity_link)}。"
-            f"场景主提示：{segment.scene_prompt}"
+            "只描述这一拍真正可见的角色、动作停点和空间关系。"
+            "环境、光线与镜头方向继续沿用同一 scene 的基线。"
         )
 
     def _normalize_frame_character_list(
@@ -1655,7 +1743,6 @@ class VideoPlanningMixin:
         combined = " ".join(
             [
                 segment.summary,
-                segment.scene_prompt,
                 segment.start_frame_prompt,
                 segment.end_frame_prompt,
                 segment.narration,
@@ -1721,6 +1808,91 @@ class VideoPlanningMixin:
         if speech_chars <= 0:
             return self.PLANNER_MIN_DURATION_SECONDS
         return ceil(speech_chars / self.SPEECH_CHARS_PER_SECOND)
+
+    def _sanitize_segment_audio_tracks(
+        self,
+        *,
+        narration: str,
+        dialogue_lines: list[str],
+        subtitle_lines: list[str],
+        summary: str,
+        timed_beats: list[str],
+        involved_characters: list[str],
+    ) -> tuple[str, list[str], list[str]]:
+        cleaned_narration = str(narration or "").strip()
+        cleaned_dialogue_lines = [
+            str(line).strip()
+            for line in dialogue_lines
+            if str(line).strip()
+        ]
+        cleaned_subtitle_lines = [
+            str(line).strip()
+            for line in subtitle_lines
+            if str(line).strip()
+        ]
+        if self._should_drop_descriptive_narration(
+            narration=cleaned_narration,
+            dialogue_lines=cleaned_dialogue_lines,
+            summary=summary,
+            timed_beats=timed_beats,
+            involved_characters=involved_characters,
+        ):
+            cleaned_narration = ""
+        return cleaned_narration, cleaned_dialogue_lines, cleaned_subtitle_lines
+
+    def _should_drop_descriptive_narration(
+        self,
+        *,
+        narration: str,
+        dialogue_lines: list[str],
+        summary: str,
+        timed_beats: list[str],
+        involved_characters: list[str],
+    ) -> bool:
+        if not narration or not dialogue_lines:
+            return False
+        if any(marker in narration for marker in self.NARRATION_FIRST_PERSON_MARKERS):
+            return False
+        if any(symbol in narration for symbol in ("“", "”", "\"", "：", ":")):
+            return False
+        if any(name and name in narration for name in involved_characters):
+            return True
+        dialogue_text = " ".join(
+            self._split_dialogue_speaker(line)[1] or line
+            for line in dialogue_lines
+        )
+        beat_text = " ".join(self._extract_beat_descriptions(timed_beats))
+        if self._audio_text_overlap_ratio(narration, dialogue_text) >= 0.42:
+            return True
+        if summary and self._audio_text_overlap_ratio(narration, summary) >= 0.58:
+            return True
+        if beat_text and self._audio_text_overlap_ratio(narration, beat_text) >= 0.58:
+            return True
+        return any(keyword in narration for keyword in self.DESCRIPTIVE_NARRATION_ACTION_KEYWORDS)
+
+    def _audio_text_overlap_ratio(self, left: str, right: str) -> float:
+        normalized_left = self._normalize_audio_similarity_text(left)
+        normalized_right = self._normalize_audio_similarity_text(right)
+        if not normalized_left or not normalized_right:
+            return 0.0
+        if normalized_left in normalized_right or normalized_right in normalized_left:
+            return min(len(normalized_left), len(normalized_right)) / max(
+                len(normalized_left),
+                len(normalized_right),
+            )
+        left_ngrams = self._audio_text_ngrams(normalized_left)
+        right_ngrams = self._audio_text_ngrams(normalized_right)
+        if not left_ngrams or not right_ngrams:
+            return 0.0
+        return len(left_ngrams & right_ngrams) / min(len(left_ngrams), len(right_ngrams))
+
+    def _normalize_audio_similarity_text(self, value: str) -> str:
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").strip().lower())
+
+    def _audio_text_ngrams(self, value: str) -> set[str]:
+        if len(value) <= 2:
+            return {value} if value else set()
+        return {value[index: index + 2] for index in range(len(value) - 1)}
 
     def _count_speech_chars(self, text: str) -> int:
         cleaned_lines = []
@@ -1903,35 +2075,6 @@ class VideoPlanningMixin:
             if len(items) >= max_items:
                 break
         return items
-
-    def _scene_bible_value(self, scene_bible: object, key: str) -> str:
-        if isinstance(scene_bible, dict):
-            return str(scene_bible.get(key, "") or "")
-        return str(getattr(scene_bible, key, "") or "")
-
-    def _scene_bible_list(self, scene_bible: object, key: str) -> list[str]:
-        if isinstance(scene_bible, dict):
-            raw = scene_bible.get(key, [])
-        else:
-            raw = getattr(scene_bible, key, [])
-        return [str(item).strip() for item in raw or [] if str(item).strip()]
-
-    def _shot_state_value(self, shot_state: object, key: str) -> str:
-        if isinstance(shot_state, dict):
-            return str(shot_state.get(key, "") or "")
-        return str(getattr(shot_state, key, "") or "")
-
-    def _continuity_link_value(self, continuity_link: object, key: str) -> str:
-        if isinstance(continuity_link, dict):
-            return str(continuity_link.get(key, "") or "")
-        return str(getattr(continuity_link, key, "") or "")
-
-    def _continuity_link_list(self, continuity_link: object, key: str) -> list[str]:
-        if isinstance(continuity_link, dict):
-            raw = continuity_link.get(key, [])
-        else:
-            raw = getattr(continuity_link, key, [])
-        return [str(item).strip() for item in raw or [] if str(item).strip()]
 
     def _retarget_shot_state(
         self,

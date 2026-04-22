@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 
+from storyforge.core.io import to_jsonable
 from storyforge.domains.novel.contracts import CharacterVoiceProfile, NovelPackage
 from storyforge.domains.video.contracts import (
     CharacterVisualProfile,
@@ -13,9 +14,9 @@ from storyforge.domains.video.contracts import (
 
 
 class VideoPromptingMixin:
-    CHAPTER_SCENE_PLANNER_EXCERPT_CHARS = 780
-    SCENE_CHUNK_PLANNER_EXCERPT_CHARS = 420
-    SCENE_SEGMENT_CHUNK_CONTRACT_EXCERPT_CHARS = 320
+    CHAPTER_SCENE_PLANNER_EXCERPT_CHARS = 620
+    SCENE_CHUNK_PLANNER_EXCERPT_CHARS = 300
+    SCENE_SEGMENT_CHUNK_CONTRACT_EXCERPT_CHARS = 240
     STORY_MEMORY_RECENT_CHAPTER_LIMIT = 2
     STORY_MEMORY_RECENT_SCENE_LIMIT = 1
     STORY_MEMORY_MAX_CHAPTER_CAST = 4
@@ -31,7 +32,7 @@ class VideoPromptingMixin:
         "倒影、影子、手脚、服装边角、人物海报、人物照片、人物雕像或其它拟人主体。"
         "如果输入材料里出现角色名、人物站位、动作、表演、对白、情绪，请全部忽略，只保留空场景本身。"
     )
-
+    FRAME_PURE_IMAGE_PROMPT = "纯画面，不要文字、字幕、水印或 Logo。"
     CHARACTER_SHEET_LAYOUT_PROMPT = (
         "统一三视图模板 SF-TURN-01：所有角色定妆图必须使用完全相同的横版 16:9 白底三视图版式，"
         "同一项目内所有角色必须保持同一种美术风格、同一种线条粗细、同一种上色方式和同一种柔和光照，"
@@ -44,6 +45,47 @@ class VideoPromptingMixin:
         "统一采用干净高级的动画电影概念设定稿风格，柔和赛璐璐上色，低饱和自然色彩，清晰轮廓线，"
         "避免有的角色偏写实、有的角色偏二次元、有的角色偏照片或海报。"
         "同一张图里只能是同一个角色的正面、左侧面和背面参考，不得出现第二个独立角色或剧情场景。"
+    )
+    CHARACTER_STYLE_OVERRIDE_PATTERNS = (
+        re.compile(
+            r"(?:身穿|穿着|穿了|穿)[^，。；;]{0,24}"
+            r"(?:T恤|衬衫|外套|风衣|西装|毛衣|夹克|卫衣|校服|学士服|连衣裙|短裙|长裙|裙子|裤子|牛仔裤|短裤|鞋|球鞋|帆布鞋|高跟鞋)"
+        ),
+        re.compile(
+            r"(?:头发|发型|马尾|高马尾|低马尾|双马尾|短发|长发|卷发|直发|刘海|盘发|发髻|丸子头|披肩发)[^，。；;]{0,18}"
+        ),
+        re.compile(
+            r"(?:扎着|扎成|梳着|披着|留着|挽着|盘着|束着)[^，。；;]{0,18}"
+            r"(?:头发|马尾|短发|长发|刘海|发髻|盘发|丸子头)"
+        ),
+    )
+    TRANSIENT_FIXED_PROP_PATTERNS = (
+        re.compile(r"(?:手机|电话|对讲机|耳机|平板|笔记本电脑)"),
+        re.compile(r"(?:书包|背包|双肩包|挎包|手提包|行李箱)"),
+        re.compile(r"(?:雨伞|阳伞)"),
+        re.compile(r"(?:花束|鲜花|信封|礼盒|礼物盒|戒指盒)"),
+        re.compile(r"(?:奶茶|咖啡|饮料|水杯|保温杯)"),
+    )
+    PROP_SOUND_EFFECT_PATTERN = re.compile(r"(?P<prop>[^，。；;:：]{1,16})相关细节声")
+    ENVIRONMENT_PROP_ANCHOR_TOKENS = (
+        "桌",
+        "台",
+        "架",
+        "柜",
+        "墙",
+        "栏",
+        "长椅",
+        "座位",
+        "地面",
+        "地上",
+        "门口",
+        "窗边",
+        "书架",
+        "柜台",
+        "课桌",
+        "讲台",
+        "石凳",
+        "栈道边",
     )
 
     def _strip_internal_segment_markers(self, text: str) -> str:
@@ -71,25 +113,35 @@ class VideoPromptingMixin:
         return cleaned
 
     def _prompt_json(self, payload: object) -> str:
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return json.dumps(
+            to_jsonable(payload),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
 
     def _scene_bible_rule_block(self) -> str:
         return (
             "- `scene_bible` 只写可复用环境基线：地点、时间、天气、光线、主色、背景锚点、固定道具、空间布局、角色调度、连续性说明。\n"
             "- `scene_bible` 短写：`dominant_palette` 最多 3 个词，`background_anchors` 最多 4 项，`fixed_props` 最多 3 项，其余字段尽量 1 句。\n"
-            "- `background_anchors`、`fixed_props` 只能写可见实体或布景元素，例如长椅、路灯、拱门、花墙、书包；不要写情绪、冲突、关系或抽象概念。\n"
+            "- `background_anchors`、`fixed_props` 只能写可见实体或布景元素；`fixed_props` 优先写场景内稳定存在的环境物，例如长椅、路灯、拱门、花墙、课桌，不要把手机、书包、雨伞、花束这类人物随身或临时动作道具写进去。\n"
+            "- `scene_bible`、`shot_state`、`continuity_link` 和各帧 prompt 只能描述环境、镜头、站位、动作与承接；不得重新发明角色服装、发型、年龄感、体型或脸型。\n"
             "- 不要写对白、字幕或剧情分析。"
         )
 
     def _frame_character_rule_block(self) -> str:
         return (
-            "- `involved_characters` 只包含当前 segment 真正出镜或发声的角色；当前段未出镜、未发声的人物不要写进来。\n"
-            "- `dialogue_lines` 中出现的所有角色，都必须进入 `involved_characters`。\n"
-            "- `start_frame_characters`、`mid_frame_characters`、`end_frame_characters` 都必须是 `involved_characters` 的子集，且只包含该帧真正出镜的人物。\n"
+            "- `involved_characters` 只包含当前段真正出镜或发声的角色；`dialogue_lines` 里出现的人也必须进入 `involved_characters`。`start_frame_characters`、`mid_frame_characters`、`end_frame_characters` 都必须是它的子集，且只写该帧真正出镜人物。\n"
             "- 如果首帧是单人等待、独白、回头或站立，不要把尚未出镜的人物写进首帧；尾帧同理。\n"
             "- `mid_frame_characters` 必须严格跟随片段中间那一拍真实出镜角色，不要直接照搬整个 scene cast，也不要把只在尾帧才出现的人物提前写进中段帧。\n"
-            "- 若片段为多人同框、时长 >= 8 秒、对白 >= 2 句，或 `timed_beats` 有 3 拍及以上，`requires_mid_frame` 必须为 true，且必须显式给出 `mid_frame_characters`；不要把这项留给系统推断。\n"
-            "- 若 `requires_mid_frame = false`，`mid_frame_characters` 必须为空数组。"
+            "- `mid_frame_mode` 只能取 `continuous` 或 `insert_cut`。\n"
+            "- 二选一：如果首尾同组多人在中段仍是连续表演，就保留整组角色并写 `mid_frame_mode=continuous`；如果中段只切其中一人的反应或局部动作，才允许把 `mid_frame_characters` 缩成子集，并写 `mid_frame_mode=insert_cut`。\n"
+            "- 只要用了 `insert_cut`，`timed_beats`、`mid_frame_prompt`、`shot_state.camera_motion` 就都必须明确写成“主镜头 -> 插入镜头 -> 主镜头”的往返运镜。\n"
+            "- 非法反例：`start=[苏雨,林晨] / mid=[苏雨] / end=[苏雨,林晨] / mid_frame_mode=continuous`。\n"
+            "- 若片段时长 >= 8 秒、对白 >= 2 句，或 `timed_beats` 有 3 拍及以上，`requires_mid_frame` 必须为 true，且必须显式给出 `mid_frame_characters`；若 `requires_mid_frame = false`，`mid_frame_characters` 必须为空数组。\n"
+            "- 同一帧里同一角色只能出现一次；如果某一帧 `*_frame_characters` 有 2 人或以上，就不要在该帧 prompt、`framing` 或 `camera_motion` 里再写“某角色侧脸特写 / 大特写 / 单人近景”，避免把同一角色在单帧里重复画两次。\n"
+            "- `shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 共享镜头，不是某一帧专属说明；先检查 `start_frame_characters / mid_frame_characters / end_frame_characters`，只要其中任一帧是双人或多人，就不要在这两个字段里写指向某一人的单独特写。\n"
+            "- 非法示例：`start=[苏雨,林晨]`，却写 `shot_state.camera_motion=推向林晨侧脸特写`。\n"
+            "- 合法示例：`shot_state.camera_motion=轻微前推，保持苏雨、林晨同框，只通过站位和表情差异突出林晨情绪变化`。"
         )
 
     def _segment_audio_budget_rule_block(self) -> str:
@@ -97,11 +149,9 @@ class VideoPromptingMixin:
             f"- `duration_seconds` 必须在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒内，并按中文自然口播语速估算音频长度，约每秒 {self.SPEECH_CHARS_PER_SECOND} 个中文字。\n"
             "- 5 秒片段只能放极短句，总旁白 + 对白 + 硬字幕文案约 15 字以内；8 秒片段约 24 字以内；12 秒片段约 36 字以内。\n"
             "- 如果旁白、对白或硬字幕超过当前时长可说完的字数，必须拆成下一个片段，不得硬塞进同一段。\n"
-            "- 5-8 秒片段通常只允许 1 句可听见对白；12 秒片段通常最多 2 句，且每句都要短。\n"
             "- `subtitle_lines` 只允许写本段真正会被听到的对白或旁白；纯动作段输出空数组，不要把动作说明直接写成硬字幕。\n"
             "- 每个 `segment` 都必须显式输出非空 `timed_beats`；即使是纯动作段也至少写 1 条，格式示例：`0-2秒：他停下脚步，看向湖面。`\n"
-            "- 5-6 秒片段通常输出 1-2 条 `timed_beats`；8-12 秒片段通常输出 2-3 条。不要把整段压成一条 `0-10秒：两人继续交流` 这种泛描述。\n"
-            "- `subtitle_lines` 只能写本片段实际能在音频里说完的文字；`timed_beats` 要写清每句话或每拍动作在几秒发生。"
+            "- 5-6 秒片段通常输出 1-2 条 `timed_beats`；8-12 秒片段通常输出 2-3 条。不要把整段压成一条 `0-10秒：两人继续交流` 这种泛描述。"
         )
 
     def _segment_continuity_rule_block(self) -> str:
@@ -110,7 +160,6 @@ class VideoPromptingMixin:
             "- 同场景连续承接时，`transition_mode` 应为 `continue`，`opening_match` 要明确上一段尾部状态，`allowed_changes` 只写本段新增推进。\n"
             "- 起始段若使用 `transition_mode = start`，`opening_match` 也要简短写出本段开场已成立的站位、动作或环境状态，不要留空。\n"
             "- `opening_match` 必须写成可拍到的开场画面，不要写成“承接上一段继续”“场景开始”“继续推进”这类空话。\n"
-            "- `transition_mode = start` 示例：`陈默已站在镜湖长椅旁，面向湖面等待。`；`transition_mode = continue` 示例：`承接上一段尾部，陈默仍站在长椅旁，刚回头看向来人。`\n"
             "- 同一 chunk 内相邻 segment 的 `title` 不得相同，也不能只是“继续 / 再次 / 延续 / 停顿”这类弱变化。\n"
             "- 明显转场用 `cut`，起始段用 `start`。"
         )
@@ -181,6 +230,7 @@ class VideoPromptingMixin:
         *,
         chapter_number: int,
         story_memory: StoryMemoryPackage,
+        chapter_event_plan: object,
     ) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
         chapter_outline = next(
@@ -189,7 +239,7 @@ class VideoPromptingMixin:
         memory_context = self._build_story_memory_prompt_context(
             story_memory,
             chapter_number=chapter_number,
-            chapter_scoped=True,
+            context_mode="chapter_scene",
             focus_characters=chapter_outline.featured_characters,
         )
         chapter_block = self._build_chapter_segment_directive(
@@ -200,6 +250,7 @@ class VideoPromptingMixin:
         previous_exit = memory_context.get("previous_chapter_exit_state", {})
         previous_exit_json = self._prompt_json(previous_exit)
         memory_json = self._prompt_json(memory_context)
+        chapter_event_block = self._format_chapter_coverage_event_block(chapter_event_plan)
         chapter_id_prefix = f"ch{chapter_number:02d}"
         return f"""
 请只为当前章节生成场景结构，不要生成片段，不要生成任何图片 prompt。
@@ -211,6 +262,11 @@ class VideoPromptingMixin:
 - 本次只允许输出第 {chapter_number} 章内容，不得把后续章节事件、关系进展或高潮提前写进本章。
 - 你只需要输出 `scenes`；字段契约以结构化 schema 为准，不要自造字段。
 - 当前章可以拆成 1 个或多个 `scene`，必须完全根据当前章节正文决定。
+- 你必须完整覆盖“当前章必须覆盖的关键事件”；不得漏掉后半段事件，也不得在表白、和解、揭示等中途提前收束。
+- 每个 `scene.covered_event_ids` 都必须填写，且只能使用下方关键事件列表里的 `event_id`。
+- 所有 `covered_event_ids` 拼接后，必须与关键事件列表顺序完全一致；不能跳号、不能重复、不能乱序。
+- 一个 scene 可以覆盖多个相邻关键事件，但只能覆盖连续事件块；不要把 `ev01` 和 `ev03` 放在同一 scene 却漏掉 `ev02`。
+- 最后一个 scene 必须覆盖最后一个关键事件，也就是当前章节真正的收束动作、关系落点或结尾决定。
 - `scene_id` 必须以 `{chapter_id_prefix}-sc` 开头，例如 `{chapter_id_prefix}-sc01`。
 {self._scene_bible_rule_block()}
 - 如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene。
@@ -225,9 +281,85 @@ class VideoPromptingMixin:
 story memory JSON：
 {memory_json}
 
+当前章必须覆盖的关键事件：
+{chapter_event_block}
+
 当前章节拆分依据：
 {chapter_block}
 """.strip()
+
+    def _build_chapter_event_coverage_user_prompt(
+        self,
+        novel_package: NovelPackage,
+        *,
+        chapter_number: int,
+    ) -> str:
+        chapter_outline = next(
+            item for item in novel_package.outline.chapters if item.number == chapter_number
+        )
+        draft = next(
+            (item for item in novel_package.chapters if item.number == chapter_number),
+            None,
+        )
+        allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
+        featured = "、".join(chapter_outline.featured_characters) or "无"
+        chapter_id_prefix = f"ch{chapter_number:02d}"
+        chapter_markdown = (draft.markdown if draft else chapter_outline.summary).strip()
+        return f"""
+请先从当前章节正文里抽取“后续场景规划必须覆盖”的关键事件。
+
+- 小说标题：{novel_package.outline.title}
+- 当前章节：第 {chapter_number} 章《{chapter_outline.title}》
+- 角色原名白名单：{allowed_names}
+- 重点角色：{featured}
+- 章节目标：{chapter_outline.goal}
+- 章节摘要：{chapter_outline.summary}
+- 关键冲突：{chapter_outline.key_conflict}
+- `event_id` 必须以 `{chapter_id_prefix}-ev` 开头，例如 `{chapter_id_prefix}-ev01`。
+- 只提取“必须被 scene 覆盖”的关键推进事件：角色登场、关键对话落点、关系变化、动作结果、决定、章节结尾状态。
+- 不要提取纯环境描写、重复心理描写、没有推动剧情的停顿、同义重复动作。
+- 事件必须严格按正文顺序输出。
+- `source_evidence` 必须直接摘取当前章节正文中的短词或短句，不要改写，不要编造。
+- `involved_characters` 只能使用小说中已存在的角色原名，不得新增角色。
+- 最后一条事件必须覆盖章节尾部真正的最后一个有效推进或关系落点，不能在中途提前结束。
+- 一章通常输出 3-8 个关键事件；短章可以更少，但不能漏掉章节尾部的重要落点。
+{self._structured_output_guardrail_line()}
+
+当前章节正文全文：
+{chapter_markdown}
+""".strip()
+
+    def _format_chapter_coverage_event_block(self, chapter_event_plan: object) -> str:
+        events = []
+        if hasattr(chapter_event_plan, "events"):
+            events = list(getattr(chapter_event_plan, "events") or [])
+        elif isinstance(chapter_event_plan, dict):
+            events = list(chapter_event_plan.get("events", []) or [])
+        if not events:
+            return "- 无"
+        lines: list[str] = []
+        for item in events:
+            event_id = str(
+                getattr(item, "event_id", "")
+                if not isinstance(item, dict)
+                else item.get("event_id", "")
+            ).strip()
+            summary = str(
+                getattr(item, "summary", "")
+                if not isinstance(item, dict)
+                else item.get("summary", "")
+            ).strip()
+            evidence = (
+                list(getattr(item, "source_evidence", []) or [])
+                if not isinstance(item, dict)
+                else list(item.get("source_evidence", []) or [])
+            )
+            evidence_line = " / ".join(str(token).strip() for token in evidence[:2] if str(token).strip())
+            if evidence_line:
+                lines.append(f"- {event_id}：{summary}；证据：{evidence_line}")
+            else:
+                lines.append(f"- {event_id}：{summary}")
+        return "\n".join(lines)
 
     def _build_scene_segment_contract_user_prompt(
         self,
@@ -242,14 +374,14 @@ story memory JSON：
         forced_min_segments: int | None = None,
     ) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
-        focus_terms = self._build_scene_prompt_focus_terms(
+        focus_terms = self._build_scene_focus_terms(
             scene_payload=scene_payload,
             chunk_payload=chunk_payload,
         )
         memory_context = self._build_story_memory_prompt_context(
             story_memory,
             chapter_number=chapter_number,
-            chapter_scoped=False,
+            context_mode="segment_contract",
             focus_characters=list(scene_payload.get("involved_characters", []) or []),
         )
         chapter_block = self._build_chapter_segment_directive(
@@ -257,10 +389,12 @@ story memory JSON：
             chapter_number=chapter_number,
             excerpt_max_chars=self.SCENE_SEGMENT_CHUNK_CONTRACT_EXCERPT_CHARS,
             focus_terms=focus_terms,
+            compact=True,
         )
-        scene_json = self._prompt_json(scene_payload)
-        chunk_json = self._prompt_json(chunk_payload or {})
+        scene_json = self._prompt_json(self._build_prompt_scene_payload(scene_payload))
+        chunk_json = self._prompt_json(self._build_prompt_chunk_payload(chunk_payload or {}))
         memory_json = self._prompt_json(memory_context)
+        has_previous_chunk_exit_state = bool(previous_chunk_exit_state)
         previous_chunk_exit_json = self._prompt_json(previous_chunk_exit_state or {})
         scene_id = str(scene_payload.get("scene_id", "")).strip()
         effective_max_segments = int(
@@ -275,6 +409,22 @@ story memory JSON：
                 "优先按对白轮次、句意边界或动作结果落点拆开，"
                 "不要再试图把整段对白硬塞进 1 个 segment。\n"
             )
+        cross_chunk_opening_rule = ""
+        previous_chunk_exit_block = ""
+        if has_previous_chunk_exit_state:
+            cross_chunk_opening_rule = (
+                "- 若有上一 chunk 退出状态，首段必须直接承接其中的 "
+                "`visible_tail_state` / `opening_match_seed`，"
+                "复现上一段已成立的站位、朝向、道具或动作停点。\n"
+                "- 首段 `continuity_link.opening_match` 建议写成："
+                "`承接上一 chunk 尾部，角色A仍...，角色B继续...`；"
+                "不要只写“继续推进”“承接上一段尾部”。\n"
+            )
+            previous_chunk_exit_block = f"""
+
+上一 chunk 退出状态 JSON：
+{previous_chunk_exit_json}
+""".rstrip()
         return f"""
 请只为目标 scene 的当前 chunk 生成片段合同，不要生成场景 prompt，不要生成首帧/中段/尾帧 prompt。
 
@@ -289,33 +439,28 @@ story memory JSON：
 - 当前 chunk 一般拆成 1-3 个 segment，最多不超过 4 个；必须完全根据动作推进、对白密度和情绪转折决定。
 - 当前 chunk 这次最多只能输出 {effective_max_segments} 个 segment；这就是当前执行上限，超过就视为失败，不要额外加段。
 {split_retry_directive}- `expected_segment_count` 是上限，不是目标值；如果当前 chunk 实际只需要 1 个完整 segment，就只输出 1 个，不要为了凑数硬拆。
-- 同一个动作单元，例如停步、回头、抬头、赏花、对视、沉默等待，默认只允许 1 个 segment；只有发生新的动作推进、空间位移、对白交换或关系变化时才能拆出下一段。
-- 不得把同一拍动作改写成多段近义重复片段来拖时长；相邻 segment 必须看得出新增推进。
 - 如果当前 chunk 是告白、回应、双人对话或情绪对峙，优先生成较少但更完整的 8-12 秒 segment，不要把一句话拆成多个 5-6 秒微段。
 - 不要把“准备开口”和“真正开口”拆成两个近义连续片段，除非单段字数预算已经超限。
-- 不要输出 `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
+- `narration` 只有在本段确实存在独立旁白、心声或画外音时才填写；如果本段已经有 `dialogue_lines`，不要再用 `narration` 复述动作、关系或对白内容。
+- 不要把 `summary`、动作描述或 `timed_beats` 再抄进 `narration` / `subtitle_lines`。
+- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - `segment_id` 只需在当前 chunk 内唯一，系统后续会统一重编；建议仍使用 `{scene_id}-seg01` 这类短格式。
 - 每个 `segment` 都必须带 `timed_beats`，不能为空；如果任何一段漏掉 `timed_beats`，整批合同都会判失败并重试。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`、`当前为第2/2段`。
-- 若片段时长 >= 8 秒、多人同框、动作推进明显或情绪关系变化明显，`requires_mid_frame` 必须为 true。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
-- 如果 `上一 chunk 退出状态` 不为空，则当前 chunk 的第一个 segment 必须从该退出状态继续推进；不要重开场，不要把同一 scene 写成重新开始。
-- 如果正文是告白、对峙、争吵、审问、双人对话，`involved_characters` 必须同时包含双方。
+{cross_chunk_opening_rule.rstrip()}
 - 有对白时，`timed_beats` 必须明确写出哪一秒谁说了哪句；不要只写“她温柔回应”“他说出告白”这类抽象概括。
-- 单条对白若超过约 18-22 个中文字符，或本身包含多个分句，必须在当前 chunk 内主动拆成多个 beats，必要时拆成多个 segment；不要把长句整段塞给后处理再拆。
 - `shot_state` 只写镜头、调度、动作、道具和承接状态，尽量 1 句完成，不要写成长段散文。
 {self._segment_field_concision_rule_block()}
 {self._structured_output_guardrail_line()}
 
 story memory JSON：
 {memory_json}
-
-上一 chunk 退出状态 JSON：
-{previous_chunk_exit_json}
+{previous_chunk_exit_block}
 
 目标 chunk JSON：
 {chunk_json}
@@ -344,24 +489,14 @@ story memory JSON：
         max_segments_override: int,
     ) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
-        focus_terms = self._build_scene_prompt_focus_terms(
-            scene_payload=scene_payload,
-            chunk_payload=chunk_payload,
-        )
         memory_context = self._build_story_memory_prompt_context(
             story_memory,
             chapter_number=chapter_number,
-            chapter_scoped=False,
+            context_mode="repair",
             focus_characters=list(scene_payload.get("involved_characters", []) or []),
         )
-        chapter_block = self._build_chapter_segment_directive(
-            novel_package,
-            chapter_number=chapter_number,
-            excerpt_max_chars=self.SCENE_SEGMENT_CHUNK_CONTRACT_EXCERPT_CHARS,
-            focus_terms=focus_terms,
-        )
-        scene_json = self._prompt_json(scene_payload)
-        chunk_json = self._prompt_json(chunk_payload or {})
+        scene_json = self._prompt_json(self._build_prompt_scene_payload(scene_payload))
+        chunk_json = self._prompt_json(self._build_prompt_chunk_payload(chunk_payload or {}))
         memory_json = self._prompt_json(memory_context)
         previous_chunk_exit_json = self._prompt_json(previous_chunk_exit_state or {})
         failed_contract_json = self._prompt_json(failed_contract_payload)
@@ -393,7 +528,7 @@ story memory JSON：
 - 不得回放当前 chunk 之前已经发生的事件，也不得提前写入当前 chunk 之后的剧情结果。
 - 不得为了满足拆分而制造近义重复段；拆出来的每一段都必须有新增推进。
 - 如果某段文本预算仍能在 12 秒内说完，可以直接把 `duration_seconds` 提到所需秒数；只有确实超过 12 秒时才继续拆分。
-- 不要输出 `scene_prompt`、`start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
+- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -420,9 +555,6 @@ story memory JSON：
 
 上一轮超长 segment JSON：
 {offending_segment_json}
-
-当前章节参考：
-{chapter_block}
 """.strip()
 
     def _build_scene_chunk_planner_user_prompt(
@@ -434,11 +566,11 @@ story memory JSON：
         scene_payload: dict[str, object],
     ) -> str:
         allowed_names = "、".join(item.name for item in novel_package.outline.characters) or "无"
-        focus_terms = self._build_scene_prompt_focus_terms(scene_payload=scene_payload)
+        focus_terms = self._build_scene_focus_terms(scene_payload=scene_payload)
         memory_context = self._build_story_memory_prompt_context(
             story_memory,
             chapter_number=chapter_number,
-            chapter_scoped=False,
+            context_mode="scene_chunk",
             focus_characters=list(scene_payload.get("involved_characters", []) or []),
         )
         chapter_block = self._build_chapter_segment_directive(
@@ -446,8 +578,9 @@ story memory JSON：
             chapter_number=chapter_number,
             excerpt_max_chars=self.SCENE_CHUNK_PLANNER_EXCERPT_CHARS,
             focus_terms=focus_terms,
+            compact=True,
         )
-        scene_json = self._prompt_json(scene_payload)
+        scene_json = self._prompt_json(self._build_prompt_scene_payload(scene_payload))
         memory_json = self._prompt_json(memory_context)
         scene_id = str(scene_payload.get("scene_id", "")).strip()
         return f"""
@@ -467,7 +600,6 @@ story memory JSON：
 - 整个 scene 的 `expected_segment_count` 总和通常控制在 2-8；不要为了拖时长把同一事件拆成大量 chunk。
 - `expected_segment_count` 是后续 segment planner 的硬上限，也是你现在就要算准的最终执行数量；后续不得超过这个上限继续加段。
 - `must_cover` 只写 1-3 条短句，`transition_goal` 只写一句短话，`expected_segment_count` 只填 1-4。
-- 同一 scene 内相邻 chunk 必须有明确推进，不能只是换说法重复前一个 chunk。
 - 不要把整个 scene 的完整摘要复制到每个 chunk；每个 chunk 只保留自己负责的那一小段。
 {self._chunk_split_rule_block()}
 {self._anti_micro_split_rule_block()}
@@ -488,7 +620,7 @@ story memory JSON：
         story_memory: StoryMemoryPackage,
         *,
         chapter_number: int,
-        chapter_scoped: bool = False,
+        context_mode: str = "chapter_scene",
         focus_characters: list[str] | None = None,
     ) -> dict[str, object]:
         current_chapter_state = next(
@@ -506,6 +638,7 @@ story memory JSON：
             ),
             None,
         )
+        chapter_scoped = context_mode == "chapter_scene"
         recent_limit = (
             self.STORY_MEMORY_RECENT_CHAPTER_LIMIT
             if chapter_scoped
@@ -530,11 +663,87 @@ story memory JSON：
             story_memory,
             chapter_number=chapter_number,
         )
+        previous_exit_payload = self._build_story_memory_exit_state_payload(
+            previous_chapter_state.exit_state if previous_chapter_state else {}
+        )
+        current_chapter_payload = {
+            "chapter_number": current_chapter_state.chapter_number if current_chapter_state else chapter_number,
+            "chapter_title": current_chapter_state.chapter_title if current_chapter_state else "",
+            "chapter_summary": (
+                self._compact_story_memory_text(
+                    current_chapter_state.chapter_summary,
+                    limit=120,
+                )
+                if current_chapter_state
+                else ""
+            ),
+            "carry_over_summary": (
+                self._compact_story_memory_text(
+                    current_chapter_state.carry_over_summary,
+                    limit=100,
+                )
+                if current_chapter_state
+                else ""
+            ),
+            "carry_over_visuals": (
+                current_chapter_state.carry_over_visuals[:4] if current_chapter_state else []
+            ),
+            "carry_over_props": (
+                current_chapter_state.carry_over_props[:3] if current_chapter_state else []
+            ),
+            "relationship_state": (
+                current_chapter_state.relationship_state[:3] if current_chapter_state else []
+            ),
+            "unresolved_threads": (
+                current_chapter_state.unresolved_threads[:2] if current_chapter_state else []
+            ),
+        }
+        continuity_payload = {
+            "current_time_context": story_memory.continuity_state.current_time_context,
+            "current_location_context": story_memory.continuity_state.current_location_context,
+            "active_props": story_memory.continuity_state.active_props[:3],
+            "active_relationship_state": story_memory.continuity_state.active_relationship_state[:3],
+        }
+        if context_mode == "repair":
+            return {
+                "focus_cast_bible": focus_cast,
+                "previous_chapter_exit_state": previous_exit_payload,
+            }
+        if context_mode == "scene_chunk":
+            return {
+                "global_story_bible": {
+                    "narrative_promise": story_memory.global_story_bible.narrative_promise,
+                    "visual_motifs": story_memory.global_story_bible.visual_motifs[:3],
+                },
+                "focus_cast_bible": focus_cast,
+                "current_chapter_state": {
+                    "chapter_number": current_chapter_payload["chapter_number"],
+                    "carry_over_summary": current_chapter_payload["carry_over_summary"],
+                    "carry_over_visuals": current_chapter_payload["carry_over_visuals"],
+                    "relationship_state": current_chapter_payload["relationship_state"],
+                },
+                "previous_chapter_exit_state": previous_exit_payload,
+                "continuity_state": {
+                    "current_time_context": continuity_payload["current_time_context"],
+                    "current_location_context": continuity_payload["current_location_context"],
+                },
+            }
+        if context_mode == "segment_contract":
+            return {
+                "focus_cast_bible": focus_cast,
+                "current_chapter_state": {
+                    "chapter_number": current_chapter_payload["chapter_number"],
+                    "carry_over_summary": current_chapter_payload["carry_over_summary"],
+                    "relationship_state": current_chapter_payload["relationship_state"],
+                },
+                "previous_chapter_exit_state": previous_exit_payload,
+                "continuity_state": {
+                    "current_time_context": continuity_payload["current_time_context"],
+                    "current_location_context": continuity_payload["current_location_context"],
+                    "active_relationship_state": continuity_payload["active_relationship_state"],
+                },
+            }
         return {
-            "story_identity": {
-                "story_title": story_memory.story_identity.story_title,
-                "story_source_revision": story_memory.story_identity.story_source_revision,
-            },
             "global_story_bible": {
                 "core_theme": story_memory.global_story_bible.core_theme,
                 "narrative_promise": story_memory.global_story_bible.narrative_promise,
@@ -544,51 +753,15 @@ story memory JSON：
             "chapter_batch_view": chapter_batch_view,
             "focus_cast_bible": focus_cast,
             "current_chapter_state": {
-                "chapter_number": current_chapter_state.chapter_number if current_chapter_state else chapter_number,
-                "chapter_title": current_chapter_state.chapter_title if current_chapter_state else "",
-                "chapter_summary": (
-                    self._compact_story_memory_text(
-                        current_chapter_state.chapter_summary,
-                        limit=120,
-                    )
-                    if current_chapter_state
-                    else ""
-                ),
+                **current_chapter_payload,
                 "entry_state": current_chapter_state.entry_state if current_chapter_state else {},
                 "new_facts": current_chapter_state.new_facts[:3] if current_chapter_state else [],
                 "resolved_threads": current_chapter_state.resolved_threads[:2] if current_chapter_state else [],
-                "unresolved_threads": (
-                    current_chapter_state.unresolved_threads[:3] if current_chapter_state else []
-                ),
-                "carry_over_summary": (
-                    self._compact_story_memory_text(
-                        current_chapter_state.carry_over_summary,
-                        limit=100,
-                    )
-                    if current_chapter_state
-                    else ""
-                ),
-                "carry_over_visuals": (
-                    current_chapter_state.carry_over_visuals[:4] if current_chapter_state else []
-                ),
-                "carry_over_props": (
-                    current_chapter_state.carry_over_props[:3] if current_chapter_state else []
-                ),
-                "relationship_state": (
-                    current_chapter_state.relationship_state[:3] if current_chapter_state else []
-                ),
             },
-            "previous_chapter_exit_state": (
-                self._build_story_memory_exit_state_payload(
-                    previous_chapter_state.exit_state if previous_chapter_state else {}
-                )
-            ),
+            "previous_chapter_exit_state": previous_exit_payload,
             "recent_chapter_memory": recent_memory,
             "continuity_state": {
-                "current_time_context": story_memory.continuity_state.current_time_context,
-                "current_location_context": story_memory.continuity_state.current_location_context,
-                "active_props": story_memory.continuity_state.active_props[:4],
-                "active_relationship_state": story_memory.continuity_state.active_relationship_state[:3],
+                **continuity_payload,
                 "carry_over_visuals": story_memory.continuity_state.carry_over_visuals[:5],
             },
         }
@@ -617,10 +790,8 @@ story memory JSON：
                 "name": item.name,
                 "gender": item.gender,
                 "role": item.role,
-                "appearance_summary": self._compact_story_memory_text(item.appearance_summary, limit=80),
-                "voice_summary": self._compact_story_memory_text(item.voice_summary, limit=60),
-                "personality_summary": self._compact_story_memory_text(item.personality_summary, limit=80),
-                "hard_constraints": list(item.hard_constraints[:2]),
+                "appearance_summary": self._compact_story_memory_text(item.appearance_summary, limit=56),
+                "hard_constraints": list(item.hard_constraints[:1]),
             }
             for item in selected_entries[:max_items]
         ]
@@ -711,6 +882,71 @@ story memory JSON：
             "transition_hint": str(payload.get("transition_hint", "") or ""),
         }
 
+    def _build_prompt_scene_payload(
+        self,
+        scene_payload: dict[str, object],
+    ) -> dict[str, object]:
+        scene_bible = scene_payload.get("scene_bible", {}) or {}
+        return {
+            "scene_id": str(scene_payload.get("scene_id", "") or ""),
+            "title": self._compact_story_memory_text(str(scene_payload.get("title", "") or ""), limit=40),
+            "summary": self._compact_story_memory_text(str(scene_payload.get("summary", "") or ""), limit=100),
+            "scene_anchor": self._compact_story_memory_text(
+                str(scene_payload.get("scene_anchor", "") or ""),
+                limit=80,
+            ),
+            "involved_characters": list(scene_payload.get("involved_characters", []) or [])[:4],
+            "scene_bible": self._build_prompt_scene_bible_payload(scene_bible),
+        }
+
+    def _build_prompt_chunk_payload(
+        self,
+        chunk_payload: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "chunk_id": str(chunk_payload.get("chunk_id", "") or ""),
+            "title": self._compact_story_memory_text(str(chunk_payload.get("title", "") or ""), limit=40),
+            "summary": self._compact_story_memory_text(str(chunk_payload.get("summary", "") or ""), limit=100),
+            "must_cover": [
+                self._compact_story_memory_text(str(item or ""), limit=40)
+                for item in list(chunk_payload.get("must_cover", []) or [])[:3]
+                if str(item or "").strip()
+            ],
+            "transition_goal": self._compact_story_memory_text(
+                str(chunk_payload.get("transition_goal", "") or ""),
+                limit=50,
+            ),
+            "expected_segment_count": int(chunk_payload.get("expected_segment_count", 0) or 0),
+        }
+
+    def _build_prompt_scene_bible_payload(
+        self,
+        scene_bible: object,
+    ) -> dict[str, object]:
+        payload = scene_bible if isinstance(scene_bible, dict) else to_jsonable(scene_bible)
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            "location": self._compact_story_memory_text(str(payload.get("location", "") or ""), limit=40),
+            "time_window": self._compact_story_memory_text(str(payload.get("time_window", "") or ""), limit=24),
+            "weather": self._compact_story_memory_text(str(payload.get("weather", "") or ""), limit=20),
+            "lighting": self._compact_story_memory_text(str(payload.get("lighting", "") or ""), limit=36),
+            "background_anchors": [
+                self._compact_story_memory_text(str(item or ""), limit=24)
+                for item in list(payload.get("background_anchors", []) or [])[:3]
+                if str(item or "").strip()
+            ],
+            "fixed_props": [
+                self._compact_story_memory_text(str(item or ""), limit=24)
+                for item in list(payload.get("fixed_props", []) or [])[:2]
+                if str(item or "").strip()
+            ],
+            "spatial_layout": self._compact_story_memory_text(
+                str(payload.get("spatial_layout", "") or ""),
+                limit=48,
+            ),
+        }
+
     def _build_segment_continuity_repair_user_prompt(
         self,
         *,
@@ -756,12 +992,12 @@ story memory JSON：
 - 不能修改：`segment_id`、`scene_id`、`scene_title`、`scene_summary`、`scene_anchor`、`involved_characters`
 - 不能新增角色、改名、换 scene、换章节
 - 你只能调整这些字段：
-  - `scene_prompt`
   - `start_frame_prompt`
   - `mid_frame_prompt`
   - `end_frame_prompt`
   - `start_frame_characters`
   - `mid_frame_characters`
+  - `mid_frame_mode`
   - `end_frame_characters`
   - `narration`
   - `dialogue_lines`
@@ -775,8 +1011,12 @@ story memory JSON：
 - 输出必须让画面承接、动作推进、对白长度、字幕时长更成立
 - `duration_seconds` 必须在 5-12 秒
 - `subtitle_lines` 必须和实际能说完的旁白/对白一致
+- 如果本段已经有 `dialogue_lines`，不要再用 `narration` 复述同一动作或同一句话；`subtitle_lines` 也不要重复写描述性动作旁白
 - `timed_beats` 必须写出具体秒数，不要只写抽象节奏
 - `start_frame_characters` / `mid_frame_characters` / `end_frame_characters` 必须是 `involved_characters` 的子集
+- 先判断中段属于哪一类：如果首尾是同一组双人 / 多人，而中段仍是这组角色的连续表演，就保留整组角色并写 `mid_frame_mode=continuous`
+- 如果首尾是同一组双人 / 多人，而中段只保留其中一人的单人特写或反应镜头，才允许把 `mid_frame_characters` 缩成子集；这时必须把 `mid_frame_mode=insert_cut`，并把运镜写成“从主镜头切入，再切回主镜头收束”
+- 不要输出这种非法结构：`start=[苏雨,林晨] / mid=[苏雨] / end=[苏雨,林晨] / mid_frame_mode=continuous`
 - 如果不需要中段帧，`requires_mid_frame=false`，并把 `mid_frame_prompt` 置空、`mid_frame_characters` 置空数组
 - 如果问题主要是对白超时，就优先缩短对白、拆短字幕、压缩旁白，而不是盲目拉满 12 秒
 - 如果 `speech_budget_context.required_duration_seconds` 已经大于 12，说明原文本本身塞不进单段视频；你必须主动删减或改写对白、旁白和字幕，让修复后的文本能在 12 秒内说完，不能试图保留原长文本
@@ -842,6 +1082,7 @@ story memory JSON：
         chapter_number: int,
         excerpt_max_chars: int = 1400,
         focus_terms: list[str] | None = None,
+        compact: bool = False,
     ) -> str:
         chapter = next(
             item for item in novel_package.outline.chapters if item.number == chapter_number
@@ -867,6 +1108,15 @@ story memory JSON：
             if focus_term_list
             else ""
         )
+        if compact:
+            compact_beats = self._excerpt_text(beats, max_chars=72)
+            return (
+                f"- 第 {chapter.number} 章《{chapter.title}》\n"
+                f"  摘要：{self._compact_story_memory_text(chapter.summary, limit=70)}\n"
+                f"  节拍：{compact_beats}\n"
+                f"{focus_line}"
+                f"  正文摘录：{excerpt}"
+            )
         return (
             f"- 第 {chapter.number} 章《{chapter.title}》\n"
             "  该章应由模型自行判断拆成几段\n"
@@ -919,7 +1169,7 @@ story memory JSON：
         excerpt = " ".join(units[index] for index in sorted(selected_indices)).strip()
         return self._excerpt_text(excerpt or text, max_chars=max_chars)
 
-    def _build_scene_prompt_focus_terms(
+    def _build_scene_focus_terms(
         self,
         *,
         scene_payload: dict[str, object],
@@ -1012,14 +1262,6 @@ story memory JSON：
             timed_beats.append(f"{start}-{end}秒：{description}")
         return timed_beats
 
-    def _build_default_subsegment_narration(
-        self,
-        summary: str,
-        segment_index: int,
-        segment_count: int,
-    ) -> str:
-        return self._strip_internal_segment_markers(summary)
-
     def _build_character_sheet_prompt(
         self,
         name: str,
@@ -1062,59 +1304,6 @@ story memory JSON：
             "不要忽老忽幼、忽胖忽瘦、忽高忽矮、忽壮忽弱"
         )
 
-    def _build_scene_character_lock(
-        self,
-        character_names: list[str],
-        profile_map: dict[str, CharacterVisualProfile],
-    ) -> str:
-        locked_profiles: list[str] = []
-        for name in character_names:
-            profile = profile_map.get(name)
-            if profile is None:
-                continue
-            palette = "、".join(profile.color_palette) if profile.color_palette else "按设定控制"
-            locked_profiles.append(
-                f"{name}：性别 {profile.gender}；外观 {profile.appearance}；服装 {profile.outfit}；主配色 {palette}；"
-                "同一年龄感、同一体型、同一肩宽、同一头身比、同一四肢比例、同一脸型轮廓"
-            )
-
-        if not locked_profiles:
-            return (
-                "若角色出镜，保持与参考设定图一致的人脸结构、发型、服装层次、主配色、"
-                "年龄感、体型、肩宽和四肢比例，不要忽胖忽瘦、忽老忽幼。"
-            )
-
-        return (
-            "角色锁定要求："
-            + " | ".join(locked_profiles)
-            + "。严格保持与参考设定图一致的人脸结构、发型、服装层次、主配色、年龄感、体型、肩宽、头身比和四肢比例，"
-            "多人同屏时不得省略任何一个当前帧实际出镜角色，"
-            "不要把角色画得更老、更幼、更胖、更瘦、更壮、更矮或比例失真，"
-            "不要新增盔甲、额外武器、外骨骼、奇幻饰品或不相关时代元素。"
-        )
-
-    def _stylize_scene_prompt(
-        self,
-        prompt: str,
-        segment: VideoSegment,
-        character_lock: str,
-    ) -> str:
-        characters = "、".join(segment.involved_characters) or "环境为主"
-        sanitized_prompt = self._sanitize_image_prompt_text(prompt)
-        scene_bible_context = self._scene_bible_prompt_context(segment.scene_bible)
-        return (
-            "原创虚构场景分镜，风格化概念插画，非真人摄影，"
-            "优先展示环境、光线和镜头调度，避免近景人像特写，"
-            "若 involved_characters 有 2 人或以上，则这些角色必须同时出镜，不要只画一个人，"
-            "每个 involved_characters 都必须按对应参考设定图还原，"
-            "若角色出镜，必须保持稳定年龄感、稳定体型、稳定肩宽、稳定四肢比例和稳定脸型轮廓，"
-            f"{self._scene_baseline_lock_context(segment.scene_bible)}"
-            f"{scene_bible_context}"
-            f"{self._shot_state_prompt_context(segment.shot_state)}"
-            f"{self.SCENE_NO_TEXT_PROMPT}"
-            f"角色：{characters}，{character_lock}，{sanitized_prompt}"
-        )
-
     def _build_scene_master_frame_prompt(self, scene: VideoScene) -> str:
         scene_master_baseline_lock = self._scene_master_baseline_lock_context(
             scene.scene_bible,
@@ -1142,24 +1331,113 @@ story memory JSON：
         prompt: str,
         frame_characters: list[str],
         frame_type: str,
-        character_lock: str,
-        scene_bible_context: str = "",
-        shot_state_context: str = "",
-        continuity_link_context: str = "",
+        *,
+        involved_characters: list[str] | None = None,
+        scene_bible: object | None = None,
+        shot_state: object | None = None,
+        continuity_link: object | None = None,
     ) -> str:
-        characters = "、".join(frame_characters) or "环境为主"
-        sanitized_prompt = self._sanitize_image_prompt_text(prompt)
-        return (
-            f"{frame_type}，原创虚构电影分镜，风格化概念插画，非真人摄影，"
-            f"当前帧出镜角色：{characters}，只画这一帧真正入镜的人物；若有双人或多人出镜要求则必须全部画出，且全部按对应参考设定图还原，{character_lock}，"
-            f"保持场景连续性、稳定年龄感、稳定体型、稳定肩宽和稳定四肢比例，"
-            f"{self._scene_baseline_lock_context_from_context(scene_bible_context)}"
-            f"{scene_bible_context}"
-            f"{shot_state_context}"
-            f"{continuity_link_context}"
-            f"{self.SCENE_NO_TEXT_PROMPT}"
-            f"{sanitized_prompt}"
+        effective_involved_characters = list(involved_characters or frame_characters)
+        sanitized_prompt = self._sanitize_frame_prompt_text(
+            prompt,
+            frame_characters,
+            effective_involved_characters,
         )
+        scene_bible_context = self._frame_scene_bible_prompt_context(
+            scene_bible,
+            frame_characters,
+            effective_involved_characters,
+        )
+        shot_state_context = self._frame_shot_state_prompt_context(
+            shot_state,
+            frame_characters,
+            effective_involved_characters,
+            frame_type=frame_type,
+        )
+        continuity_link_context = self._frame_continuity_link_prompt_context(
+            continuity_link,
+            frame_characters,
+            effective_involved_characters,
+            frame_type=frame_type,
+        )
+        action_prompt = self._frame_action_prompt(
+            sanitized_prompt,
+            frame_characters,
+            frame_type=frame_type,
+        )
+        parts = [
+            f"{frame_type}。",
+            self._frame_reference_binding_prompt(frame_characters),
+            action_prompt,
+            scene_bible_context,
+            shot_state_context,
+            continuity_link_context,
+            self._frame_character_presence_prompt(frame_characters),
+            self.FRAME_PURE_IMAGE_PROMPT,
+        ]
+        return "".join(part for part in parts if part)
+
+    def _frame_reference_binding_prompt(self, frame_characters: list[str]) -> str:
+        unique_characters = self._merge_unique_character_names(frame_characters)
+        parts = ["图片1是场景参考"]
+        for index, name in enumerate(unique_characters[:2], start=2):
+            parts.append(f"图片{index}是{name}")
+        if len(unique_characters) > 2:
+            parts.append("其余当前帧角色也按对应参考图还原")
+        return "，".join(parts) + "。"
+
+    def _frame_action_prompt(
+        self,
+        prompt: str,
+        frame_characters: list[str],
+        *,
+        frame_type: str,
+    ) -> str:
+        unique_characters = self._merge_unique_character_names(frame_characters)
+        if not unique_characters:
+            return "只保留图片1里的空场景，不要出现人物。"
+        subject = self._frame_reference_subject_prompt(unique_characters)
+        normalized_action = self._trim_frame_action_subject_prefix(prompt, unique_characters)
+        if not normalized_action:
+            normalized_action = "只保留当前这一拍真正可见的动作停点和空间关系"
+        connector = "继续在图片1的场景里" if "首" not in frame_type else "出现在图片1的场景里"
+        return f"{subject}{connector}，{normalized_action}。"
+
+    def _frame_reference_subject_prompt(self, frame_characters: list[str]) -> str:
+        if len(frame_characters) == 1:
+            return f"让图片2中的{frame_characters[0]}"
+        if len(frame_characters) == 2:
+            return f"让图片2和图片3中的{frame_characters[0]}、{frame_characters[1]}"
+        return "让当前帧角色"
+
+    def _trim_frame_action_subject_prefix(
+        self,
+        prompt: str,
+        frame_characters: list[str],
+    ) -> str:
+        cleaned = str(prompt or "").strip(" ，。；;")
+        if not cleaned:
+            return ""
+        if len(frame_characters) == 1:
+            patterns = (
+                rf"^{re.escape(frame_characters[0])}(?:独自|一个人)?(?:正在|继续|仍然)?",
+            )
+        else:
+            joined_names = "、".join(frame_characters[:2])
+            patterns = (
+                rf"^{re.escape(joined_names)}(?:一起|并肩|相对)?",
+                rf"^{re.escape(frame_characters[0])}(?:和|与|、){re.escape(frame_characters[1])}(?:一起|并肩|相对)?",
+                rf"^{re.escape(frame_characters[1])}(?:和|与|、){re.escape(frame_characters[0])}(?:一起|并肩|相对)?",
+            )
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, count=1).strip(" ，。；;")
+        return cleaned
+
+    def _frame_character_presence_prompt(self, frame_characters: list[str]) -> str:
+        unique_characters = self._merge_unique_character_names(frame_characters)
+        if not unique_characters:
+            return "不要出现人物。"
+        return "只画当前帧真正出镜的角色，不要多画、少画或重复同一角色。"
 
     def _sanitize_image_prompt_text(self, prompt: str) -> str:
         sanitized = prompt.strip()
@@ -1186,20 +1464,271 @@ story memory JSON：
         sanitized = re.sub(r"\s+", " ", sanitized).strip(" ，。；;")
         return sanitized
 
-    def _scene_bible_prompt_context(self, scene_bible: object) -> str:
-        line = self._scene_bible_prompt_line(scene_bible)
-        if not line:
+    def _strip_character_style_overrides(self, text: str) -> str:
+        cleaned = str(text or "").strip()
+        if not cleaned:
             return ""
-        return f"场景圣经约束：{line}。"
+        for pattern in self.CHARACTER_STYLE_OVERRIDE_PATTERNS:
+            cleaned = pattern.sub("", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        cleaned = re.sub(r"\s*([，。；：,:;!?！？])\s*", r"\1", cleaned)
+        cleaned = re.sub(r"[，,]{2,}", "，", cleaned)
+        cleaned = re.sub(r"[；;]{2,}", "；", cleaned)
+        return cleaned.strip(" ，。；：,:;!?！？")
 
-    def _scene_baseline_lock_context(self, scene_bible: object) -> str:
-        line = self._scene_baseline_prompt_line(scene_bible)
-        if not line:
-            return ""
-        return (
-            "场景基线锁定："
-            f"{line}。后续关键帧与视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
+    def _contains_off_frame_character_name(
+        self,
+        text: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> bool:
+        frame_set = {
+            str(name).strip()
+            for name in frame_characters
+            if str(name).strip()
+        }
+        return any(
+            normalized_name in text
+            for name in involved_characters
+            if (normalized_name := str(name).strip()) and normalized_name not in frame_set
         )
+
+    def _split_prompt_clauses(self, text: str) -> list[str]:
+        return [
+            clause.strip(" ，。；;")
+            for clause in re.split(r"[，。；;]+", str(text or ""))
+            if clause.strip(" ，。；;")
+        ]
+
+    def _sanitize_frame_context_value(
+        self,
+        text: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> str:
+        cleaned = self._strip_character_style_overrides(text)
+        if not cleaned:
+            return ""
+        if self._contains_off_frame_character_name(
+            cleaned,
+            frame_characters,
+            involved_characters,
+        ):
+            return ""
+        if self._has_multi_character_single_subject_focus(cleaned, frame_characters):
+            return ""
+        return cleaned
+
+    def _sanitize_frame_context_list(
+        self,
+        values: list[str],
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> list[str]:
+        return [
+            cleaned
+            for item in values
+            if (cleaned := self._sanitize_frame_context_value(item, frame_characters, involved_characters))
+        ]
+
+    def _sanitize_frame_prompt_text(
+        self,
+        prompt: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> str:
+        sanitized = self._sanitize_image_prompt_text(prompt)
+        sanitized = self._strip_internal_segment_markers(sanitized)
+        sanitized = self._strip_character_style_overrides(sanitized)
+        if not sanitized:
+            return ""
+
+        filtered_clauses = [
+            clause
+            for clause in self._split_prompt_clauses(sanitized)
+            if not self._contains_off_frame_character_name(
+                clause,
+                frame_characters,
+                involved_characters,
+            )
+            and not self._has_multi_character_single_subject_focus(
+                clause,
+                frame_characters,
+            )
+            and not self._contains_single_character_frame_multi_subject_signal(
+                clause,
+                frame_characters,
+                involved_characters,
+            )
+        ]
+        if filtered_clauses:
+            return "，".join(filtered_clauses)
+        if self._contains_off_frame_character_name(
+            sanitized,
+            frame_characters,
+            involved_characters,
+        ):
+            return ""
+        if self._has_multi_character_single_subject_focus(
+            sanitized,
+            frame_characters,
+        ):
+            return ""
+        if self._contains_single_character_frame_multi_subject_signal(
+            sanitized,
+            frame_characters,
+            involved_characters,
+        ):
+            return ""
+        return sanitized
+
+    def _contains_single_character_frame_multi_subject_signal(
+        self,
+        text: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> bool:
+        unique_frame_characters = [
+            str(name).strip()
+            for name in frame_characters
+            if str(name).strip()
+        ]
+        if len(unique_frame_characters) != 1:
+            return False
+        involved_count = len(
+            [
+                str(name).strip()
+                for name in involved_characters
+                if str(name).strip()
+            ]
+        )
+        if involved_count < 2:
+            return False
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        multi_subject_tokens = (
+            "两人",
+            "双人",
+            "双方",
+            "二人",
+            "一起",
+            "并肩",
+            "相对",
+            "面对面",
+            "对视",
+            "对话",
+            "交谈",
+            "会面",
+            "站定",
+            "相遇",
+        )
+        return any(token in normalized for token in multi_subject_tokens)
+
+    def _has_multi_character_single_subject_focus(
+        self,
+        text: str,
+        frame_characters: list[str],
+    ) -> bool:
+        unique_frame_characters = [
+            str(name).strip()
+            for name in frame_characters
+            if str(name).strip()
+        ]
+        if len(unique_frame_characters) < 2:
+            return False
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        if any(
+            token in normalized
+            for token in (
+                "双人特写",
+                "两人特写",
+                "双人近景",
+                "两人近景",
+                "双人中近景",
+                "两人中近景",
+                "双人同框",
+                "两人同框",
+                "多人同框",
+            )
+        ):
+            return False
+        focus_tokens = (
+            "特写",
+            "大特写",
+            "近景",
+            "中近景",
+            "侧脸",
+            "脸部",
+            "面部",
+            "半脸",
+        )
+        if not any(token in normalized for token in focus_tokens):
+            return False
+        if any(name in normalized for name in unique_frame_characters):
+            return True
+        return any(
+            token in normalized
+            for token in (
+                "推向",
+                "推近",
+                "推进到",
+                "聚焦到",
+                "切到",
+                "拉到",
+                "摇到",
+            )
+        )
+
+    def _frame_scene_bible_prompt_context(
+        self,
+        scene_bible: object | None,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> str:
+        if scene_bible is None:
+            return ""
+        parts: list[str] = []
+        for value in (
+            self._scene_bible_value(scene_bible, "location"),
+            self._scene_bible_value(scene_bible, "lighting"),
+        ):
+            normalized = self._sanitize_frame_context_value(
+                value,
+                frame_characters,
+                involved_characters,
+            )
+            if normalized and normalized not in parts:
+                parts.append(normalized)
+        anchor_values = self._sanitize_frame_context_list(
+            self._scene_bible_list(scene_bible, "background_anchors"),
+            frame_characters,
+            involved_characters,
+        )
+        prop_values = self._sanitize_frame_context_list(
+            self._scene_bible_environment_fixed_props(scene_bible),
+            frame_characters,
+            involved_characters,
+        )
+        time_window = self._sanitize_frame_context_value(
+            self._scene_bible_value(scene_bible, "time_window"),
+            frame_characters,
+            involved_characters,
+        )
+        ordered_details = [
+            *anchor_values[:1],
+            *prop_values[:1],
+            *anchor_values[1:2],
+            time_window,
+        ]
+        for value in ordered_details:
+            if value and value not in parts:
+                parts.append(value)
+        if not parts:
+            return ""
+        return f"保持图片1里的{'、'.join(parts[:4])}。"
 
     def _scene_master_baseline_lock_context(
         self,
@@ -1214,11 +1743,6 @@ story memory JSON：
             f"{line}。后续关键帧与视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
         )
 
-    def _scene_baseline_lock_context_from_context(self, scene_bible_context: str) -> str:
-        if not scene_bible_context:
-            return ""
-        return "场景基线必须优先服从 scene master frame 与当前 scene 的环境基线，不要自行替换背景、光线或固定道具。"
-
     def _scene_master_frame_prompt_context(
         self,
         scene_bible: object,
@@ -1229,43 +1753,73 @@ story memory JSON：
             return ""
         return f"空场景环境约束：{line}。"
 
-    def _shot_state_prompt_context(self, shot_state: object) -> str:
-        line = self._shot_state_prompt_line(shot_state)
-        if not line:
+    def _frame_shot_state_prompt_context(
+        self,
+        shot_state: object | None,
+        frame_characters: list[str],
+        involved_characters: list[str],
+        *,
+        frame_type: str,
+    ) -> str:
+        if shot_state is None:
             return ""
-        return f"镜头状态约束：{line}。"
-
-    def _continuity_link_prompt_context(self, continuity_link: object) -> str:
-        line = self._continuity_link_prompt_line(continuity_link)
-        if not line:
-            return ""
-        return f"连续性承接约束：{line}。"
-
-    def _scene_bible_prompt_line(self, scene_bible: object) -> str:
-        parts: list[str] = []
-        for label, value in (
-            ("地点", self._scene_bible_value(scene_bible, "location")),
-            ("时间", self._scene_bible_value(scene_bible, "time_window")),
-            ("天气", self._scene_bible_value(scene_bible, "weather")),
-            ("光线", self._scene_bible_value(scene_bible, "lighting")),
-            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
-            ("角色调度", self._scene_bible_value(scene_bible, "character_blocking")),
-            ("连续性说明", self._scene_bible_value(scene_bible, "continuity_notes")),
-        ):
-            normalized = str(value or "").strip()
+        normalized_frame_type = "mid"
+        if "首" in frame_type:
+            normalized_frame_type = "start"
+        elif "尾" in frame_type:
+            normalized_frame_type = "end"
+        if normalized_frame_type == "end":
+            candidate_keys = ("end_state_lock", "blocking", "framing")
+            prefix = "尾帧收在"
+        elif normalized_frame_type == "mid":
+            candidate_keys = ("action_progression", "blocking", "framing")
+            prefix = "中段停在"
+        else:
+            candidate_keys = ("blocking", "framing")
+            prefix = "开场落在"
+        for key in candidate_keys:
+            normalized = self._sanitize_frame_context_value(
+                self._shot_state_value(shot_state, key),
+                frame_characters,
+                involved_characters,
+            )
+            if self._contains_single_character_frame_multi_subject_signal(
+                normalized,
+                frame_characters,
+                involved_characters,
+            ):
+                continue
             if normalized:
-                parts.append(f"{label}：{normalized}")
+                return f"{prefix}{normalized}。"
+        return ""
 
-        for label, values in (
-            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
-            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
-            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
-        ):
-            normalized_values = [str(item).strip() for item in values or [] if str(item).strip()]
-            if normalized_values:
-                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
-
-        return "；".join(parts)
+    def _frame_continuity_link_prompt_context(
+        self,
+        continuity_link: object | None,
+        frame_characters: list[str],
+        involved_characters: list[str],
+        *,
+        frame_type: str,
+    ) -> str:
+        if continuity_link is None:
+            return ""
+        if "首" in frame_type:
+            opening_match = self._sanitize_frame_context_value(
+                self._continuity_link_value(continuity_link, "opening_match"),
+                frame_characters,
+                involved_characters,
+            )
+            if opening_match:
+                return f"开场先承接{opening_match}。"
+            return ""
+        allowed_changes = self._sanitize_frame_context_value(
+            self._continuity_link_value(continuity_link, "allowed_changes"),
+            frame_characters,
+            involved_characters,
+        )
+        if allowed_changes:
+            return f"延续上一帧已经建立的机位和动作方向，本帧推进到{allowed_changes}。"
+        return "延续上一帧已经建立的机位、朝向和动作方向。"
 
     def _scene_master_frame_prompt_line(
         self,
@@ -1280,7 +1834,7 @@ story memory JSON：
             ("光线", self._scene_bible_value(scene_bible, "lighting")),
             ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
         ):
-            normalized = str(value or "").strip()
+            normalized = self._strip_character_style_overrides(str(value or "").strip())
             if normalized and not self._contains_scene_master_human_signal(
                 normalized,
                 involved_characters,
@@ -1290,38 +1844,15 @@ story memory JSON：
         for label, values in (
             ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
             ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
-            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+            ("固定道具", self._scene_bible_environment_fixed_props(scene_bible)),
         ):
             filtered_values = [
-                item
+                cleaned
                 for item in values
-                if not self._contains_scene_master_human_signal(item, involved_characters)
+                if (cleaned := self._strip_character_style_overrides(str(item).strip()))
+                and not self._contains_scene_master_human_signal(cleaned, involved_characters)
             ]
             normalized_values = [str(item).strip() for item in filtered_values if str(item).strip()]
-            if normalized_values:
-                parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
-
-        return "；".join(parts)
-
-    def _scene_baseline_prompt_line(self, scene_bible: object) -> str:
-        parts: list[str] = []
-        for label, value in (
-            ("地点", self._scene_bible_value(scene_bible, "location")),
-            ("时间", self._scene_bible_value(scene_bible, "time_window")),
-            ("天气", self._scene_bible_value(scene_bible, "weather")),
-            ("光线", self._scene_bible_value(scene_bible, "lighting")),
-            ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
-        ):
-            normalized = str(value or "").strip()
-            if normalized:
-                parts.append(f"{label}：{normalized}")
-
-        for label, values in (
-            ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
-            ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
-            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
-        ):
-            normalized_values = [str(item).strip() for item in values or [] if str(item).strip()]
             if normalized_values:
                 parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
 
@@ -1340,7 +1871,7 @@ story memory JSON：
             ("光线", self._scene_bible_value(scene_bible, "lighting")),
             ("空间布局", self._scene_bible_value(scene_bible, "spatial_layout")),
         ):
-            normalized = str(value or "").strip()
+            normalized = self._strip_character_style_overrides(str(value or "").strip())
             if normalized and not self._contains_scene_master_human_signal(
                 normalized,
                 involved_characters,
@@ -1350,51 +1881,18 @@ story memory JSON：
         for label, values in (
             ("主色调", self._scene_bible_list(scene_bible, "dominant_palette")),
             ("背景锚点", self._scene_bible_list(scene_bible, "background_anchors")),
-            ("固定道具", self._scene_bible_list(scene_bible, "fixed_props")),
+            ("固定道具", self._scene_bible_environment_fixed_props(scene_bible)),
         ):
             filtered_values = [
-                item
+                cleaned
                 for item in values
-                if not self._contains_scene_master_human_signal(item, involved_characters)
+                if (cleaned := self._strip_character_style_overrides(str(item).strip()))
+                and not self._contains_scene_master_human_signal(cleaned, involved_characters)
             ]
             normalized_values = [str(item).strip() for item in filtered_values if str(item).strip()]
             if normalized_values:
                 parts.append(f"{label}：{'、'.join(normalized_values[:4])}")
 
-        return "；".join(parts)
-
-    def _shot_state_prompt_line(self, shot_state: object) -> str:
-        parts: list[str] = []
-        for label, value in (
-            ("景别", self._shot_state_value(shot_state, "framing")),
-            ("镜头运动", self._shot_state_value(shot_state, "camera_motion")),
-            ("调度", self._shot_state_value(shot_state, "blocking")),
-            ("动作推进", self._shot_state_value(shot_state, "action_progression")),
-            ("情绪推进", self._shot_state_value(shot_state, "emotion_progression")),
-            ("道具连续性", self._shot_state_value(shot_state, "prop_continuity")),
-            ("方向", self._shot_state_value(shot_state, "screen_direction")),
-            ("尾部承接", self._shot_state_value(shot_state, "end_state_lock")),
-        ):
-            normalized = str(value or "").strip()
-            if normalized:
-                parts.append(f"{label}：{normalized}")
-        return "；".join(parts)
-
-    def _continuity_link_prompt_line(self, continuity_link: object) -> str:
-        parts: list[str] = []
-        for label, value in (
-            ("上一段", self._continuity_link_value(continuity_link, "previous_segment_id")),
-            ("模式", self._continuity_link_value(continuity_link, "transition_mode")),
-            ("开场匹配", self._continuity_link_value(continuity_link, "opening_match")),
-            ("允许变化", self._continuity_link_value(continuity_link, "allowed_changes")),
-            ("原因", self._continuity_link_value(continuity_link, "transition_reason")),
-        ):
-            normalized = str(value or "").strip()
-            if normalized:
-                parts.append(f"{label}：{normalized}")
-        carry_over_elements = self._continuity_link_list(continuity_link, "carry_over_elements")
-        if carry_over_elements:
-            parts.append(f"延续元素：{'、'.join(carry_over_elements[:4])}")
         return "；".join(parts)
 
     def _scene_bible_value(self, scene_bible: object, key: str) -> str:
@@ -1408,6 +1906,58 @@ story memory JSON：
         else:
             raw = getattr(scene_bible, key, [])
         return [str(item).strip() for item in raw or [] if str(item).strip()]
+
+    def _scene_bible_environment_fixed_props(self, scene_bible: object) -> list[str]:
+        return self._filter_environment_fixed_props(
+            self._scene_bible_list(scene_bible, "fixed_props")
+        )
+
+    def _filter_environment_fixed_props(self, values: list[str]) -> list[str]:
+        filtered: list[str] = []
+        for item in values or []:
+            cleaned = self._strip_character_style_overrides(str(item).strip())
+            if not cleaned or self._is_transient_carried_prop(cleaned):
+                continue
+            filtered.append(cleaned)
+        return filtered
+
+    def _is_transient_carried_prop(self, value: str) -> bool:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return False
+        if any(token in normalized for token in self.ENVIRONMENT_PROP_ANCHOR_TOKENS):
+            return False
+        return any(pattern.search(normalized) for pattern in self.TRANSIENT_FIXED_PROP_PATTERNS)
+
+    def _sanitize_segment_sound_effects(
+        self,
+        sound_effects: list[str],
+        *,
+        scene_bible: object | None = None,
+        prop_continuity: str = "",
+    ) -> list[str]:
+        environment_props = {
+            item
+            for item in self._scene_bible_environment_fixed_props(scene_bible)
+            if str(item).strip()
+        } if scene_bible is not None else set()
+        continuity_text = self._strip_character_style_overrides(str(prop_continuity or "").strip())
+        sanitized: list[str] = []
+        for item in sound_effects or []:
+            cleaned = self._strip_character_style_overrides(str(item).strip())
+            if not cleaned:
+                continue
+            prop_match = self.PROP_SOUND_EFFECT_PATTERN.search(cleaned)
+            if prop_match is not None:
+                prop_name = prop_match.group("prop").strip()
+                if prop_name and self._is_transient_carried_prop(prop_name):
+                    if prop_name not in continuity_text:
+                        continue
+                if environment_props and prop_name and prop_name not in environment_props and prop_name not in continuity_text:
+                    continue
+            if cleaned not in sanitized:
+                sanitized.append(cleaned)
+        return sanitized
 
     def _contains_involved_character_name(
         self,
@@ -1432,6 +1982,15 @@ story memory JSON：
         return any(
             token in normalized
             for token in (
+                "一人",
+                "单人",
+                "两人",
+                "双人",
+                "三人",
+                "多人",
+                "一男一女",
+                "男女",
+                "情侣",
                 "人物",
                 "角色",
                 "学生",
@@ -1449,20 +2008,30 @@ story memory JSON：
                 "主角",
                 "配角",
                 "人影",
+                "剪影",
                 "背影",
                 "站位",
                 "走位",
                 "站在",
+                "站立",
                 "坐在",
                 "走近",
                 "走向",
                 "走进",
+                "并肩",
+                "相对",
+                "面对面",
+                "牵手",
+                "拉手",
                 "对视",
                 "靠近",
                 "等待",
                 "追逐",
                 "奔跑",
                 "拥抱",
+                "亲吻",
+                "接吻",
+                "拥吻",
                 "回头",
                 "低头",
                 "抬眼",
@@ -1490,63 +2059,205 @@ story memory JSON：
             raw = getattr(continuity_link, key, [])
         return [str(item).strip() for item in raw or [] if str(item).strip()]
 
+    def _seedance_frame_prompt_text(
+        self,
+        prompt: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> str:
+        effective_frame_characters = (
+            frame_characters
+            if any(str(name).strip() for name in frame_characters)
+            else involved_characters
+        )
+        sanitized = self._sanitize_frame_prompt_text(
+            prompt,
+            effective_frame_characters,
+            involved_characters,
+        )
+        if not sanitized:
+            return ""
+        return sanitized
+
+    def _character_set_label(self, characters: list[str]) -> str:
+        normalized = [str(name).strip() for name in characters if str(name).strip()]
+        return "、".join(normalized) if normalized else "环境镜头"
+
+    def _same_character_set(self, left: list[str], right: list[str]) -> bool:
+        left_names = {str(name).strip() for name in left if str(name).strip()}
+        right_names = {str(name).strip() for name in right if str(name).strip()}
+        return left_names == right_names
+
+    def _normalized_mid_frame_mode(self, value: object) -> str:
+        return "insert_cut" if str(value or "").strip().lower() == "insert_cut" else "continuous"
+
+    def _segment_uses_mid_insert_cut(self, segment: VideoSegment) -> bool:
+        return (
+            segment.requires_mid_frame
+            and self._normalized_mid_frame_mode(getattr(segment, "mid_frame_mode", "continuous")) == "insert_cut"
+        )
+
+    def _segment_visible_characters(self, segment: VideoSegment) -> list[str]:
+        ordered: list[str] = []
+        frame_groups = [segment.start_frame_characters, segment.end_frame_characters]
+        if segment.requires_mid_frame:
+            frame_groups.insert(1, segment.mid_frame_characters)
+        for group in frame_groups:
+            for name in group or []:
+                normalized = str(name).strip()
+                if normalized and normalized not in ordered:
+                    ordered.append(normalized)
+        if ordered:
+            return ordered
+        return [str(name).strip() for name in segment.involved_characters if str(name).strip()]
+
+    def _seedance_transition_guard_lines(self, segment: VideoSegment) -> list[str]:
+        lines: list[str] = []
+        if segment.requires_mid_frame and segment.mid_frame_prompt.strip():
+            lines.append(
+                "运动约束：画面必须按 图片1 -> 图片2 -> 图片3 的顺序自然推进，不要长时间停在某一张图后突然跳到下一张图。"
+            )
+        else:
+            lines.append(
+                "运动约束：画面必须按 图片1 -> 图片2 的顺序连续推进，不要前面几秒几乎静止，最后一瞬间才跳到收束状态。"
+            )
+
+        start_chars = segment.start_frame_characters
+        mid_chars = segment.mid_frame_characters
+        end_chars = segment.end_frame_characters
+        if (
+            self._segment_uses_mid_insert_cut(segment)
+            and self._same_character_set(start_chars, end_chars)
+            and not self._same_character_set(start_chars, mid_chars)
+        ):
+            lines.append(
+                f"插入镜头约束：图片2 只短促切入 {self._character_set_label(mid_chars)} 的反应或局部动作，不是少人版主镜头；切入后必须明确回到图片3 收束。"
+            )
+        if segment.requires_mid_frame and not self._same_character_set(start_chars, mid_chars):
+            lines.append(
+                "角色变化要求：图片1 出镜角色为 "
+                f"{self._character_set_label(start_chars)}，图片2 出镜角色为 {self._character_set_label(mid_chars)}。"
+                "如果人数或角色集合发生变化，必须拍出真实入画、靠近、切入或让位过程，不能瞬间替换。"
+            )
+        if segment.requires_mid_frame and not self._same_character_set(mid_chars, end_chars):
+            lines.append(
+                "角色变化要求：图片2 出镜角色为 "
+                f"{self._character_set_label(mid_chars)}，图片3 出镜角色为 {self._character_set_label(end_chars)}。"
+                "尾部收束前必须先完成站位和构图变化，再稳定落到图片3。"
+            )
+        if not segment.requires_mid_frame and not self._same_character_set(start_chars, end_chars):
+            lines.append(
+                "角色变化要求：图片1 出镜角色为 "
+                f"{self._character_set_label(start_chars)}，图片2 出镜角色为 {self._character_set_label(end_chars)}。"
+                "必须把角色增减、站位变化和景别变化拍成连续过程，禁止瞬间换人或瞬间换构图。"
+            )
+        return lines
+
     def _build_seedance_clip_prompt(self, segment: VideoSegment) -> str:
         speech_budget = segment.duration_seconds * self.SPEECH_CHARS_PER_SECOND
+        narration = str(segment.narration or "").strip()
+        dialogue_lines = [
+            str(line).strip()
+            for line in segment.dialogue_lines
+            if str(line).strip()
+        ]
+        subtitle_lines = [
+            str(line).strip()
+            for line in (
+                segment.subtitle_lines
+                or self._build_subtitle_lines(
+                    narration=narration,
+                    dialogue_lines=dialogue_lines,
+                    timed_beats=segment.timed_beats,
+                )
+            )
+            if str(line).strip()
+        ]
+        sound_effects = self._sanitize_segment_sound_effects(
+            segment.sound_effects,
+            scene_bible=segment.scene_bible,
+            prop_continuity=self._shot_state_value(segment.shot_state, "prop_continuity"),
+        )
+        has_spoken_content = bool(narration or dialogue_lines or subtitle_lines)
         lines = [
             "请生成带原生音频的中文剧情短视频片段。",
             f"片段标题：{segment.title}",
             f"时长：{segment.duration_seconds} 秒。",
-            f"语速预算：中文口播总量控制在约 {speech_budget} 字以内，所有对白和旁白必须在片尾前自然说完。",
-            f"角色：{'、'.join(segment.involved_characters) or '环境为主'}。",
-            f"场景圣经：{self._scene_bible_prompt_line(segment.scene_bible)}",
-            f"镜头状态：{self._shot_state_prompt_line(segment.shot_state)}",
-            f"连续性承接：{self._continuity_link_prompt_line(segment.continuity_link)}",
-            f"画面主提示：{segment.scene_prompt}",
-            f"旁白：{segment.narration}",
         ]
-        if segment.requires_mid_frame and segment.mid_frame_prompt.strip():
-            lines.append(f"中段锚点：{segment.mid_frame_prompt}")
-            lines.append("镜头推进必须从首帧自然过渡到中段锚点，再收束到尾帧。")
-        if len(segment.involved_characters) >= 2:
+        if has_spoken_content:
             lines.append(
-                "多人同框要求：所有 involved_characters 在关键镜头中都必须保持身份清晰、体型稳定和关系正确，不要少人、换人或把其中一人弱化成背景路人。"
+                f"口播预算：若有对白或旁白，总量控制在约 {speech_budget} 字以内，所有口播必须在片尾前自然说完。"
             )
-        if segment.dialogue_lines:
-            lines.append("角色对白：")
-            lines.extend(f"- {line}" for line in segment.dialogue_lines)
         else:
+            lines.append("本段无对白、无旁白、无字幕，只保留环境音、拟音和音乐。")
+
+        lines.append("参考图片时间轴：")
+        start_anchor_line = self._seedance_frame_prompt_text(
+            segment.start_frame_prompt,
+            segment.start_frame_characters,
+            segment.involved_characters,
+        )
+        if start_anchor_line:
+            lines.append(f"- 图片1：{start_anchor_line}")
+        if segment.requires_mid_frame and segment.mid_frame_prompt.strip():
+            lines.append(
+                "- 图片2："
+                + self._seedance_frame_prompt_text(
+                    segment.mid_frame_prompt,
+                    segment.mid_frame_characters,
+                    segment.involved_characters,
+                )
+            )
+            if self._segment_uses_mid_insert_cut(segment):
+                lines.append(
+                    "- 图片2 是插入镜头，不是主镜头少人版本；必须先从图片1 建立主镜头，再切入图片2，最后切回图片3 收束。"
+                )
+        end_anchor_line = self._seedance_frame_prompt_text(
+            segment.end_frame_prompt,
+            segment.end_frame_characters,
+            segment.involved_characters,
+        )
+        if end_anchor_line:
+            end_image_label = "图片3" if segment.requires_mid_frame and segment.mid_frame_prompt.strip() else "图片2"
+            lines.append(f"- {end_image_label}：{end_anchor_line}")
+        lines.extend(self._seedance_transition_guard_lines(segment))
+        if narration:
+            lines.append(f"旁白：{narration}")
+        if dialogue_lines:
             lines.append("角色对白：")
-            lines.append("- 本段无角色对白，只保留旁白、环境音和镜头动作。")
-        if segment.character_voice_notes:
+            lines.extend(f"- {line}" for line in dialogue_lines)
+        if has_spoken_content and segment.character_voice_notes:
             lines.append("角色音色锁定：")
             lines.extend(f"- {item}" for item in segment.character_voice_notes)
-        if segment.sound_effects:
+        if sound_effects:
             lines.append("环境音/拟音：")
-            lines.extend(f"- {item}" for item in segment.sound_effects)
+            lines.extend(f"- {item}" for item in sound_effects)
         if segment.music_direction:
             lines.append(f"音乐方向：{segment.music_direction}")
         if segment.timed_beats:
             lines.append("时间节拍：")
             lines.extend(f"- {item}" for item in segment.timed_beats)
         if self.seedance_config.subtitle_mode == "burned_in":
-            lines.append(f"硬字幕样式：{self.seedance_config.subtitle_style}")
-            subtitle_lines = segment.subtitle_lines or self._build_subtitle_lines(
-                narration=segment.narration,
-                dialogue_lines=segment.dialogue_lines,
-                timed_beats=segment.timed_beats,
-            )
             if subtitle_lines:
+                lines.append(f"硬字幕样式：{self.seedance_config.subtitle_style}")
                 lines.append("硬字幕文案：")
                 lines.extend(f"- {item}" for item in subtitle_lines)
-            lines.append("请把上述字幕直接烧录到画面底部，不要输出外挂字幕文件。")
-            lines.append("硬字幕必须与实际口播同步出现，不要提前打印尚未说出口的文字。")
-            lines.append("如果时长不足，优先压缩停顿和删减非字幕口播，不要截断对白或字幕。")
-            lines.append("要求口播、对白、环境音与镜头动作自然同步。")
+                lines.append("请把上述字幕直接烧录到画面底部，不要输出外挂字幕文件；字幕必须和实际口播同步，不要提前出字。")
+            else:
+                lines.append("字幕约束：本段没有可烧录字幕，不要生成硬字幕、外挂字幕或画面内文字。")
         else:
-            lines.append("要求口播、对白、环境音与镜头动作自然同步，不要额外添加字幕。")
-        lines.append(
-            "同一角色跨镜头保持稳定音色、说话节奏、年龄感、体型、肩宽和四肢比例，不要忽老忽胖、忽瘦忽壮或突然变声。"
-        )
+            if has_spoken_content:
+                lines.append("要求口播、对白、环境音与镜头动作自然同步，不要额外添加字幕。")
+            else:
+                lines.append("本段不要生成任何字幕或人声。")
+        if has_spoken_content:
+            lines.append(
+                "一致性要求：同一角色跨镜头保持稳定音色、说话节奏、年龄感、体型和脸部身份，不要忽老忽胖、忽瘦忽壮或突然变声。"
+            )
+        else:
+            lines.append(
+                "一致性要求：同一角色跨镜头保持稳定年龄感、体型和脸部身份，不要忽老忽胖、忽瘦忽壮，也不要突然换脸。"
+            )
         return "\n".join(lines)
 
     def _build_segment_voice_notes(

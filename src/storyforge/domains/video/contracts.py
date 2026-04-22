@@ -172,12 +172,12 @@ class VideoSegment:
     sound_effects: list[str]
     music_direction: str
     timed_beats: list[str]
-    scene_prompt: str
     start_frame_prompt: str
     end_frame_prompt: str
     duration_seconds: int
     start_frame_characters: list[str] = field(default_factory=list)
     mid_frame_characters: list[str] = field(default_factory=list)
+    mid_frame_mode: str = "continuous"
     end_frame_characters: list[str] = field(default_factory=list)
     character_voice_notes: list[str] = field(default_factory=list)
     mid_frame_prompt: str = ""
@@ -205,6 +205,11 @@ class VideoSegment:
             involved_characters=list(raw.get("involved_characters", [])),
             start_frame_characters=list(raw.get("start_frame_characters", [])),
             mid_frame_characters=list(raw.get("mid_frame_characters", [])),
+            mid_frame_mode=(
+                "insert_cut"
+                if str(raw.get("mid_frame_mode", "") or "").strip().lower() == "insert_cut"
+                else "continuous"
+            ),
             end_frame_characters=list(raw.get("end_frame_characters", [])),
             narration=raw["narration"],
             dialogue_lines=list(raw.get("dialogue_lines", [])),
@@ -213,7 +218,6 @@ class VideoSegment:
             sound_effects=list(raw.get("sound_effects", [])),
             music_direction=raw.get("music_direction", ""),
             timed_beats=list(raw.get("timed_beats", [])),
-            scene_prompt=raw["scene_prompt"],
             start_frame_prompt=raw["start_frame_prompt"],
             mid_frame_prompt=raw.get("mid_frame_prompt", ""),
             end_frame_prompt=raw["end_frame_prompt"],
@@ -238,13 +242,15 @@ class VideoScene:
     summary: str
     scene_anchor: str
     involved_characters: list[str]
-    segments: list[VideoSegment]
+    covered_event_ids: list[str] = field(default_factory=list)
+    segments: list[VideoSegment] = field(default_factory=list)
     scene_bible: SceneBible = field(default_factory=SceneBible)
     scene_master_frame_prompt: str = ""
     scene_master_frame_path: str = ""
     scene_master_frame_url: str = ""
     scene_master_frame_status: str = "planned"
     scene_master_frame_error: str = ""
+    scene_master_request_info: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "VideoScene":
@@ -278,6 +284,11 @@ class VideoScene:
                 for name in segment.involved_characters:
                     if name not in involved_characters:
                         involved_characters.append(name)
+        covered_event_ids = [
+            str(item).strip()
+            for item in raw.get("covered_event_ids", [])
+            if str(item).strip()
+        ]
 
         return cls(
             scene_id=scene_id,
@@ -286,6 +297,7 @@ class VideoScene:
             summary=summary,
             scene_anchor=scene_anchor,
             involved_characters=involved_characters,
+            covered_event_ids=covered_event_ids,
             segments=segments,
             scene_bible=scene_bible,
             scene_master_frame_prompt=str(raw.get("scene_master_frame_prompt", "") or ""),
@@ -293,6 +305,7 @@ class VideoScene:
             scene_master_frame_url=str(raw.get("scene_master_frame_url", "") or ""),
             scene_master_frame_status=str(raw.get("scene_master_frame_status", "planned") or "planned"),
             scene_master_frame_error=str(raw.get("scene_master_frame_error", "") or ""),
+            scene_master_request_info=dict(raw.get("scene_master_request_info", {}) or {}),
         )
 
 
@@ -301,7 +314,6 @@ class SceneImageTask:
     segment_id: str
     scene_id: str
     scene_title: str
-    scene_prompt: str
     scene_master_frame_prompt: str
     scene_master_frame_path: str
     start_frame_prompt: str
@@ -327,6 +339,9 @@ class SceneImageTask:
     end_frame_url: str = ""
     scene_master_frame_error: str = ""
     error: str = ""
+    start_frame_request_info: dict[str, Any] = field(default_factory=dict)
+    mid_frame_request_info: dict[str, Any] = field(default_factory=dict)
+    end_frame_request_info: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SceneImageTask":
@@ -334,7 +349,6 @@ class SceneImageTask:
             segment_id=raw["segment_id"],
             scene_id=raw.get("scene_id", ""),
             scene_title=raw.get("scene_title", ""),
-            scene_prompt=raw["scene_prompt"],
             scene_master_frame_prompt=raw.get("scene_master_frame_prompt", ""),
             scene_master_frame_path=raw.get("scene_master_frame_path", ""),
             start_frame_prompt=raw["start_frame_prompt"],
@@ -360,6 +374,9 @@ class SceneImageTask:
             end_frame_url=raw.get("end_frame_url", ""),
             scene_master_frame_error=raw.get("scene_master_frame_error", ""),
             error=raw.get("error", ""),
+            start_frame_request_info=dict(raw.get("start_frame_request_info", {}) or {}),
+            mid_frame_request_info=dict(raw.get("mid_frame_request_info", {}) or {}),
+            end_frame_request_info=dict(raw.get("end_frame_request_info", {}) or {}),
         )
 
 
@@ -384,8 +401,10 @@ class SeedanceClipTask:
     start_frame_url: str = ""
     mid_frame_url: str = ""
     end_frame_url: str = ""
-    reference_image_paths: list[str] = field(default_factory=list)
-    reference_image_urls: list[str] = field(default_factory=list)
+    submitted_prompt: str = ""
+    submit_variant: str = ""
+    submitted_reference_bindings: list[dict[str, str]] = field(default_factory=list)
+    submitted_request_info: dict[str, Any] = field(default_factory=dict)
     remote_task_id: str = ""
     submit_status: str = "planned"
     remote_status: str = "planned"
@@ -412,8 +431,10 @@ class SeedanceClipTask:
             start_frame_url=raw.get("start_frame_url", ""),
             mid_frame_url=raw.get("mid_frame_url", ""),
             end_frame_url=raw.get("end_frame_url", ""),
-            reference_image_paths=list(raw.get("reference_image_paths", [])),
-            reference_image_urls=list(raw.get("reference_image_urls", [])),
+            submitted_prompt=raw.get("submitted_prompt", ""),
+            submit_variant=raw.get("submit_variant", ""),
+            submitted_reference_bindings=list(raw.get("submitted_reference_bindings", [])),
+            submitted_request_info=dict(raw.get("submitted_request_info", {}) or {}),
             duration_seconds=raw["duration_seconds"],
             aspect_ratio=raw["aspect_ratio"],
             with_audio=raw.get("with_audio", True),

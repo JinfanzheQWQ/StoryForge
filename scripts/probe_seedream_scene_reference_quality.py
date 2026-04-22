@@ -122,12 +122,9 @@ def probe_scene_frame_reference_quality(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if not scene_master_url:
-        surrogate_scene_prompt = str(
-            item.get("scene_master_frame_prompt", "")
-            or item.get("scene_prompt", "")
-        ).strip()
+        surrogate_scene_prompt = str(item.get("scene_master_frame_prompt", "")).strip()
         if not surrogate_scene_prompt:
-            raise RuntimeError("scene_master_frame_url is missing and no scene prompt is available.")
+            raise RuntimeError("scene_master_frame_url is missing and no scene_master_frame_prompt is available.")
         with httpx.Client(timeout=180) as http_client:
             scene_master_url = client._create_image(
                 http_client,

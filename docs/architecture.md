@@ -147,21 +147,32 @@ chapter -> scene -> chunk -> segment
 
 当前视频规划链路：
 
-1. `Chapter Scene Planner`
-   只生成当前章节的 `scene skeleton`
-2. `Scene Chunk Planner`
+1. `Chapter Event Planner`
+   先从当前章节正文抽取 must-cover 关键事件
+2. `Chapter Scene Planner`
+   再生成当前章节的 `scene skeleton`，并为每个 scene 回填 `covered_event_ids`
+3. `Scene Chunk Planner`
    只生成当前 `scene` 的连续 chunks
-3. `Scene Segment Planner`
+4. `Scene Segment Planner`
    只生成当前 chunk 的 `segment contracts`
-4. `Segment Prompt Enricher`
+5. `本地 Prompt 组装`
    本地补齐图片 / 视频阶段需要的 prompt 字段
 
 这样拆分的目的：
 
+- 先把“这章必须发生的事”固定下来，避免 scene 规划在章节中途提前收束
 - 把长篇正文压缩成章节批次视图
 - 让 LLM 单次只处理当前 scene 或当前 chunk
 - 用本地富化降低重复字段输出
 - 为失败恢复保留更细粒度 checkpoint
+
+scene skeleton 的额外硬约束：
+
+- 每个 scene 必须输出 `covered_event_ids`
+- 所有 scene 的 `covered_event_ids` 拼接后，必须与章节关键事件顺序完全一致
+- 单个 scene 只能覆盖连续事件块
+- 最后一个 scene 必须覆盖章节最后一个关键事件
+- 如果 scene 漏掉章节后半段事件，结构化阶段会直接失败重试
 
 ## 场景一致性与连续性合同
 
@@ -199,6 +210,10 @@ scene_master_frame
 - `involved_characters` 表示该段剧情相关角色
 - `start_frame_characters / mid_frame_characters / end_frame_characters` 表示对应关键帧实际出镜角色
 - 生图阶段按帧选择参考图，不同帧只带当前出镜角色
+- `mid_frame_mode=continuous` 表示中段仍是主镜头连续推进
+- `mid_frame_mode=insert_cut` 表示中段是从主镜头短促切入的单人 / 局部插入镜头
+- 如果首帧和尾帧是同一组双人 / 多人角色，而中段只保留其中一人，现在允许这种 `双人 -> 单人 -> 双人` 结构，但必须显式写 `mid_frame_mode=insert_cut`，并在节拍和运镜中写清“从主镜头切入，再切回主镜头”
+- `shot_state.screen_direction` 必须与尾部 `end_state_lock / end_frame_prompt / 最后一条 timed_beats` 保持同一运动轴线；如果合同一边写“靠近镜头”，一边又写“背影远去 / 走向深处”，结构化阶段会直接判定为无效合同
 
 ## 连续性审校与修复
 
@@ -242,6 +257,14 @@ scene_master_frame
 3. segment 首帧 / 中段锚点帧 / 尾帧
 4. Seedance 视频片段
 5. 手动合并 `full_story.mp4`
+
+Seedance 当前默认使用多模态参考图提交：
+
+- 首帧 / 中段 / 尾帧会作为有顺序的 `reference_image`
+- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定时间顺序
+- 如果完整多图组合被接口拒绝，才会逐步降级到更少参考图的合法组合
+- 如果某段没有对白、旁白和字幕，Seedance prompt 会显式声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，避免把静音动作段误提交成有字幕或有说话声的片段
+- 本地自动生成的 `sound_effects` 只允许来自环境基线；手机、书包、花束等瞬时随身道具不会再因为 `scene_bible.fixed_props` 被误写成环境拟音
 
 执行作用域：
 

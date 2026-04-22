@@ -73,11 +73,13 @@ max_tokens = 8192
 enabled = true
 model = "doubao-seedream-4-5-251128"
 auto_submit = false
+watermark = false
 
 [seedance]
 enabled = true
 model = "doubao-seedance-2-0-260128"
 auto_submit = false
+watermark = false
 with_audio = true
 subtitle_mode = "burned_in"
 
@@ -98,6 +100,7 @@ database = "storyforge"
 - 页面默认走 `DeepSeek`；如果要换成 `ChatGPT 5.4`，需要先配置 `OPENAI_API_KEY`
 - 页面里的 `模型 ID` 是只读默认值，会随 provider 自动切换
 - 创建页默认会把 `V2 连续性软审校` 设为 `auto`
+- 创建页可以分别决定 `Seedream` 和 `Seedance` 是否保留水印；勾选关闭时，接口会提交 `watermark=false`
 - 在看懂 manifest 和图片产物之前，不要一开始就跑真实视频生成
 
 ## Web 控制台
@@ -117,7 +120,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 推荐使用方式：
 
-1. 创建项目并生成小说；在创建页可选 `DeepSeek` 或 `ChatGPT 5.4`，也可以预先设置 `V2 连续性软审校 = off / auto / on`
+1. 创建项目并生成小说；在创建页可选 `DeepSeek` 或 `ChatGPT 5.4`，也可以预先设置 `V2 连续性软审校 = off / auto / on`，以及本次 run 的 `Seedream / Seedance` 水印开关
 2. 在项目详情页的“小说”标签页检查并按需修改正文
 3. 先生成场景结构；如需切换当前 run 的 `V2` 审校策略，可在项目详情页先改模式，再继续下一步
 4. 检查 `chapter -> scene` 拆分后，再生成分段合同
@@ -125,6 +128,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 5. 生成角色图
 6. 在项目详情页时间线里按 segment 逐段生成场景图
 7. 在同一条时间线里按 segment 逐段生成视频
+   - 每个 scene 和 segment 卡片都可以展开查看当前图片 / 视频 prompt
+   - 场景母图、首帧、中段帧、尾帧、视频片段现在都会额外展示真实送往 Seedream / Seedance 的请求参数 JSON，以及本次实际使用图片顺序
+   - 旧 run 如果还没有把真实请求参数落到 manifest，页面也会根据当前 manifest 和产物文件回推出一份请求视图，方便直接核对用了哪些图
 8. 如果某个 scene 被连续性审校标成高风险，可先点 scene 头部的“智能修复场景”，系统会回写该 scene 的场景基线合同并刷新连续性报告，再提示你后续手动决定是否重生成场景母图、场景图和视频
 9. 如果某个 segment 被连续性审校标成高风险，可再点“智能修复该段”，系统会只更新这一段的修复合同；如果该段当前没有需要修的风险，会直接返回已完成的 `noop`
 
@@ -135,6 +141,12 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 角色视觉是否稳定
 - 场景关键帧是否合理，尤其是双人 / 多人片段的中段站位是否稳定
 - 视频时长和字幕是否可接受
+
+说明：
+
+- 媒体水印当前按 run 级别管理
+- 你在创建页为 `Seedream` / `Seedance` 选择的水印设置，会默认继承到后续角色图、场景图、视频与批量修复相关阶段
+- 如果需要换一套水印策略，建议从创建页重新发起一条新 run，或通过 API 在单个阶段请求里显式覆盖
 
 删除项目：
 
@@ -184,6 +196,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 - 这一步会生成 `novel_package.json`、`novel_audit.json`、`story_memory.json`、`character_visual_bible.json` 与第一版 `scene_plan.json`
 - 这一版 `scene_plan.json` 只保存 `chapter -> scene` 结构、`scene_bible` 和 scene 母图相关字段，还不包含正式 `segment contracts`
+- `project.scene_structure` 现在会先从当前章节正文抽取 must-cover 关键事件，再生成 scene skeleton；第一版 `scene_plan.json` 里的每个 scene 都会带 `covered_event_ids`
 - 同一份 `story_source` 已经有 queued / running / completed 的 `project.scene_structure` 任务时，后端会直接复用已有任务
 - `Cast Analyzer` 要求每个角色槽位都带可在正文中定位的 `source_evidence`
 - `source_evidence` 仍然必须来自正文，但对带修饰语的人名或稳定称呼会做容错匹配
@@ -192,9 +205,10 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果模型返回 `finish_reason='length'`，系统会自动保留更高的 completion token 预算、缩短章节摘录，并优先把规划收缩到更小的 `scene structure / segment contracts` 粒度，再在后续 retry 里强制要求更紧凑的 JSON 输出
 - 小说结构化主链路采用 fail-fast：如果 `Story Architect`、`Story Drafter`、`Chapter Planner` 或 `Editorial Reviewer` 返回空标题、缺章、空正文或空 beats，这一步会直接重试 / 失败
 - `scene_plan.json` 是当前场景级主规划文件；在这一步里它主要保存 `chapter -> scene` skeleton、`scene_bible` 与 `scene_master_frame` 相关字段
+- `covered_event_ids` 会把每个 scene 显式绑定到章节关键事件；如果 scene 没覆盖到章节后半段事件，或覆盖顺序与正文不一致，这一步会直接失败重试
 - `scene_bible` 用来锁定地点、时间、天气、光线、背景锚点、固定道具、空间布局和角色调度，后续场景图与视频都会直接消费它
 - 每个 scene 还会带 `scene_master_frame_prompt / path / status / url`，用于同场景母图生成与复用
-- 如果 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 里自动提炼无角色环境锚点，并补充固定道具 / 主色调线索，再回填到 `scene_bible` 后生成母图 prompt
+- 如果 `scene_bible` 环境字段过空，主链路会先从该 scene 的 `start_frame_prompt / mid_frame_prompt / end_frame_prompt` 与 `scene_anchor` 里自动提炼无角色环境锚点，并补充固定道具 / 主色调线索，再回填到 `scene_bible` 后生成母图 prompt
 - `story_memory.json` 是项目级结构化状态文件，不是自由文本聊天记忆；当前主要用于章节级视频规划承接
 
 ### 3. 生成分段合同
@@ -211,7 +225,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
   - `continuity_report.json`
 - 同一份 `story_source` 已经有 queued / running / completed 的 `project.segment_contracts` 任务时，后端会直接复用已有任务
 - 视频规划内部已拆成四段式：
-  - 先按章节生成 `scene structure`
+  - 先按章节正文抽取 must-cover 关键事件，再生成 `scene structure`
   - 再按单个 `scene` 生成 1-4 个连续 chunk
   - 再按单个 `chunk` 生成 `segment contracts`
   - 最后本地富化并统一重编成正式 `scene_plan.json / segment_plan.json`
@@ -219,8 +233,8 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 当前实际传给 LLM 的是“当前章批次视图 + 最近已规划章节摘要 + 焦点角色摘要 + 当前 scene / chunk 聚焦摘录”
 - 最终版 `scene_plan.json` 仍是场景级主规划文件，保存 `chapter -> scene -> segment`
 - scene 级字段保留在 scene 层；segment 层聚焦执行合同与承接信息
-- `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt` 由本地 `Segment Prompt Enricher` 统一补齐
-- scene 内 chunk 合并时，系统会自动补强跨 chunk 首段的 `previous_segment_id / opening_match / carry_over_elements`，减少“同一 scene 里像重新开演”
+- `start_frame_prompt / mid_frame_prompt / end_frame_prompt` 由本地 prompt 组装阶段统一补齐
+- scene 内 chunk 合并时，系统会把上一 chunk 尾部压缩成 `visible_tail_state / carry_over_elements / opening_match_seed` 传给下一 chunk 首段，再结合 `previous_segment_id / opening_match` 做结构化校验与重试，减少“同一 scene 里像重新开演”
 - `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
 - `scene_structure_source.json` 是恢复用的原始 scene skeleton 快照，供失败后从当前位置继续时读取，不参与图片和视频执行
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 持续回写进度、失败章节、失败 scene 和失败 chunk；如果前端看到“从失败位置继续”，底层依赖的就是这份 checkpoint
@@ -247,6 +261,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 页面会先按 `scene_plan.json` 展示按 scene 分组的时间线，再允许你按 segment 单独生成
 - 同一 scene 会先生成一张 `scene_master_frame`，再基于它继续生成该 scene 下各个 segment 的首帧 / 中段 / 尾帧
 - 时间线里每个 scene 头部都可以单独“重生成场景母图”；这个入口只会重跑该 scene 的 `scene_master_frame`，不会连带重跑其它 scene 或 segment
+- 每个 scene 头部都可以展开查看 `scene_master_frame` 的实际生图 prompt
 - 如果某个问题已经被判定为 scene 级连续性风险，scene 头部还会放出“智能修复场景”入口；这一步会额外落盘 `continuity_repair_<scene_id>.json`，回写该 scene 的 `scene_anchor / scene_bible`、刷新 `continuity_report.json`，并写出 `selection_mode`、`affected_segment_ids` 与待执行媒体动作，但不会自动重跑 `scene_master_frame`、场景图或视频
 - 时间线头部现在会直接显示最近一次连续性校验时间、总体状态和 top issues
 - 时间线头部还会显示本次 run 请求的 `V2` 模式，以及 `V2` 是否实际执行
@@ -259,28 +274,45 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果某个 scene 正在执行场景修复，或该 scene 的母图正在重生成，前端会暂时锁住该 scene 下的局部修复、场景图、视频按钮，避免并发提交互相覆盖
 - `scene_master_frame` 现在是无角色空场景参考图，只负责锁背景环境、光线、固定道具和空间透视，不负责承载人物
 - `scene_master_frame` prompt 现在会显式加入“场景基线锁定”，要求后续关键帧复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视
+- 如果 `scene_bible` 里仍混入了 `两人 / 双人 / 剪影 / 并肩 / 相对 / 接吻` 这类弱人物信号，母图阶段现在也会在运行时剔除，避免空场景母图被这类描述带人
+- 如果 `scene_bible.fixed_props` 里混入了手机、书包、雨伞、花束、信封这类人物随身或临时动作道具，母图与 scene 级环境上下文现在也会在运行时剔除，避免把这类道具误画成地上的环境摆件
 - 即使上游 `scene_bible` 很弱，`scene_master_frame` 也会优先回填地点、时间、光线、空间布局和背景锚点，并尽量补固定道具与主色调，避免母图退化成泛化场景
 - 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
+- 但如果这次单段生成触发了当前 scene 的 `scene_master_frame`，系统会把同 scene 其它片段任务上的母图状态一起同步，避免后续连续性报告把同一 scene 误判成母图状态不一致
 - 同一 scene 下的多个 segment 会共享同一套 `scene_bible` 基线，场景图 prompt 会显式带入这组约束
+- 当前帧 prompt 现在会按 `start_frame_characters / mid_frame_characters / end_frame_characters` 做 frame-scoped 净化：未出镜角色、错误服装 / 发型覆盖描述会在运行时被剔除，避免把别的角色或错误定妆带进单帧
+- 默认 `mid_frame_prompt` 现在只保留当前拍的角色、动作停点和空间关系，不再回灌整段片段总述
+- 如果首帧和尾帧是同一组双人 / 多人，而中段只拍其中一人的反应特写或局部动作，现在必须显式写 `mid_frame_mode=insert_cut`
+- `mid_frame_mode=insert_cut` 的真实含义是：首帧先建立双人 / 多人主关系，中段短促切入单人 / 局部插入镜头，尾帧再回到主关系镜头收束；它不是“少人版主镜头”
 - scene 级连续性风险现在还会额外标记“场景基线过弱”，用于提示你先重生成 `scene_master_frame`
 - 同时也会显式带入该段自己的 `shot_state`，保证景别、调度和动作推进不只靠自然语言 prompt 碰运气
 - 如果 `continuity_link` 判定当前段应承接上一段，首帧会优先按这份承接关系复用或对齐上一段尾部状态
 - 连续承接段的 repair 现在也会自动补强更具体的 `opening_match` 和 `allowed_changes`，减少“只是写了承接，但画面还是像重开一段”的情况
 - 当前帧生成时还会优先引用 `scene_master_frame + 当前帧角色图`；连续承接段的首帧会再额外带上上一段尾帧
 - 场景生图阶段只负责纯画面关键帧，不允许把对白、字幕、聊天气泡或任何可见文字直接画进图片
+- 每个 segment 卡片都可以展开查看 `start_frame_prompt / mid_frame_prompt / end_frame_prompt`
 
 ### 6. 生成视频
 
 - 对应执行报告是 `seedance_execution.json`
 - 视频阶段也是按 segment 单独触发
 - 视频 prompt 会复用同一段所属 scene 的 `scene_bible`，把场景连续性约束直接写进 Seedance 请求
-- 视频阶段会把同一 scene 的 `scene_master_frame` 当作额外参考图一起送入 Seedance
-- 视频 prompt 也会复用该段 `shot_state`，把镜头景别、镜头推进、动作承接和尾部状态直接写进 Seedance 请求
-- 视频 prompt 还会复用该段 `continuity_link`，把它与上一段的开场承接要求直接写进 Seedance 请求
+- 视频阶段默认按多模态参考图模式提交：首帧 / 中段 / 尾帧会作为有顺序的 `reference_image` 一起送入 Seedance，并在 prompt 里显式绑定成 `图片1 / 图片2 / 图片3`
+- 视频阶段不再额外提交 `scene_master_frame` 或角色图；Seedance 只接收首帧 / 中段 / 尾帧三张时间锚点图
+- `scene_bible / shot_state / continuity_link` 的约束会先被压缩进关键帧描述里，视频基础 prompt 不再逐段复述这些大段合同原文
+- 视频基础 prompt 现在会直接输出 `参考图片时间轴`：`图片1 / 图片2 / 图片3` 分别描述起步、中段、收束画面，再补一条连续推进要求
+- Seedance 提交前会再补一层 `实际提交图片绑定`，只说明本次真实提交里的 `图片1 / 图片2 / 图片3`
+- 简化后仍会保留对白、旁白、角色音色、环境音、音乐和硬字幕要求；只是去掉了大量重复的合同复述
+- 如果某段使用 `mid_frame_mode=insert_cut`，视频 prompt 会再额外写明：`图片1 / 图片3` 是主关系镜头，`图片2` 是插入镜头，必须先建立主关系、再自然切入插入镜头、最后切回主关系
+- 如果关键帧之间角色人数、角色集合或构图关系发生变化，视频 prompt 会明确要求可见的入画 / 靠近 / 离场 / 景别重构过程，避免直接硬跳
+- 如果某个 segment 没有对白、旁白和字幕，视频 prompt 会明确声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，不会再对静音动作段追加硬字幕烧录指令
+- 如果完整多图组合被接口拒绝，系统才会回退到更少参考图的合法提交组合；中段锚点图不再只是降级兜底
 - 只有对应片段场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
 - 智能修复本身不会自动重跑视频；修复完成后需要你手动点击对应 segment 或 scene 的“生成视频”
 - 修复任务会继续归在当前制作版本下展示，不会额外长出一个新的版本块
 - 连续性修复器现在会更严格检查对白 / 旁白 / 硬字幕是否装得进当前时长；超预算时会优先压缩文本，而不是直接保留一份说不完的修复合同
+- 当前链路不再默认用 `summary` 补 `narration`；如果本段已经有 `dialogue_lines`，运行时还会清掉复述动作 / 对白的描述性 `narration`，减少本地重复拆段和告白节奏被打碎
+- 视频提交后，segment 卡片会额外展示真实送往 Seedance 的最终 prompt、submit variant 和参考图绑定顺序，便于排查为什么某次视频结果异常
 
 ### 6. 手动合并总片
 
@@ -339,16 +371,22 @@ outputs/<story-slug>/
 - `segment_plan.json`
   视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首帧 / 中段锚点帧 / 尾帧 prompt，以及分段关系。
   其中 `requires_mid_frame = true` 表示该片段会额外生成中段锚点帧；常见于双人 / 多人同框、8 秒以上片段、动作推进明显或中段关系变化明显的镜头。
+  其中 `mid_frame_mode` 当前支持：
+  - `continuous`：中段仍是主镜头连续推进
+  - `insert_cut`：中段是从主镜头短促切入的单人 / 局部插入镜头
+  如果 `start_frame_characters` 与 `end_frame_characters` 是同一组双人 / 多人，而 `mid_frame_characters` 只保留了其中一人，就必须把 `mid_frame_mode` 写成 `insert_cut`，并在节拍与运镜里明确“切入再切回”。
   页面时间线会直接读取这份规划来展示完整片段列表，即使某个片段还没有生成任何图片或视频，也会先显示出来等待单独触发。
 - `scene_image_manifest.json`
   场景关键帧任务清单，记录每个片段的首帧、中段锚点帧（如有）、尾帧、每一帧实际出镜角色、角色参考图和输出位置。
+  单帧生图会默认按短版图片绑定语义生成：`图片1` 是 `scene_master_frame`，`图片2 / 图片3` 是当前帧角色参考，若运行时追加上一帧连续性参考，也只会放在后面辅助衔接，不会覆盖 `图片1` 的场景主参考语义。
 - `seedream_character_execution.json`
   角色图执行报告，只用于确认角色图阶段是否成功以及失败原因。
 - `seedream_scene_execution.json`
   场景图执行报告，只用于确认场景图阶段是否成功以及失败原因。
 - `seedance_manifest.json`
   最终视频提交清单，Seedance 会按这里的每个 clip 去生成视频。
-  StoryForge 会优先用“角色定妆图 + 中段锚点图（如有）+ 首尾帧”的完整组合提交；若 Seedance 对该组合返回 400，会自动降级到更保守的图片组合继续重试。
+  StoryForge 默认会用“首帧 + 中段锚点图（如有）+ 尾帧”的多模态组合提交，并在 prompt 里用 `图片1 / 图片2 / 图片3` 明确绑定时间顺序；若 Seedance 对完整组合返回 400，才会自动降级到更保守的图片组合继续重试。
+  clip 里会同时保存基础视频 prompt，以及提交后回写的 `submitted_prompt / submit_variant / submitted_reference_bindings`，用于还原真实送审内容。
   `title` 应继承真实小说标题，不使用 `segment_video_manifest` 这类文件用途名；读取产物时会优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - `seedance_execution.json`
   视频执行报告，记录提交状态、完成数量、失败数量和下载结果。
@@ -382,7 +420,7 @@ outputs/<story-slug>/
 2. 检查角色外观、性别、体态和服装是否稳定
 3. 再到项目详情时间线里按 segment 逐段生成场景关键帧
 4. 检查场景图是否引用同一组角色图；若是双人 / 多人片段，重点检查中段锚点帧是否把所有角色都稳定画出
-   现在首帧 / 中段 / 尾帧会按各自的 `*_frame_characters` 和对应时间节拍选参考图；如果首帧或中段明明是单人等待镜头，就不会因为整段 `involved_characters` 有两个人而自动喂入另一位角色图
+   现在首帧 / 中段 / 尾帧会按各自的 `*_frame_characters` 和对应时间节拍选参考图；如果中段是 `mid_frame_mode=insert_cut` 的单人反应镜头，就只会喂该帧真实出镜角色，不会因为整段 `involved_characters` 有两个人而自动喂入另一位角色图
 5. 优先重跑具体有问题的 segment，不要默认整批重跑
 6. 如果连续性风险明确落在某个 segment，可以优先点击“智能修复该段”，让系统先重写该段合同，再观察重跑结果
 

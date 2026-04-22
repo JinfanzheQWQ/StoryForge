@@ -272,6 +272,7 @@ class ApiTestCase(unittest.TestCase):
                 auto_submit = false
                 image_size = "2K"
                 response_format = "url"
+                watermark = false
                 download_outputs = true
 
                 [seedance]
@@ -390,6 +391,10 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("available_llm_options", payload)
             self.assertIn("seedream_model", payload)
             self.assertIn("seedance_model", payload)
+            self.assertIn("seedream_watermark", payload)
+            self.assertIn("seedance_watermark", payload)
+            self.assertFalse(payload["seedream_watermark"])
+            self.assertFalse(payload["seedance_watermark"])
             self.assertTrue(
                 any(
                     item["provider"] == "openai" and item["model"] == "gpt-5.4"
@@ -419,6 +424,8 @@ class ApiTestCase(unittest.TestCase):
                     "llm_provider": "openai",
                     "llm_model": "gpt-5.4",
                     "continuity_review_mode": "on",
+                    "seedream_watermark": True,
+                    "seedance_watermark": True,
                 },
             )
             self.assertEqual(response.status_code, 202)
@@ -431,6 +438,10 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(payload["payload"]["llm_provider"], "openai")
             self.assertEqual(payload["payload"]["llm_model"], "gpt-5.4")
             self.assertEqual(payload["payload"]["continuity_review_mode"], "on")
+            self.assertTrue(payload["payload"]["seedream_watermark"])
+            self.assertTrue(payload["payload"]["seedance_watermark"])
+            self.assertTrue(payload["result"]["seedream_watermark"])
+            self.assertTrue(payload["result"]["seedance_watermark"])
             self.assertEqual(payload["result"]["pipeline_stage"], "story_source_completed")
 
             _, segment_task = self._run_structuring_pipeline(
@@ -469,6 +480,25 @@ class ApiTestCase(unittest.TestCase):
             self.assertIsInstance(artifacts["continuity_segment_groups"], list)
 
             first_planned_segment = artifacts["planned_segments"][0]
+            self.assertIn("scene_master_frame_prompt", first_planned_segment)
+            self.assertIn("start_frame_prompt", first_planned_segment)
+            self.assertIn("end_frame_prompt", first_planned_segment)
+            self.assertIn("video_prompt", first_planned_segment)
+            self.assertIn("submitted_video_prompt", first_planned_segment)
+            self.assertIn("submitted_prompt_variant", first_planned_segment)
+            self.assertIn("submitted_reference_bindings", first_planned_segment)
+            self.assertIn("scene_master_frame_request", first_planned_segment)
+            self.assertIn("start_frame_request", first_planned_segment)
+            self.assertIn("mid_frame_request", first_planned_segment)
+            self.assertIn("end_frame_request", first_planned_segment)
+            self.assertIn("video_request", first_planned_segment)
+            self.assertTrue(first_planned_segment["scene_master_frame_request"])
+            self.assertTrue(first_planned_segment["start_frame_request"])
+            self.assertTrue(first_planned_segment["video_request"])
+            if not first_planned_segment["requires_mid_frame"]:
+                self.assertFalse(first_planned_segment["mid_frame"])
+                self.assertEqual(first_planned_segment["mid_frame_prompt"], "")
+                self.assertIsNone(first_planned_segment["mid_frame_request"])
             continuity_report_path = Path(segment_task["result"]["output_dir"]) / "continuity_report.json"
             continuity_payload = json.loads(continuity_report_path.read_text(encoding="utf-8"))
             continuity_payload["status"] = "critical"
@@ -722,12 +752,17 @@ class ApiTestCase(unittest.TestCase):
                         "style_keywords": ["暴雨", "列车"],
                     },
                     "use_llm": True,
+                    "seedream_watermark": True,
+                    "seedance_watermark": True,
                 },
             )
             self.assertEqual(story_response.status_code, 202)
             source_task_id = story_response.json()["task_id"]
             project_id = story_response.json()["project_id"]
             self.assertEqual(self._wait_for_completion(client, source_task_id)["status"], "completed")
+            source_task = self._wait_for_completion(client, source_task_id)
+            self.assertTrue(source_task["result"]["seedream_watermark"])
+            self.assertTrue(source_task["result"]["seedance_watermark"])
 
             scene_structure_response = client.post(
                 "/v1/projects/scene-structure",
@@ -771,6 +806,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(scene_task["payload"]["segment_id"], segment_id)
             self.assertEqual(scene_task["result"]["segment_id"], segment_id)
             self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
+            self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedream.watermark)
+            self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedance.watermark)
 
             video_response = client.post(
                 "/v1/projects/videos",
@@ -787,6 +824,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(video_task["payload"]["segment_id"], segment_id)
             self.assertEqual(video_task["result"]["segment_id"], segment_id)
             self.assertEqual(mock_run_video_render_pipeline.call_args.kwargs["segment_id"], segment_id)
+            self.assertTrue(mock_run_video_render_pipeline.call_args.kwargs["config"].seedream.watermark)
+            self.assertTrue(mock_run_video_render_pipeline.call_args.kwargs["config"].seedance.watermark)
 
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
     def test_scene_stage_job_accepts_scene_id_master_only(

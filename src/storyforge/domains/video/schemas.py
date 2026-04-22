@@ -64,6 +64,24 @@ class ContinuityLinkSchema(BaseModel):
     transition_reason: str = Field(default="", description="为什么是承接、切断或新起一段")
 
 
+class ChapterCoverageEventSchema(BaseModel):
+    event_id: str = Field(description="章节关键事件 ID，例如 ch01-ev01")
+    summary: str = Field(description="必须被后续 scene 覆盖的关键事件摘要")
+    source_evidence: list[str] = Field(
+        default_factory=list,
+        description="直接摘自当前章节正文的短词或短句，用于验证该事件确实存在",
+    )
+    involved_characters: list[str] = Field(
+        default_factory=list,
+        description="该事件直接涉及的角色集合",
+    )
+
+
+class ChapterCoveragePlanSchema(BaseModel):
+    chapter_number: int = Field(default=0, description="所属章节")
+    events: list[ChapterCoverageEventSchema] = Field(description="当前章节必须覆盖的关键事件列表")
+
+
 class ChapterSceneSchema(BaseModel):
     scene_id: str = Field(description="场景 ID")
     chapter_number: int = Field(description="所属章节")
@@ -76,6 +94,10 @@ class ChapterSceneSchema(BaseModel):
     involved_characters: list[str] = Field(
         default_factory=list,
         description="该场景整体涉及的角色集合",
+    )
+    covered_event_ids: list[str] = Field(
+        default_factory=list,
+        description="该 scene 覆盖的章节关键事件 ID，必须按正文顺序对应连续事件块",
     )
     scene_bible: SceneBibleSchema = Field(
         default_factory=SceneBibleSchema,
@@ -140,6 +162,10 @@ class SceneSegmentContractSchema(BaseModel):
     involved_characters: list[str] = Field(description="涉及角色")
     start_frame_characters: list[str] = Field(default_factory=list, description="首帧实际出镜角色")
     mid_frame_characters: list[str] = Field(default_factory=list, description="中段锚点帧实际出镜角色")
+    mid_frame_mode: str = Field(
+        default="continuous",
+        description="中段锚点的镜头语义，可取 continuous / insert_cut",
+    )
     end_frame_characters: list[str] = Field(default_factory=list, description="尾帧实际出镜角色")
     narration: str = Field(default="", description="该片段旁白")
     dialogue_lines: list[str] = Field(default_factory=list, description="该片段对白")
@@ -162,8 +188,14 @@ class SceneSegmentContractSchema(BaseModel):
 
     @model_validator(mode="after")
     def normalize_mid_frame_fields(self) -> "SceneSegmentContractSchema":
+        self.mid_frame_mode = (
+            "insert_cut"
+            if str(self.mid_frame_mode or "").strip().lower() == "insert_cut"
+            else "continuous"
+        )
         if not self.requires_mid_frame:
             self.mid_frame_characters = []
+            self.mid_frame_mode = "continuous"
         return self
 
 
@@ -214,6 +246,10 @@ class VideoSegmentSchema(BaseModel):
         default_factory=list,
         description="中段锚点帧实际出镜角色；若无需中段帧可留空",
     )
+    mid_frame_mode: str = Field(
+        default="continuous",
+        description="中段锚点的镜头语义，可取 continuous / insert_cut",
+    )
     end_frame_characters: list[str] = Field(
         default_factory=list,
         description="尾帧实际出镜角色，只包含这一帧真正入镜的人物",
@@ -240,7 +276,6 @@ class VideoSegmentSchema(BaseModel):
         default_factory=list,
         description="按时间组织的镜头、对白和音效节拍",
     )
-    scene_prompt: str = Field(description="生图总 prompt")
     start_frame_prompt: str = Field(description="首帧 prompt")
     mid_frame_prompt: str = Field(
         default="",
@@ -264,6 +299,19 @@ class VideoSegmentSchema(BaseModel):
         description="是否直接沿用上一子片段的尾帧作为当前片段首帧",
     )
 
+    @model_validator(mode="after")
+    def normalize_mid_frame_contract(self) -> "VideoSegmentSchema":
+        self.mid_frame_mode = (
+            "insert_cut"
+            if str(self.mid_frame_mode or "").strip().lower() == "insert_cut"
+            else "continuous"
+        )
+        if not self.requires_mid_frame:
+            self.mid_frame_characters = []
+            self.mid_frame_prompt = ""
+            self.mid_frame_mode = "continuous"
+        return self
+
 
 class SegmentContinuityRepairSchema(BaseModel):
     segment_id: str = Field(description="需要被修复的目标片段 ID，必须与输入目标一致")
@@ -271,7 +319,6 @@ class SegmentContinuityRepairSchema(BaseModel):
         default="",
         description="一句话说明本次修复打算解决什么连续性问题",
     )
-    scene_prompt: str = Field(description="修复后的片段场景总提示词")
     start_frame_prompt: str = Field(description="修复后的首帧 prompt")
     mid_frame_prompt: str = Field(
         default="",
@@ -285,6 +332,10 @@ class SegmentContinuityRepairSchema(BaseModel):
     mid_frame_characters: list[str] = Field(
         default_factory=list,
         description="修复后的中段帧实际出镜角色",
+    )
+    mid_frame_mode: str = Field(
+        default="continuous",
+        description="修复后的中段锚点镜头语义，可取 continuous / insert_cut",
     )
     end_frame_characters: list[str] = Field(
         default_factory=list,
@@ -308,9 +359,15 @@ class SegmentContinuityRepairSchema(BaseModel):
 
     @model_validator(mode="after")
     def normalize_mid_frame_fields(self) -> "SegmentContinuityRepairSchema":
+        self.mid_frame_mode = (
+            "insert_cut"
+            if str(self.mid_frame_mode or "").strip().lower() == "insert_cut"
+            else "continuous"
+        )
         if not self.requires_mid_frame:
             self.mid_frame_prompt = ""
             self.mid_frame_characters = []
+            self.mid_frame_mode = "continuous"
         return self
 
 
@@ -363,9 +420,17 @@ class VideoSceneSchema(BaseModel):
         default="",
         description="场景母图生成失败原因",
     )
+    scene_master_request_info: dict[str, object] = Field(
+        default_factory=dict,
+        description="场景母图实际提交到 Seedream 的请求参数摘要",
+    )
     involved_characters: list[str] = Field(
         default_factory=list,
         description="该场景整体涉及的角色集合",
+    )
+    covered_event_ids: list[str] = Field(
+        default_factory=list,
+        description="该 scene 覆盖的章节关键事件 ID，用于上游场景结构校验与排查",
     )
     segments: list[VideoSegmentSchema] = Field(description="该场景下的片段列表")
 
@@ -434,6 +499,8 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             scene_payload.get("scene_master_frame_status") or "planned"
         ).strip() or "planned"
         scene_master_frame_error = str(scene_payload.get("scene_master_frame_error") or "").strip()
+        scene_master_request_info = dict(scene_payload.get("scene_master_request_info", {}) or {})
+        covered_event_ids = _normalize_name_list(scene_payload.get("covered_event_ids", []))
 
         normalized_segments: list[dict[str, object]] = []
         for segment_index, raw_segment in enumerate(segments, start=1):
@@ -449,7 +516,6 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             payload["shot_state"] = _normalize_shot_state(
                 payload.get("shot_state"),
                 default_summary=str(payload.get("summary") or summary),
-                default_prompt=str(payload.get("scene_prompt") or ""),
                 scene_anchor_default=scene_anchor,
             )
             payload["continuity_link"] = _normalize_continuity_link(
@@ -476,7 +542,9 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 "scene_master_frame_url": scene_master_frame_url,
                 "scene_master_frame_status": scene_master_frame_status,
                 "scene_master_frame_error": scene_master_frame_error,
+                "scene_master_request_info": scene_master_request_info,
                 "involved_characters": involved_characters,
+                "covered_event_ids": covered_event_ids,
                 "segments": normalized_segments,
             }
         )
@@ -507,6 +575,7 @@ def _normalize_scene_structure_payloads(raw_scenes: list[object]) -> list[dict[s
                 "summary": summary or title or f"场景 {index}",
                 "scene_anchor": scene_anchor,
                 "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
+                "covered_event_ids": _normalize_name_list(payload.get("covered_event_ids", [])),
                 "scene_bible": _normalize_scene_bible(
                     payload.get("scene_bible"),
                     default_summary=summary or title or f"场景 {index}",
@@ -533,6 +602,11 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
             "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
             "start_frame_characters": _normalize_name_list(payload.get("start_frame_characters", [])),
             "mid_frame_characters": _normalize_name_list(payload.get("mid_frame_characters", [])),
+            "mid_frame_mode": (
+                "insert_cut"
+                if str(payload.get("mid_frame_mode", "") or "").strip().lower() == "insert_cut"
+                else "continuous"
+            ),
             "end_frame_characters": _normalize_name_list(payload.get("end_frame_characters", [])),
             "narration": str(payload.get("narration") or "").strip(),
             "dialogue_lines": [
@@ -556,7 +630,6 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
             "shot_state": _normalize_shot_state(
                 payload.get("shot_state"),
                 default_summary=str(payload.get("summary") or ""),
-                default_prompt="",
                 scene_anchor_default="",
             ),
             "continuity_link": _normalize_continuity_link(
@@ -597,7 +670,6 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
         shot_state = _normalize_shot_state(
             payload.get("shot_state"),
             default_summary=scene_summary,
-            default_prompt=str(payload.get("scene_prompt") or ""),
             scene_anchor_default=scene_anchor,
         )
         payload["scene_id"] = scene_id
@@ -627,6 +699,7 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
                     payload.get("scene_master_frame_status") or "planned"
                 ).strip() or "planned",
                 "scene_master_frame_error": str(payload.get("scene_master_frame_error") or "").strip(),
+                "scene_master_request_info": dict(payload.get("scene_master_request_info", {}) or {}),
                 "involved_characters": [],
                 "segments": [],
             },
@@ -639,7 +712,14 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
             "scene_master_frame_url",
             "scene_master_frame_status",
             "scene_master_frame_error",
+            "scene_master_request_info",
         ):
+            if key == "scene_master_request_info":
+                current_value = dict(group.get(key, {}) or {})
+                incoming_value = dict(payload.get(key, {}) or {})
+                if incoming_value and not current_value:
+                    group[key] = incoming_value
+                continue
             current_value = str(group.get(key, "") or "").strip()
             incoming_value = str(payload.get(key, "") or "").strip()
             if incoming_value and not current_value:
@@ -744,7 +824,6 @@ def _normalize_shot_state(
     raw_shot_state: object,
     *,
     default_summary: str,
-    default_prompt: str,
     scene_anchor_default: str,
 ) -> dict[str, object]:
     payload = _coerce_mapping(raw_shot_state) or {}
@@ -756,11 +835,11 @@ def _normalize_shot_state(
             scene_anchor_default
             or "保持当前片段角色站位、朝向、进出场路径和相对位置稳定。"
         )
-        normalized["action_progression"] = default_summary or default_prompt or "保持当前片段的核心动作推进。"
+        normalized["action_progression"] = default_summary or "保持当前片段的核心动作推进。"
         normalized["emotion_progression"] = default_summary or "情绪沿当前片段自然推进。"
         normalized["prop_continuity"] = "保持服装、持物、手部状态和关键道具连续，不要凭空增删。"
         normalized["screen_direction"] = "保持角色运动方向与视线方向一致，避免突然反轴。"
-        normalized["end_state_lock"] = default_summary or default_prompt or "保持片段尾部动作与姿态，便于下一段承接。"
+        normalized["end_state_lock"] = default_summary or "保持片段尾部动作与姿态，便于下一段承接。"
     return normalized
 
 

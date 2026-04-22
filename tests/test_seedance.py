@@ -41,7 +41,7 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(report.failed_count, 0)
         self.assertEqual(report.pending_count, 0)
 
-    def test_build_payload_uses_live_validated_shape(self) -> None:
+    def test_build_payload_uses_multimodal_reference_images_for_timeline(self) -> None:
         client = SeedanceClient(
             SeedanceConfig(
                 model="doubao-seedance-2-0-260128",
@@ -64,10 +64,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             start_frame_url="https://example.com/start.png",
             mid_frame_url="https://example.com/mid.png",
             end_frame_url="https://example.com/end.png",
-            reference_image_urls=[
-                "https://example.com/char-a.png",
-                "https://example.com/char-b.png",
-            ],
             duration_seconds=5,
             aspect_ratio="16:9",
             with_audio=True,
@@ -80,15 +76,22 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["ratio"], "16:9")
         self.assertEqual(payload["duration"], 5)
         self.assertFalse(payload["watermark"])
-        self.assertEqual(payload["content"][0], {"type": "text", "text": clip.prompt})
-        self.assertEqual(payload["content"][1]["role"], "reference_image")
-        self.assertEqual(payload["content"][2]["role"], "reference_image")
-        self.assertEqual(payload["content"][3]["role"], "reference_image")
-        self.assertEqual(payload["content"][4]["role"], "first_frame")
-        self.assertEqual(payload["content"][5]["role"], "last_frame")
-        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/mid.png")
+        self.assertTrue(payload["generate_audio"])
+        self.assertIn("实际提交图片绑定", payload["content"][0]["text"])
+        self.assertIn("图片1 对应起步画面", payload["content"][0]["text"])
+        self.assertIn("图片2 对应中段状态", payload["content"][0]["text"])
+        self.assertIn("图片3 对应收束画面", payload["content"][0]["text"])
+        self.assertIn("严格按 图片1 -> 图片2 -> 图片3 的顺序推进画面", payload["content"][0]["text"])
+        self.assertIn("禁止瞬间换人或瞬间换构图", payload["content"][0]["text"])
+        self.assertEqual(
+            [item.get("role", "text") for item in payload["content"]],
+            ["text", "reference_image", "reference_image", "reference_image"],
+        )
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/start.png")
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
+        self.assertEqual(payload["content"][3]["image_url"]["url"], "https://example.com/end.png")
 
-    def test_build_payload_can_drop_character_reference_images(self) -> None:
+    def test_build_payload_without_end_frame_keeps_mid_frame_as_primary_reference(self) -> None:
         client = SeedanceClient(SeedanceConfig())
         clip = SeedanceClipTask(
             segment_id="ch01-seg02",
@@ -106,10 +109,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             start_frame_url="https://example.com/start.png",
             mid_frame_url="https://example.com/mid.png",
             end_frame_url="https://example.com/end.png",
-            reference_image_urls=[
-                "https://example.com/char-a.png",
-                "https://example.com/char-b.png",
-            ],
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
@@ -118,15 +117,17 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         payload = client.build_payload(
             clip,
-            include_character_reference_images=False,
             include_mid_frame_reference=True,
+            include_end_frame=False,
         )
 
         self.assertEqual(
             [item.get("role", "text") for item in payload["content"]],
-            ["text", "reference_image", "first_frame", "last_frame"],
+            ["text", "reference_image", "reference_image"],
         )
-        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/mid.png")
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/start.png")
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
+        self.assertIn("图片2 对应中段状态", payload["content"][0]["text"])
 
     def test_submit_clip_retries_with_simpler_payload_after_http_400(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -146,10 +147,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             start_frame_url="https://example.com/start.png",
             mid_frame_url="https://example.com/mid.png",
             end_frame_url="https://example.com/end.png",
-            reference_image_urls=[
-                "https://example.com/char-a.png",
-                "https://example.com/char-b.png",
-            ],
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
@@ -191,14 +188,27 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         self.assertEqual(task_id, "task-seedance-1")
         self.assertEqual(len(fake_client.calls), 2)
+        self.assertEqual(clip.submit_variant, "start_mid_only")
+        self.assertIn("实际提交图片绑定", clip.submitted_prompt)
+        self.assertTrue(clip.submitted_reference_bindings)
+        self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "start")
+        self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "mid")
+        self.assertEqual(clip.submitted_reference_bindings[0]["label"], "图片1")
+        self.assertEqual(clip.submitted_request_info["provider"], "seedance")
+        self.assertEqual(clip.submitted_request_info["variant"], "start_mid_only")
+        self.assertEqual(
+            clip.submitted_request_info["payload"]["content"][1]["image_url"]["url"],
+            "https://example.com/start.png",
+        )
         self.assertEqual(
             [item.get("role", "text") for item in fake_client.calls[0]["payload"]["content"]],
-            ["text", "reference_image", "reference_image", "reference_image", "first_frame", "last_frame"],
+            ["text", "reference_image", "reference_image", "reference_image"],
         )
         self.assertEqual(
             [item.get("role", "text") for item in fake_client.calls[1]["payload"]["content"]],
-            ["text", "reference_image", "first_frame", "last_frame"],
+            ["text", "reference_image", "reference_image"],
         )
+        self.assertIn("图片2 对应中段状态", fake_client.calls[0]["payload"]["content"][0]["text"])
 
     def test_submit_clip_raises_detailed_error_after_all_payload_variants_fail(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -218,9 +228,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             start_frame_url="https://example.com/start.png",
             mid_frame_url="https://example.com/mid.png",
             end_frame_url="https://example.com/end.png",
-            reference_image_urls=[
-                "https://example.com/char-a.png",
-            ],
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
@@ -229,9 +236,10 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         request = httpx.Request("POST", "https://example.com/tasks")
         responses = [
-            httpx.Response(400, json={"error": {"message": "bad full_context"}}, request=request),
-            httpx.Response(400, json={"error": {"message": "bad scene_anchor_only"}}, request=request),
-            httpx.Response(400, json={"error": {"message": "bad first_last_only"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad timeline_only"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad start_mid_only"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad start_end_only"}}, request=request),
+            httpx.Response(400, json={"error": {"message": "bad start_only"}}, request=request),
         ]
 
         class FakeClient:
@@ -241,7 +249,7 @@ class SeedanceClientTestCase(unittest.TestCase):
             def post(self, endpoint, json, headers):
                 return self.response_queue.pop(0)
 
-        with self.assertRaisesRegex(RuntimeError, "bad first_last_only"):
+        with self.assertRaisesRegex(RuntimeError, "bad start_only"):
             client._submit_clip(FakeClient(responses), clip)
 
     def test_extract_video_url_from_live_status_shape(self) -> None:

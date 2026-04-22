@@ -55,7 +55,6 @@ def ensure_secondary_segment_execution_contract(story_result) -> None:
     if not any(item["segment_id"] == other_segment_id for item in scene_image_payload):
         target_scene_task = deepcopy(scene_image_payload[0])
         target_scene_task["segment_id"] = other_segment_id
-        target_scene_task["scene_prompt"] = other_segment["scene_prompt"]
         target_scene_task["start_frame_prompt"] = other_segment["start_frame_prompt"]
         target_scene_task["mid_frame_prompt"] = other_segment.get("mid_frame_prompt", "")
         target_scene_task["end_frame_prompt"] = other_segment["end_frame_prompt"]
@@ -132,7 +131,6 @@ def mark_seedance_clips_completed(
     base_url: str = "https://example.com",
     download_root: str = "/tmp",
     remote_status: str = "completed",
-    include_reference_urls: bool = True,
 ) -> dict[str, object]:
     manifest_payload = read_json(story_result.seedance_manifest_path)
     for clip in manifest_payload["clips"]:
@@ -143,8 +141,6 @@ def mark_seedance_clips_completed(
         clip["remote_status"] = remote_status
         clip["video_url"] = f"{base_url}/{segment_id}.mp4"
         clip["downloaded_path"] = str(Path(download_root) / f"{segment_id}.mp4")
-        if include_reference_urls:
-            clip["reference_image_urls"] = [f"{base_url}/{segment_id}_ref.png"]
     _write_json(story_result.seedance_manifest_path, manifest_payload)
     return manifest_payload
 

@@ -471,7 +471,6 @@ def _build_v2_review_request(project_package, v1_rules: ContinuityRuleReview, tr
                 "narration_preview": _truncate(segment.narration, 120),
                 "dialogue_preview": [_truncate(item, 80) for item in segment.dialogue_lines[:3]],
                 "subtitle_preview": [_truncate(item, 80) for item in segment.subtitle_lines[:3]],
-                "scene_prompt": _truncate(segment.scene_prompt, 220),
                 "start_frame_prompt": _truncate(segment.start_frame_prompt, 220),
                 "mid_frame_prompt": _truncate(segment.mid_frame_prompt, 220),
                 "end_frame_prompt": _truncate(segment.end_frame_prompt, 220),

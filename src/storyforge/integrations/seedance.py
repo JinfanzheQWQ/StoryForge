@@ -18,7 +18,6 @@ SEEDANCE_BASE_URL_ENV = "SEEDANCE_BASE_URL"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "canceled", "rejected"}
 SEEDANCE_MIN_DURATION_SECONDS = 2
 SEEDANCE_MAX_DURATION_SECONDS = 12
-SEEDANCE_MAX_IMAGE_INPUTS = 9
 
 
 @dataclass(slots=True)
@@ -121,7 +120,16 @@ class SeedanceClient:
         clip_results: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=120) as client:
             for clip in target_clips:
-                payload = self.build_payload(clip)
+                payload, resolved_prompt, reference_bindings = self._build_payload_with_metadata(clip)
+                clip.submit_variant = "timeline_only"
+                clip.submitted_prompt = resolved_prompt
+                clip.submitted_reference_bindings = reference_bindings
+                clip.submitted_request_info = self._build_submitted_request_info(
+                    endpoint=self._task_creation_endpoint(),
+                    variant="timeline_only",
+                    payload=payload,
+                    reference_bindings=reference_bindings,
+                )
                 response = await client.post(
                     self._task_creation_endpoint(),
                     json=payload,
@@ -387,21 +395,49 @@ class SeedanceClient:
         self,
         clip: SeedanceClipTask,
         *,
-        include_character_reference_images: bool = True,
         include_mid_frame_reference: bool = True,
+        include_start_frame: bool = True,
+        include_end_frame: bool = True,
     ) -> dict[str, Any]:
+        payload, _, _ = self._build_payload_with_metadata(
+            clip,
+            include_mid_frame_reference=include_mid_frame_reference,
+            include_start_frame=include_start_frame,
+            include_end_frame=include_end_frame,
+        )
+        return payload
+
+    def _build_payload_with_metadata(
+        self,
+        clip: SeedanceClipTask,
+        *,
+        include_mid_frame_reference: bool = True,
+        include_start_frame: bool = True,
+        include_end_frame: bool = True,
+    ) -> tuple[dict[str, Any], str, list[dict[str, str]]]:
         if not SEEDANCE_MIN_DURATION_SECONDS <= clip.duration_seconds <= SEEDANCE_MAX_DURATION_SECONDS:
             raise ValueError(
                 "Seedance duration must be between "
                 f"{SEEDANCE_MIN_DURATION_SECONDS} and {SEEDANCE_MAX_DURATION_SECONDS} seconds, "
                 f"got {clip.duration_seconds} for segment {clip.segment_id}."
             )
-        content: list[dict[str, Any]] = [{"type": "text", "text": clip.prompt}]
-        for url in self._ordered_reference_image_urls(
+        reference_bindings = self._resolve_reference_bindings(
             clip,
-            include_character_reference_images=include_character_reference_images,
             include_mid_frame_reference=include_mid_frame_reference,
-        ):
+            include_start_frame=include_start_frame,
+            include_end_frame=include_end_frame,
+        )
+        resolved_prompt = self._build_multimodal_reference_prompt(
+            clip,
+            reference_bindings,
+        )
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": resolved_prompt,
+            }
+        ]
+        for _, url in reference_bindings:
             content.append(
                 {
                     "role": "reference_image",
@@ -410,67 +446,138 @@ class SeedanceClient:
                 }
             )
 
-        # Live endpoint validation showed that image-conditioned requests must use
-        # `first_frame` / `last_frame` for image roles, while text items carry no role.
-        if clip.start_frame_url:
-            content.append(
-                {
-                    "role": "first_frame",
-                    "type": "image_url",
-                    "image_url": {"url": clip.start_frame_url},
-                }
-            )
-        if clip.end_frame_url:
-            content.append(
-                {
-                    "role": "last_frame",
-                    "type": "image_url",
-                    "image_url": {"url": clip.end_frame_url},
-                }
-            )
-
-        return {
+        payload = {
             "model": self.config.model,
             "content": content,
             "ratio": clip.aspect_ratio,
             "duration": clip.duration_seconds,
             "watermark": self.config.watermark,
         }
+        payload["generate_audio"] = bool(clip.with_audio)
+        return payload, resolved_prompt, self._describe_reference_bindings(reference_bindings)
 
-    def _ordered_reference_image_urls(
+    def _resolve_reference_bindings(
         self,
         clip: SeedanceClipTask,
         *,
-        include_character_reference_images: bool = True,
-        include_mid_frame_reference: bool = True,
-    ) -> list[str]:
-        return self._resolve_reference_image_urls(
-            clip,
-            include_character_reference_images=include_character_reference_images,
-            include_mid_frame_reference=include_mid_frame_reference,
-        )
-
-    def _resolve_reference_image_urls(
-        self,
-        clip: SeedanceClipTask,
-        *,
-        include_character_reference_images: bool,
         include_mid_frame_reference: bool,
-    ) -> list[str]:
-        ordered_sources: list[str] = []
+        include_start_frame: bool,
+        include_end_frame: bool,
+    ) -> list[tuple[str, str]]:
+        ordered_sources: list[tuple[str, str]] = []
+        if include_start_frame and clip.start_frame_url:
+            ordered_sources.append(("start", clip.start_frame_url))
         if include_mid_frame_reference and clip.mid_frame_url:
-            ordered_sources.append(clip.mid_frame_url)
-        if include_character_reference_images:
-            ordered_sources.extend(clip.reference_image_urls)
-        ordered = self._dedupe_urls(ordered_sources)
-        occupied_slots = int(bool(clip.start_frame_url)) + int(bool(clip.end_frame_url))
-        available_slots = max(0, SEEDANCE_MAX_IMAGE_INPUTS - occupied_slots)
-        return ordered[:available_slots]
+            ordered_sources.append(("mid", clip.mid_frame_url))
+        if include_end_frame and clip.end_frame_url:
+            ordered_sources.append(("end", clip.end_frame_url))
+
+        deduped: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+        for kind, url in ordered_sources:
+            normalized = str(url).strip()
+            if not normalized or normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+            deduped.append((kind, normalized))
+        return deduped
+
+    def _build_multimodal_reference_prompt(
+        self,
+        clip: SeedanceClipTask,
+        reference_bindings: list[tuple[str, str]],
+    ) -> str:
+        base_prompt = clip.prompt.strip()
+        if not reference_bindings:
+            return base_prompt
+
+        lines: list[str] = [base_prompt, "", "实际提交图片绑定："]
+        for index, (kind, _) in enumerate(reference_bindings, start=1):
+            label = f"图片{index}"
+            if kind == "start":
+                lines.append(f"- {label} 对应起步画面。")
+            elif kind == "mid":
+                lines.append(f"- {label} 对应中段状态。")
+            elif kind == "end":
+                lines.append(f"- {label} 对应收束画面。")
+        timeline_indexes = [
+            index
+            for index, (kind, _) in enumerate(reference_bindings, start=1)
+            if kind in {"start", "mid", "end"}
+        ]
+        if len(timeline_indexes) >= 3:
+            first_label = f"图片{timeline_indexes[0]}"
+            middle_labels = " -> ".join(f"图片{index}" for index in timeline_indexes[1:-1])
+            final_label = f"图片{timeline_indexes[-1]}"
+            lines.append(
+                f"- 严格按 {first_label} -> {middle_labels} -> {final_label} 的顺序推进画面，不要跳帧，不要只在结尾突然跳到收束图。"
+            )
+        elif len(timeline_indexes) == 2:
+            first_label = f"图片{timeline_indexes[0]}"
+            final_label = f"图片{timeline_indexes[1]}"
+            lines.append(
+                f"- 严格按 {first_label} -> {final_label} 的顺序推进画面，不要长时间停在开场图后于片尾突然跳到收束图。"
+            )
+        elif len(timeline_indexes) == 1:
+            lines.append(
+                f"- 图片{timeline_indexes[0]} 是唯一时间锚点，整段都围绕它建立稳定构图和连续微动作。"
+            )
+        lines.append("- 如果相邻关键图的人数、站位或景别不同，必须拍出可见的切入、入画、靠近、让位或镜头重构过程，禁止瞬间换人或瞬间换构图。")
+        lines.append("- 除非文本明确要求插入镜头，否则不要丢失既定角色，不要替换服装，不要改变已给定的空间关系与镜头方向。")
+        return "\n".join(line for line in lines if line is not None)
+
+    def _describe_reference_bindings(
+        self,
+        reference_bindings: list[tuple[str, str]],
+    ) -> list[dict[str, str]]:
+        descriptions: list[dict[str, str]] = []
+        for index, (kind, url) in enumerate(reference_bindings, start=1):
+            if kind == "start":
+                description = "开场视觉锚点，视频必须从这张图对应的构图、角色关系与动作状态自然起步。"
+            elif kind == "mid":
+                description = "中段视觉锚点，镜头推进过程中必须自然经过这张图对应的中间状态，不要跳过或弱化。"
+            else:
+                description = "收束视觉锚点，片尾必须落到这张图对应的构图、角色关系与动作结果。"
+            descriptions.append(
+                {
+                    "label": f"图片{index}",
+                    "kind": kind,
+                    "description": description,
+                    "url": str(url).strip(),
+                }
+            )
+        return descriptions
+
+    def _build_submitted_request_info(
+        self,
+        *,
+        endpoint: str,
+        variant: str,
+        payload: dict[str, Any],
+        reference_bindings: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        return {
+            "provider": "seedance",
+            "endpoint": endpoint,
+            "variant": variant,
+            "payload": payload,
+            "reference_bindings": reference_bindings,
+        }
 
     def _submit_clip(self, client: httpx.Client, clip: SeedanceClipTask) -> str:
         endpoint = self._task_creation_endpoint()
         attempts: list[dict[str, Any]] = []
-        for variant, payload in self._submit_payload_candidates(clip):
+        candidates = self._submit_payload_candidates(clip)
+        for index, (variant, payload, resolved_prompt, reference_bindings) in enumerate(candidates):
+            clip.submit_variant = variant
+            clip.submitted_prompt = resolved_prompt
+            clip.submitted_reference_bindings = reference_bindings
+            clip.submitted_request_info = self._build_submitted_request_info(
+                endpoint=endpoint,
+                variant=variant,
+                payload=payload,
+                reference_bindings=reference_bindings,
+            )
             try:
                 response = client.post(
                     endpoint,
@@ -488,7 +595,7 @@ class SeedanceClient:
                 )
                 if (
                     exc.response.status_code == 400
-                    and variant != "first_last_only"
+                    and index < len(candidates) - 1
                 ):
                     continue
                 raise SeedanceSubmitError(endpoint, attempts) from exc
@@ -622,41 +729,53 @@ class SeedanceClient:
     def _submit_payload_candidates(
         self,
         clip: SeedanceClipTask,
-    ) -> list[tuple[str, dict[str, Any]]]:
+    ) -> list[tuple[str, dict[str, Any], str, list[dict[str, str]]]]:
         candidates = [
             (
-                "full_context",
-                self.build_payload(
+                "timeline_only",
+                *self._build_payload_with_metadata(
                     clip,
-                    include_character_reference_images=True,
                     include_mid_frame_reference=True,
+                    include_start_frame=True,
+                    include_end_frame=True,
                 ),
             ),
             (
-                "scene_anchor_only",
-                self.build_payload(
+                "start_mid_only",
+                *self._build_payload_with_metadata(
                     clip,
-                    include_character_reference_images=False,
                     include_mid_frame_reference=True,
+                    include_start_frame=True,
+                    include_end_frame=False,
                 ),
             ),
             (
-                "first_last_only",
-                self.build_payload(
+                "start_end_only",
+                *self._build_payload_with_metadata(
                     clip,
-                    include_character_reference_images=False,
                     include_mid_frame_reference=False,
+                    include_start_frame=True,
+                    include_end_frame=True,
+                ),
+            ),
+            (
+                "start_only",
+                *self._build_payload_with_metadata(
+                    clip,
+                    include_mid_frame_reference=False,
+                    include_start_frame=True,
+                    include_end_frame=False,
                 ),
             ),
         ]
-        unique_candidates: list[tuple[str, dict[str, Any]]] = []
+        unique_candidates: list[tuple[str, dict[str, Any], str, list[dict[str, str]]]] = []
         seen_signatures: set[str] = set()
-        for variant, payload in candidates:
+        for variant, payload, resolved_prompt, reference_bindings in candidates:
             signature = repr(payload)
             if signature in seen_signatures:
                 continue
             seen_signatures.add(signature)
-            unique_candidates.append((variant, payload))
+            unique_candidates.append((variant, payload, resolved_prompt, reference_bindings))
         return unique_candidates
 
     def _build_submit_attempt_debug(
@@ -727,10 +846,3 @@ class SeedanceClient:
             return raw_url
         tail = parsed.path.split("/")[-1]
         return f"{parsed.scheme}://{parsed.netloc}/.../{tail}"
-
-    def _dedupe_urls(self, urls: list[str]) -> list[str]:
-        merged: list[str] = []
-        for url in urls:
-            if url and url not in merged:
-                merged.append(url)
-        return merged

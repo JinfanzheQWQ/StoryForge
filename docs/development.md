@@ -177,7 +177,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 
 - `chapter scene planner` 不要输出 `segments`
 - `scene chunk planner` 不要输出任何图片 / 视频 prompt
-- `scene segment contract planner` 不要输出 `scene_prompt / start_frame_prompt / mid_frame_prompt / end_frame_prompt`
+- `scene segment contract planner` 不要输出 `start_frame_prompt / mid_frame_prompt / end_frame_prompt`
 - 关键帧 prompt、Seedance prompt、角色定妆 prompt 应由后面的本地富化阶段生成，不要重新塞回 segment contract planner
 
 当前本地富化 / 媒体 prompt 主要包括：
@@ -236,7 +236,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
    只挑当前阶段真正需要的 `story_memory` 视图
 3. `_build_chapter_segment_directive`
    生成章节目标、摘要、正文摘录
-4. `_build_scene_prompt_focus_terms`
+4. `_build_scene_focus_terms`
    从当前 `scene / chunk` 抽焦点词，避免整章长摘录直接灌入
 5. `_excerpt_relevant_text`
    只截与当前焦点相关的正文片段

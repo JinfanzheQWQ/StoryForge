@@ -57,6 +57,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 前端创建页只允许选择 `llm_provider`
 - `llm_model` 仍会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
 - 同时会返回默认的 `continuity_review_mode`，当前默认值为 `auto`
+- 同时会返回 `seedream_watermark` 与 `seedance_watermark` 默认值，供前端决定本次 run 是否保留图片 / 视频水印
 
 ### 项目
 
@@ -125,7 +126,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   "use_llm": true,
   "llm_provider": "deepseek",
   "llm_model": "deepseek-chat",
-  "continuity_review_mode": "auto"
+  "continuity_review_mode": "auto",
+  "seedream_watermark": false,
+  "seedance_watermark": false
 }
 ```
 
@@ -135,6 +138,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 传入已有 `project_id` 时，会把本次运行挂到已有项目下
 - Web 页面的 `llm_model` 为只读默认值；如通过 API 直调，仍可显式传入
 - `continuity_review_mode` 可选 `off / auto / on`，用于控制后续 `continuity_report.json` 是否执行 `V2` LLM 软审校
+- `seedream_watermark` 控制后续 Seedream 生图是否保留水印
+- `seedance_watermark` 控制后续 Seedance 生视频是否保留水印
 
 返回示例：
 
@@ -161,6 +166,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 其中：
 
 - `scene_plan.json` 这时只保存 `chapter -> scene` skeleton、`scene_bible` 和 `scene_master_frame` 相关字段
+- 每个 scene 还会带 `covered_event_ids`，用于显式标记它覆盖了当前章节的哪些 must-cover 关键事件
 - 还不会生成正式 `segment contracts`、`segment_plan.json`、`scene_image_manifest.json` 或 `seedance_manifest.json`
 
 请求示例：
@@ -170,14 +176,17 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_task_id": "story-task-id",
   "use_llm": true,
-  "continuity_review_mode": "auto"
+  "continuity_review_mode": "auto",
+  "seedream_watermark": false,
+  "seedance_watermark": false
 }
 ```
 
 说明：
 
 - `continuity_review_mode` 会跟随任务记录保留下来，供后续 `project.segment_contracts`、`project.scenes`、`project.videos` 继承
-- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode` 复用已有 queued / running / completed 任务
+- `seedream_watermark / seedance_watermark` 可选；如果不传，后续阶段会继承当前 run 根任务上的设置
+- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode + watermark 组合` 复用已有 queued / running / completed 任务
 
 #### `POST /v1/projects/segment-contracts`
 
@@ -209,6 +218,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   "source_task_id": "story-task-id",
   "use_llm": true,
   "continuity_review_mode": "auto",
+  "seedream_watermark": false,
+  "seedance_watermark": false,
   "resume_from_progress": false
 }
 ```
@@ -219,9 +230,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `continuity_review_mode` 可选 `off / auto / on`
 - `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
 - 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
+- `seedream_watermark / seedance_watermark` 如果不传，后端会继承当前 run 根任务上的设置
 - `resume_from_progress = true` 时，会复用 `segment_contract_progress.json` 里已落盘的 chunk 规划与失败位置，只继续未完成 chunk / scene / chapter，不能和 `segment_id / scene_id / master_only / merge_only` 混用
 - `resume_from_progress = true` 要求 checkpoint 包含 `scene/chunk` 级进度结构
-- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode` 复用已有 queued / running / completed 任务
+- 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode + watermark 组合` 复用已有 queued / running / completed 任务
 
 #### `POST /v1/projects/characters`
 
@@ -244,6 +256,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `Cast Analyzer` 的 `source_evidence` 仍必须能在正文中定位；当前后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 - 这一步依赖已经完成且未过期的 `project.segment_contracts`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上
+- `seedream_watermark / seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 
 #### `POST /v1/projects/scenes`
 
@@ -280,6 +293,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 传入 `scene_id + master_only = true` 时，只会重生成该 scene 的 `scene_master_frame`
 - `master_only = true` 不能与 `segment_id` 同时提交，也必须配合 `scene_id`
 - 该模式会重新调用 Seedream 并把结果回写到 `scene_plan.json` 与 `scene_image_manifest.json`
+- `seedream_watermark / seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 - 对同一 `source_task_id + segment_id`，如果已经有 queued / running 任务，后端会直接返回已有任务
 - 对同一 `source_task_id + scene_id + master_only`，如果已经有 queued / running 任务，后端也会直接返回已有任务
 
@@ -307,6 +321,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 单段执行不会自动重新生成其它片段，也不会自动拼接总片
 - `merge_only = true` 不能与 `segment_id` 或 `scene_id` 同时提交
 - 如果传 `merge_only = true`，则不会再向 Seedance 提交任务，而是把当前已生成的本地 mp4 片段按 manifest 顺序合并成 `rendered/full_story.mp4`
+- `seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 
 手动合并请求示例：
 
@@ -371,6 +386,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `scene_id` 模式会额外落盘 `continuity_repair_{scene_id}.json`，其中包含 `selection_mode` 与 `affected_segment_ids`
 - 修复报告文件名统一为 `continuity_repair_<segment_id|scene_id>.json`
 - 对同一 `source_task_id + segment_id` 或 `source_task_id + scene_id`，如果已经有 queued / running 的修复任务，后端会直接返回已有任务
+- `seedream_watermark / seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 
 #### `POST /v1/projects/continuity-repair-batch`
 
@@ -386,6 +402,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   "source_task_id": "story-task-id",
   "use_llm": true,
   "continuity_review_mode": "on",
+  "seedream_watermark": false,
+  "seedance_watermark": false,
   "severity_threshold": "medium",
   "max_units_per_batch": 4
 }
@@ -409,6 +427,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
   - `remaining_repairable_count`
   - `has_more_batches`
 - 这个接口不会新建任何媒体任务；它只更新合同与报告，后续是否重跑 `project.scenes` / `project.videos` 仍由用户手动决定
+- `seedream_watermark / seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 
 #### `GET /v1/projects/{project_id}/story-source/{source_task_id}`
 
@@ -498,12 +517,36 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `scene_title`
 - `scene_summary`
 - `scene_master_frame`
+- `scene_master_frame_prompt`
+- `start_frame_prompt`
+- `mid_frame_prompt`
+- `mid_frame_mode`
+- `end_frame_prompt`
+- `video_prompt`
+- `submitted_video_prompt`
+- `submitted_prompt_variant`
+- `submitted_reference_bindings`
+- `scene_master_frame_request`
+- `start_frame_request`
+- `mid_frame_request`
+- `end_frame_request`
+- `video_request`
 - `start_frame`
 - `mid_frame`
 - `end_frame`
 - `rendered_clip`
 - `scene_ready`
 - `video_ready`
+
+说明：
+
+- `video_prompt` 是分段合同阶段落盘的基础视频 prompt
+- `submitted_video_prompt`、`submitted_prompt_variant`、`submitted_reference_bindings` 只有该段真正提交过视频后才会有值
+- `mid_frame_mode` 当前取值为 `continuous` 或 `insert_cut`；当前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
+- `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的起步 / 中段 / 收束画面
+- `scene_master_frame_request / start_frame_request / mid_frame_request / end_frame_request / video_request` 会返回真实提交时的 `provider / endpoint / variant / payload / reference_bindings`
+- 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
+- 对旧 run，如果历史上还没有落这些 request 字段，接口会基于当前 manifest 和产物文件回推出一份 `derived_from_manifest` 请求视图
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
 

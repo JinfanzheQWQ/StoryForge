@@ -45,6 +45,7 @@ class SeedreamConfig:
     auto_submit: bool = False
     image_size: str = "2K"
     response_format: str = "url"
+    watermark: bool = False
     download_outputs: bool = True
 
 
@@ -157,6 +158,7 @@ class AppConfig:
                 auto_submit=seedream.get("auto_submit", False),
                 image_size=seedream.get("image_size", "2K"),
                 response_format=seedream.get("response_format", "url"),
+                watermark=seedream.get("watermark", False),
                 download_outputs=seedream.get("download_outputs", True),
             ),
             seedance=SeedanceConfig(

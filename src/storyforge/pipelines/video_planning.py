@@ -92,29 +92,10 @@ def build_video_scene_structure_artifacts(
 
     runtime_scenes: list[VideoScene] = []
     for chapter in sorted(novel_package.outline.chapters, key=lambda item: item.number):
-        scene_structure = service._run_structured_agent(
-            schema=ChapterSceneStructureSchema,
-            request=PromptRequest(
-                system_prompt=(
-                    "你是章节场景规划 Agent。"
-                    "请只规划当前章节有哪些 scene。"
-                    "只输出 scene 结构，不要输出 segment，不要输出图片 prompt。"
-                ),
-                user_prompt=service._build_chapter_scene_planner_user_prompt(
-                    novel_package,
-                    chapter_number=chapter.number,
-                    story_memory=story_memory,
-                ),
-                metadata={
-                    "task": "video-chapter-scene-planner",
-                    "chapter_number": chapter.number,
-                },
-            ),
-            validator=lambda value, chapter_number=chapter.number: service._validate_chapter_scene_structure_output(
-                value,
-                novel_package=novel_package,
-                chapter_number=chapter_number,
-            ),
+        scene_structure = service._plan_chapter_scene_structure(
+            novel_package=novel_package,
+            story_memory=story_memory,
+            chapter_number=chapter.number,
         )
         materialized_scenes = [
             service._materialize_chapter_scene(
@@ -1534,6 +1515,7 @@ def _build_runtime_scene_skeletons(
             summary=scene.summary,
             scene_anchor=scene.scene_anchor,
             involved_characters=list(scene.involved_characters),
+            covered_event_ids=list(scene.covered_event_ids),
             segments=[],
             scene_bible=scene.scene_bible.model_copy(deep=True),
         )
@@ -1595,6 +1577,7 @@ def _build_chapter_scene_structure_from_plan(
                 "summary": scene.summary,
                 "scene_anchor": scene.scene_anchor,
                 "involved_characters": list(scene.involved_characters),
+                "covered_event_ids": list(scene.covered_event_ids),
                 "scene_bible": scene.scene_bible.model_dump(),
             }
         )

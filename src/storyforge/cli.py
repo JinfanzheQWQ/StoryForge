@@ -17,7 +17,7 @@ def build_parser() -> ArgumentParser:
 
     api_serve_parser = api_subparsers.add_parser("serve", help="Serve StoryForge API with uvicorn")
     api_serve_parser.add_argument("--config", default="configs/storyforge.example.toml")
-    api_serve_parser.add_argument("--host", default="127.0.0.1")
+    api_serve_parser.add_argument("--host", default="0.0.0.0")
     api_serve_parser.add_argument("--port", type=int, default=8000)
     api_serve_parser.add_argument("--reload", action="store_true")
 

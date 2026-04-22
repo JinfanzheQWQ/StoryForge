@@ -56,6 +56,31 @@ def _apply_continuity_review_mode(task_payload: dict[str, object], mode: str | N
         task_payload["continuity_review_mode"] = normalized
 
 
+def _apply_media_watermark_options(
+    task_payload: dict[str, object],
+    *,
+    seedream_watermark: bool | None,
+    seedance_watermark: bool | None,
+) -> None:
+    if seedream_watermark is not None:
+        task_payload["seedream_watermark"] = bool(seedream_watermark)
+    if seedance_watermark is not None:
+        task_payload["seedance_watermark"] = bool(seedance_watermark)
+
+
+def _normalize_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    return None
+
+
 def _apply_pipeline_root_task_id(
     container,
     task_payload: dict[str, object],
@@ -156,6 +181,11 @@ async def create_story_job(
     }
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=project_id,
         task_type="project.story",
@@ -190,6 +220,8 @@ async def create_scene_structure_job(
         pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
         story_source_revision=str(source_task.result.get("story_source_revision", "")),
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -206,6 +238,11 @@ async def create_scene_structure_job(
     task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.scene_structure",
@@ -250,6 +287,8 @@ async def create_segment_contracts_job(
         pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
         story_source_revision=str(source_task.result.get("story_source_revision", "")),
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -268,6 +307,11 @@ async def create_segment_contracts_job(
     task_payload["pipeline_root_task_id"] = resolve_pipeline_root_task_id(source_task)
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.segment_contracts",
@@ -300,6 +344,8 @@ async def create_continuity_repair_job(
         segment_id=payload.segment_id,
         scene_id=payload.scene_id,
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -325,6 +371,11 @@ async def create_continuity_repair_job(
         task_payload["scene_id"] = payload.scene_id
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.continuity_repair",
@@ -357,6 +408,8 @@ async def create_continuity_repair_batch_job(
         segment_id=None,
         scene_id=None,
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -380,6 +433,11 @@ async def create_continuity_repair_batch_job(
     )
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.continuity_repair_batch",
@@ -401,13 +459,23 @@ def _find_existing_revisioned_stage_task(
     pipeline_root_task_id: str,
     story_source_revision: str,
     continuity_review_mode: str | None = None,
+    seedream_watermark: bool | None = None,
+    seedance_watermark: bool | None = None,
 ):
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
+    expected_seedream_watermark = _normalize_optional_bool(seedream_watermark)
+    expected_seedance_watermark = _normalize_optional_bool(seedance_watermark)
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != task_type:
             continue
         if str(task.payload.get("source_task_id", "")) != source_task_id:
             continue
+        if expected_seedream_watermark is not None:
+            if _normalize_optional_bool(task.payload.get("seedream_watermark")) != expected_seedream_watermark:
+                continue
+        if expected_seedance_watermark is not None:
+            if _normalize_optional_bool(task.payload.get("seedance_watermark")) != expected_seedance_watermark:
+                continue
         task_mode = str(task.payload.get("continuity_review_mode", "auto") or "auto").strip().lower() or "auto"
         if task_mode != expected_mode:
             continue
@@ -435,10 +503,14 @@ def _find_existing_stage_task(
     master_only: bool = False,
     merge_only: bool = False,
     continuity_review_mode: str | None = None,
+    seedream_watermark: bool | None = None,
+    seedance_watermark: bool | None = None,
 ):
     expected_segment_id = segment_id or ""
     expected_scene_id = scene_id or ""
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
+    expected_seedream_watermark = _normalize_optional_bool(seedream_watermark)
+    expected_seedance_watermark = _normalize_optional_bool(seedance_watermark)
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != task_type:
             continue
@@ -452,6 +524,12 @@ def _find_existing_stage_task(
             continue
         if bool(task.payload.get("merge_only", False)) != merge_only:
             continue
+        if expected_seedream_watermark is not None:
+            if _normalize_optional_bool(task.payload.get("seedream_watermark")) != expected_seedream_watermark:
+                continue
+        if expected_seedance_watermark is not None:
+            if _normalize_optional_bool(task.payload.get("seedance_watermark")) != expected_seedance_watermark:
+                continue
         task_mode = str(task.payload.get("continuity_review_mode", "auto") or "auto").strip().lower() or "auto"
         if task_mode != expected_mode:
             continue
@@ -485,6 +563,11 @@ async def create_character_job(
         task_payload["use_llm"] = payload.use_llm
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -519,6 +602,8 @@ async def create_scene_job(
         master_only=payload.master_only,
         merge_only=False,
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -545,6 +630,11 @@ async def create_scene_job(
         task_payload["master_only"] = True
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -578,6 +668,8 @@ async def create_video_job(
         scene_id=payload.scene_id,
         merge_only=payload.merge_only,
         continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -604,6 +696,11 @@ async def create_video_job(
         task_payload["scene_id"] = payload.scene_id
     _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
     _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.videos",

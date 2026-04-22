@@ -11,6 +11,37 @@ class PromptRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def attach_prompt_metrics(
+    request: PromptRequest,
+    *,
+    soft_limit_chars: int | None = None,
+) -> PromptRequest:
+    system_prompt_chars = len(request.system_prompt)
+    user_prompt_chars = len(request.user_prompt)
+    total_prompt_chars = system_prompt_chars + user_prompt_chars
+    request.metadata.update(
+        {
+            "system_prompt_chars": system_prompt_chars,
+            "user_prompt_chars": user_prompt_chars,
+            "total_prompt_chars": total_prompt_chars,
+        }
+    )
+    if soft_limit_chars is not None:
+        exceeded = total_prompt_chars > soft_limit_chars
+        request.metadata.update(
+            {
+                "prompt_soft_limit_chars": soft_limit_chars,
+                "prompt_soft_limit_exceeded": exceeded,
+                "prompt_size_status": "warn" if exceeded else "ok",
+            }
+        )
+        if exceeded:
+            request.metadata["prompt_warning"] = (
+                f"prompt length {total_prompt_chars} exceeds soft limit {soft_limit_chars}"
+            )
+    return request
+
+
 @dataclass(slots=True)
 class AgentResult:
     content: str

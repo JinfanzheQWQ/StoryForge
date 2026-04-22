@@ -28,6 +28,7 @@ import { state } from "./state.js";
 import {
   getTaskRun,
   normalizeContinuityReviewMode,
+  resolveRunMediaWatermark,
   resolveRunContinuityReviewMode,
 } from "./utils.js";
 
@@ -122,15 +123,13 @@ async function submitStageFromButton(
   }
 }
 
-function resolveContinuityReviewModeForSourceTask(sourceTaskId) {
-  const run = getTaskRun(sourceTaskId);
-  return resolveRunContinuityReviewMode(run);
-}
-
 function withContinuityReviewMode(sourceTaskId, payload) {
+  const run = getTaskRun(sourceTaskId);
   return {
     ...payload,
-    continuity_review_mode: resolveContinuityReviewModeForSourceTask(sourceTaskId),
+    continuity_review_mode: resolveRunContinuityReviewMode(run),
+    seedream_watermark: resolveRunMediaWatermark(run, "seedream"),
+    seedance_watermark: resolveRunMediaWatermark(run, "seedance"),
   };
 }
 

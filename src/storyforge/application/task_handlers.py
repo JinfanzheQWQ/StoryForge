@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -14,6 +15,7 @@ from storyforge.application.task_support import (
     propagate_shared_result,
     resolve_continuity_review_mode,
     resolve_llm_selection,
+    resolve_media_watermark,
     resolve_output_dir,
     resolve_pipeline_root_task_id,
     resolve_source_task,
@@ -51,10 +53,25 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
     use_llm = bool(task.payload.get("use_llm", True))
     llm_provider, llm_model = resolve_llm_selection(task)
     continuity_review_mode = resolve_continuity_review_mode(task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        default=context.config.seedance.watermark,
+    )
     output_root = _build_story_output_root(context, task)
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     story_result = run_story_generation_pipeline(
         brief=brief,
-        config=context.config,
+        config=runtime_config,
         project_root=context.project_root,
         use_llm=use_llm,
         llm_provider=llm_provider,
@@ -73,6 +90,8 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
         "source_task_id": task.task_id,
         "artifact_revision": utc_now(),
         "continuity_review_mode": continuity_review_mode,
+        "seedream_watermark": seedream_watermark,
+        "seedance_watermark": seedance_watermark,
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
     return response
@@ -85,7 +104,24 @@ def run_scene_structure_task(context: TaskExecutionContext, task: QueuedTask) ->
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     partial_response = {
         "project_id": task.project_id,
         "story_title": story_source.title,
@@ -98,12 +134,14 @@ def run_scene_structure_task(context: TaskExecutionContext, task: QueuedTask) ->
         "source_task_id": str(task.payload["source_task_id"]),
         "artifact_revision": utc_now(),
         "continuity_review_mode": continuity_review_mode,
+        "seedream_watermark": seedream_watermark,
+        "seedance_watermark": seedance_watermark,
     }
     persist_task_progress(context, task, partial_response)
 
     scene_structure_result = run_story_scene_structure_pipeline(
         story_source=story_source,
-        config=context.config,
+        config=runtime_config,
         project_root=context.project_root,
         use_llm=use_llm,
         llm_provider=llm_provider,
@@ -142,8 +180,25 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     resume_from_progress = bool(task.payload.get("resume_from_progress", False))
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     partial_response = _start_stage_task(
         context,
         task,
@@ -153,6 +208,8 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         pipeline_stage="segment_contracts_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
     if resume_from_progress:
         partial_response["resume_from_progress"] = True
@@ -170,7 +227,7 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
     try:
         segment_contracts_result = run_story_segment_contracts_pipeline(
             novel_package=novel_package,
-            config=context.config,
+            config=runtime_config,
             project_root=context.project_root,
             use_llm=use_llm,
             llm_provider=llm_provider,
@@ -228,7 +285,24 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
     novel_package = load_novel_package(source_task)
     use_llm = bool(task.payload.get("use_llm", source_task.payload.get("use_llm", True)))
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     partial_response = _start_stage_task(
         context,
         task,
@@ -238,11 +312,13 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         pipeline_stage="character_generation_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
 
     character_result = run_character_image_pipeline(
         novel_package=novel_package,
-        config=context.config,
+        config=runtime_config,
         project_root=context.project_root,
         output_root=output_dir,
         use_llm=use_llm,
@@ -283,9 +359,26 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
     master_only = bool(task.payload.get("master_only", False))
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     partial_response = _start_stage_task(
         context,
         task,
@@ -299,10 +392,12 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         ),
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
 
     scene_result = run_scene_image_pipeline(
-        config=context.config,
+        config=runtime_config,
         project_root=context.project_root,
         output_root=output_dir,
         submit_scenes=True,
@@ -349,9 +444,26 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
     merge_only = bool(task.payload.get("merge_only", False))
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
     partial_response = _start_stage_task(
         context,
         task,
@@ -361,11 +473,13 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         pipeline_stage="video_merge_started" if merge_only else "video_render_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
 
     if merge_only:
         video_result = run_video_merge_pipeline(
-            config=context.config,
+            config=runtime_config,
             project_root=context.project_root,
             output_root=output_dir,
             continuity_review_mode=continuity_review_mode,
@@ -386,7 +500,7 @@ def run_videos_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         }
     else:
         video_result = run_video_render_pipeline(
-            config=context.config,
+            config=runtime_config,
             project_root=context.project_root,
             output_root=output_dir,
             submit_seedance=True,
@@ -433,6 +547,18 @@ def run_continuity_repair_task(context: TaskExecutionContext, task: QueuedTask) 
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     segment_id = str(task.payload.get("segment_id", "")).strip()
     scene_id = str(task.payload.get("scene_id", "")).strip()
     if bool(segment_id) == bool(scene_id):
@@ -447,13 +573,20 @@ def run_continuity_repair_task(context: TaskExecutionContext, task: QueuedTask) 
         pipeline_stage="continuity_repair_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
 
     if scene_id:
         try:
             affected_segment_ids: set[str] = set()
             repair_result = run_scene_continuity_repair_pipeline(
-                config=context.config,
+                config=runtime_config,
                 project_root=context.project_root,
                 output_root=output_dir,
                 scene_id=scene_id,
@@ -501,7 +634,7 @@ def run_continuity_repair_task(context: TaskExecutionContext, task: QueuedTask) 
 
     try:
         repair_result = run_segment_continuity_repair_pipeline(
-            config=context.config,
+            config=runtime_config,
             project_root=context.project_root,
             output_root=output_dir,
             segment_id=segment_id,
@@ -556,8 +689,25 @@ def run_continuity_repair_batch_task(
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
     llm_provider, llm_model = resolve_llm_selection(task, source_task)
     continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
     severity_threshold = _normalize_repair_batch_severity(task.payload.get("severity_threshold"))
     max_units_per_batch = _normalize_repair_batch_limit(task.payload.get("max_units_per_batch"))
+    runtime_config = _build_runtime_config(
+        context.config,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
 
     partial_response = _start_stage_task(
         context,
@@ -568,6 +718,8 @@ def run_continuity_repair_batch_task(
         pipeline_stage="continuity_repair_batch_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
     )
     _persist_stage_update(
         context,
@@ -607,7 +759,7 @@ def run_continuity_repair_batch_task(
         try:
             if scope == "scene":
                 repair_result = run_scene_continuity_repair_pipeline(
-                    config=context.config,
+                    config=runtime_config,
                     project_root=context.project_root,
                     output_root=output_dir,
                     scene_id=target_id,
@@ -624,7 +776,7 @@ def run_continuity_repair_batch_task(
                 )
             else:
                 repair_result = run_segment_continuity_repair_pipeline(
-                    config=context.config,
+                    config=runtime_config,
                     project_root=context.project_root,
                     output_root=output_dir,
                     segment_id=target_id,
@@ -736,6 +888,19 @@ def _build_story_output_root(context: TaskExecutionContext, task: QueuedTask) ->
     )
 
 
+def _build_runtime_config(
+    config,
+    *,
+    seedream_watermark: bool,
+    seedance_watermark: bool,
+):
+    return replace(
+        config,
+        seedream=replace(config.seedream, watermark=seedream_watermark),
+        seedance=replace(config.seedance, watermark=seedance_watermark),
+    )
+
+
 def _start_stage_task(
     context: TaskExecutionContext,
     task: QueuedTask,
@@ -746,6 +911,8 @@ def _start_stage_task(
     pipeline_stage: str,
     pipeline_root_task_id: str,
     continuity_review_mode: str,
+    seedream_watermark: bool,
+    seedance_watermark: bool,
 ) -> dict[str, object]:
     response = _build_stage_response(
         task=task,
@@ -756,6 +923,8 @@ def _start_stage_task(
         pipeline_root_task_id=pipeline_root_task_id,
     )
     response["continuity_review_mode"] = continuity_review_mode
+    response["seedream_watermark"] = seedream_watermark
+    response["seedance_watermark"] = seedance_watermark
     persist_task_progress(context, task, response)
     return response
 

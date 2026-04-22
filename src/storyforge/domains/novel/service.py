@@ -11,6 +11,7 @@ from storyforge.agents.base import (
     AgentBackendUnavailableError,
     PromptRequest,
     UnavailableAgentBackend,
+    attach_prompt_metrics,
 )
 from storyforge.domains.novel.contracts import (
     ChapterPlan,
@@ -25,13 +26,12 @@ from storyforge.domains.novel.contracts import (
 )
 from storyforge.domains.novel.errors import NovelStructuredGenerationError
 from storyforge.domains.novel.prompts import (
+    build_architecture_prompt_context,
     build_architect_system_prompt,
     build_architect_user_prompt,
-    build_story_drafter_system_prompt,
-    build_story_drafter_user_prompt,
-    build_story_draft_context,
     build_cast_system_prompt,
     build_cast_user_prompt,
+    build_character_summary_context,
     build_character_system_prompt,
     build_character_slot_contract,
     build_character_user_prompt,
@@ -39,6 +39,9 @@ from storyforge.domains.novel.prompts import (
     build_chapter_planner_user_prompt,
     build_editor_system_prompt,
     build_editor_user_prompt,
+    build_story_drafter_system_prompt,
+    build_story_drafter_user_prompt,
+    build_story_draft_context,
 )
 from storyforge.domains.novel.repair import NovelRepairMixin
 from storyforge.domains.novel.rules import NovelRuleMixin
@@ -81,6 +84,8 @@ class NovelGeneratorService(
     NovelRepairMixin,
     NovelRuleMixin,
 ):
+    PROMPT_WARNING_THRESHOLD_CHARS = 5200
+
     def __init__(
         self,
         backend: AgentBackend | None = None,
@@ -114,7 +119,7 @@ class NovelGeneratorService(
                 system_prompt=build_story_drafter_system_prompt(),
                 user_prompt=build_story_drafter_user_prompt(
                     brief=brief,
-                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                    architecture_summary=build_architecture_prompt_context(architecture),
                 ),
                 metadata={"task": "story-drafter"},
             ),
@@ -143,7 +148,10 @@ class NovelGeneratorService(
         story_draft_set = StoryDraftSetSchema(
             chapters=[self._chapter_schema_from_seed(item) for item in story_source.chapters]
         )
-        story_draft_context = build_story_draft_context(story_source.chapters)
+        story_draft_context = build_story_draft_context(
+            story_source.chapters,
+            excerpt_limit=180,
+        )
 
         architecture = self._run_structured_agent(
             schema=StoryArchitectureSchema,
@@ -157,6 +165,7 @@ class NovelGeneratorService(
             ),
             validator=lambda value: self._validate_story_architecture_output(value),
         )
+        architecture_prompt_context = build_architecture_prompt_context(architecture)
 
         # Agreement: LLM-based cast analysis is the primary source of truth
         # for role structure. Local rules only do validation-facing normalization.
@@ -166,7 +175,7 @@ class NovelGeneratorService(
                 system_prompt=build_cast_system_prompt(),
                 user_prompt=build_cast_user_prompt(
                     brief=brief,
-                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                    architecture_summary=architecture_prompt_context,
                     story_draft_context=story_draft_context,
                 ),
                 metadata={"task": "cast-analyzer"},
@@ -189,7 +198,7 @@ class NovelGeneratorService(
                 system_prompt=build_character_system_prompt(),
                 user_prompt=build_character_user_prompt(
                     brief=brief,
-                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
+                    architecture_summary=architecture_prompt_context,
                     cast_analysis=cast_analysis,
                     story_draft_context=story_draft_context,
                 ),
@@ -231,8 +240,8 @@ class NovelGeneratorService(
                 system_prompt=build_chapter_planner_system_prompt(),
                 user_prompt=build_chapter_planner_user_prompt(
                     brief=brief,
-                    architecture_summary=architecture.model_dump_json(ensure_ascii=False),
-                    character_summary=character_roster.model_dump_json(ensure_ascii=False),
+                    architecture_summary=architecture_prompt_context,
+                    character_summary=build_character_summary_context(character_roster),
                     cast_analysis=cast_analysis,
                     story_draft_context=story_draft_context,
                 ),
@@ -385,6 +394,22 @@ class NovelGeneratorService(
                 attempt,
                 last_error,
             )
+            attempt_request = attach_prompt_metrics(
+                attempt_request,
+                soft_limit_chars=self.PROMPT_WARNING_THRESHOLD_CHARS,
+            )
+            request.metadata.update(
+                {
+                    "system_prompt_chars": attempt_request.metadata["system_prompt_chars"],
+                    "user_prompt_chars": attempt_request.metadata["user_prompt_chars"],
+                    "total_prompt_chars": attempt_request.metadata["total_prompt_chars"],
+                    "prompt_soft_limit_chars": attempt_request.metadata["prompt_soft_limit_chars"],
+                    "prompt_soft_limit_exceeded": attempt_request.metadata["prompt_soft_limit_exceeded"],
+                    "prompt_size_status": attempt_request.metadata["prompt_size_status"],
+                }
+            )
+            if "prompt_warning" in attempt_request.metadata:
+                request.metadata["prompt_warning"] = attempt_request.metadata["prompt_warning"]
             try:
                 response = self.backend.generate_structured(attempt_request, schema)
                 candidate = self._coerce_structured_response(response, schema)
@@ -549,6 +574,10 @@ class NovelGeneratorService(
                 **request.metadata,
                 "task": "character-designer-backfill",
             },
+        )
+        follow_up_request = attach_prompt_metrics(
+            follow_up_request,
+            soft_limit_chars=self.PROMPT_WARNING_THRESHOLD_CHARS,
         )
         supplemental = self.backend.generate_structured(follow_up_request, CharacterRosterSchema)
         supplemental_roster = self._coerce_structured_response(supplemental, CharacterRosterSchema)

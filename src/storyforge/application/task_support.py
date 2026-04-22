@@ -120,6 +120,35 @@ def resolve_continuity_review_mode(
     return default
 
 
+def resolve_media_watermark(
+    task: QueuedTask | TaskRecord,
+    *,
+    target: str,
+    source_task: TaskRecord | None = None,
+    default: bool,
+) -> bool:
+    key = f"{str(target).strip().lower()}_watermark"
+    for candidate in (
+        getattr(task, "payload", None),
+        getattr(task, "result", None),
+        getattr(source_task, "payload", None) if source_task is not None else None,
+        getattr(source_task, "result", None) if source_task is not None else None,
+    ):
+        if not candidate or key not in candidate:
+            continue
+        value = candidate.get(key)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            continue
+        normalized = str(value).strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(default)
+
+
 def propagate_shared_result(
     context: TaskExecutionContext,
     task_ids: set[str],

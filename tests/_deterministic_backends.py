@@ -16,6 +16,7 @@ from storyforge.domains.novel.schemas import (
 )
 from storyforge.domains.novel.service import NovelGeneratorService
 from storyforge.domains.video.schemas import (
+    ChapterCoveragePlanSchema,
     ChapterSceneStructureSchema,
     SceneContinuityRepairSchema,
     SceneSegmentChunkPlanSchema,
@@ -43,6 +44,7 @@ _CHAPTER_DIRECTIVE_PATTERN = re.compile(
     r"-\s*第\s*(?P<number>\d+)\s*章《(?P<title>[^》]+)》"
 )
 _CHAPTER_SUMMARY_PATTERN = re.compile(r"章节摘要：(?P<value>.+)")
+_CHAPTER_EVENT_ID_PATTERN = re.compile(r"-\s*(?P<event_id>ch\d{2}-ev\d{2})[:：]")
 _CHARACTER_BLOCK_PATTERN = re.compile(
     r"-\s*角色名：(?P<name>.+?)\n"
     r"\s*性别：(?P<gender>.+?)\n"
@@ -396,6 +398,8 @@ class DeterministicVideoBackend:
         task = str(request.metadata.get("task", "")).strip()
         if task == "video-character-bible":
             return self._build_character_visual_bible(request)
+        if task == "video-chapter-event-planner":
+            return self._build_chapter_event_plan(request)
         if task == "video-chapter-scene-planner":
             return self._build_scene_structure(request)
         if task == "video-scene-chunk-planner":
@@ -449,11 +453,17 @@ class DeterministicVideoBackend:
         story_title = self._novel_title(request.user_prompt)
         allowed_names = self._allowed_names(request.user_prompt)
         chapter_directives = self._chapter_directives(request.user_prompt)
+        event_ids = self._chapter_event_ids(request.user_prompt)
         focus_characters = allowed_names[:2] or ["主角"]
         scenes: list[dict[str, object]] = []
         for chapter_number, chapter_title, chapter_summary in chapter_directives:
             scene_id = f"ch{chapter_number:02d}-sc01"
             summary = chapter_summary or f"{chapter_title} 的核心事件。"
+            chapter_event_ids = [
+                event_id
+                for event_id in event_ids
+                if event_id.startswith(f"ch{chapter_number:02d}-")
+            ]
             scenes.append(
                 {
                     "scene_id": scene_id,
@@ -474,9 +484,40 @@ class DeterministicVideoBackend:
                         "continuity_notes": "保持同一场景的光线和空间关系",
                     },
                     "involved_characters": focus_characters,
+                    "covered_event_ids": chapter_event_ids or [f"ch{chapter_number:02d}-ev01"],
                 }
             )
         return ChapterSceneStructureSchema.model_validate({"scenes": scenes})
+
+    def _build_chapter_event_plan(self, request: PromptRequest):
+        chapter_number = int(request.metadata.get("chapter_number", 1) or 1)
+        chapter_text = self._chapter_full_text(request.user_prompt)
+        sentences = [
+            item.strip()
+            for item in re.split(r"[。！？!?]+", chapter_text)
+            if item.strip()
+        ]
+        if not sentences:
+            sentences = [f"第{chapter_number}章的核心事件"]
+        selected = []
+        for candidate in (sentences[0], sentences[min(len(sentences) - 1, 1)], sentences[-1]):
+            if candidate not in selected:
+                selected.append(candidate)
+        events = [
+            {
+                "event_id": f"ch{chapter_number:02d}-ev{index:02d}",
+                "summary": sentence[:48],
+                "source_evidence": [sentence[:24] or sentence],
+                "involved_characters": self._allowed_names(request.user_prompt)[:2],
+            }
+            for index, sentence in enumerate(selected, start=1)
+        ]
+        return ChapterCoveragePlanSchema.model_validate(
+            {
+                "chapter_number": chapter_number,
+                "events": events,
+            }
+        )
 
     def _build_scene_segment_contracts(self, request: PromptRequest):
         scene_id = str(request.metadata.get("scene_id", "")).strip() or "ch01-sc01"
@@ -624,7 +665,6 @@ class DeterministicVideoBackend:
                             "sound_effects": ["环境底噪"],
                             "music_direction": "轻度氛围音乐",
                             "timed_beats": [f"0-6秒：{summary}"],
-                            "scene_prompt": f"{story_title}，{summary}，保持环境和角色关系清晰",
                             "start_frame_prompt": f"{first_character} 在场景中开场入镜",
                             "mid_frame_prompt": (
                                 f"{'、'.join(focus_characters)} 在中段形成明确关系推进"
@@ -641,13 +681,24 @@ class DeterministicVideoBackend:
             )
         return VideoSegmentPlanSchema.model_validate({"scenes": scenes})
 
+    def _chapter_event_ids(self, user_prompt: str) -> list[str]:
+        return [
+            match.group("event_id").strip()
+            for match in _CHAPTER_EVENT_ID_PATTERN.finditer(user_prompt)
+        ]
+
+    def _chapter_full_text(self, user_prompt: str) -> str:
+        marker = "当前章节正文全文："
+        if marker not in user_prompt:
+            return ""
+        return user_prompt.split(marker, 1)[1].strip()
+
     def _build_segment_repair(self, request: PromptRequest):
         segment_id_match = re.search(r'"segment_id":\s*"([^"]+)"', request.user_prompt)
         segment_id = segment_id_match.group(1) if segment_id_match else "segment"
         return SegmentContinuityRepairSchema(
             segment_id=segment_id,
             repair_summary="deterministic repair",
-            scene_prompt="修复后的场景提示词",
             start_frame_prompt="修复后的首帧",
             mid_frame_prompt="",
             end_frame_prompt="修复后的尾帧",

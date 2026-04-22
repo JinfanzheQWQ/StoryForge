@@ -24,6 +24,8 @@ class CreateStoryTaskRequest(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     continuity_review_mode: Literal["off", "auto", "on"] = "auto"
+    seedream_watermark: bool | None = None
+    seedance_watermark: bool | None = None
 
 
 class CreateStageTaskRequest(BaseModel):
@@ -33,6 +35,8 @@ class CreateStageTaskRequest(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
+    seedream_watermark: bool | None = None
+    seedance_watermark: bool | None = None
     segment_id: str | None = None
     scene_id: str | None = None
     master_only: bool = False
@@ -65,6 +69,8 @@ class CreateContinuityRepairTaskRequest(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
+    seedream_watermark: bool | None = None
+    seedance_watermark: bool | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> "CreateContinuityRepairTaskRequest":
@@ -82,6 +88,8 @@ class CreateContinuityRepairBatchTaskRequest(BaseModel):
     llm_provider: str | None = None
     llm_model: str | None = None
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
+    seedream_watermark: bool | None = None
+    seedance_watermark: bool | None = None
     severity_threshold: Literal["high", "medium", "low"] = "medium"
     max_units_per_batch: int = Field(default=4, ge=1, le=12)
 
@@ -131,6 +139,8 @@ class UiBootstrapResponse(BaseModel):
     available_llm_options: list[dict[str, str]] = Field(default_factory=list)
     seedream_model: str
     seedance_model: str
+    seedream_watermark: bool
+    seedance_watermark: bool
 
 
 class ArtifactItem(BaseModel):
@@ -138,6 +148,21 @@ class ArtifactItem(BaseModel):
     path: str
     url: str | None = None
     kind: str
+
+
+class PromptReferenceBindingResponse(BaseModel):
+    label: str
+    kind: str
+    description: str = ""
+    url: str = ""
+
+
+class SubmittedRequestResponse(BaseModel):
+    provider: str = ""
+    endpoint: str = ""
+    variant: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)
 
 
 class PlannedSegmentArtifactResponse(BaseModel):
@@ -150,11 +175,25 @@ class PlannedSegmentArtifactResponse(BaseModel):
     chapter_number: int
     duration_seconds: int | None = None
     requires_mid_frame: bool = False
+    mid_frame_mode: str = "continuous"
     scene_master_frame: ArtifactItem | None = None
     start_frame: ArtifactItem | None = None
     mid_frame: ArtifactItem | None = None
     end_frame: ArtifactItem | None = None
     rendered_clip: ArtifactItem | None = None
+    scene_master_frame_prompt: str = ""
+    start_frame_prompt: str = ""
+    mid_frame_prompt: str = ""
+    end_frame_prompt: str = ""
+    video_prompt: str = ""
+    submitted_video_prompt: str = ""
+    submitted_prompt_variant: str = ""
+    submitted_reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)
+    scene_master_frame_request: SubmittedRequestResponse | None = None
+    start_frame_request: SubmittedRequestResponse | None = None
+    mid_frame_request: SubmittedRequestResponse | None = None
+    end_frame_request: SubmittedRequestResponse | None = None
+    video_request: SubmittedRequestResponse | None = None
     scene_ready: bool = False
     video_ready: bool = False
 

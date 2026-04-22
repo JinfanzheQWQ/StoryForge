@@ -138,6 +138,18 @@
                 <p class="field-help">V1 规则审校始终开启。V2 会额外调用 LLM 做软审校，默认只在复杂片段自动触发。</p>
               </label>
 
+              <label>
+                <span>图片保留水印</span>
+                <input type="checkbox" name="seedream_watermark" />
+                <p class="field-help">控制 Seedream 输出是否保留 AI 水印。关闭时会向接口提交 <code>watermark=false</code>。</p>
+              </label>
+
+              <label>
+                <span>视频保留水印</span>
+                <input type="checkbox" name="seedance_watermark" />
+                <p class="field-help">控制 Seedance 输出是否保留 AI 水印。关闭时会向接口提交 <code>watermark=false</code>。</p>
+              </label>
+
               <label class="wide">
                 <span>必须包含</span>
                 <input type="text" name="must_include" placeholder="广播站, 旧列车, 暴雨站台" />

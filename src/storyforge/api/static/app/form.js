@@ -23,8 +23,28 @@ function populateLlmOptions(options, selectedProvider) {
 export function fillInput(name, value) {
   const field = elements.form.elements.namedItem(name);
   if (field) {
+    if (field instanceof HTMLInputElement && field.type === "checkbox") {
+      field.checked = Boolean(value);
+      return;
+    }
     field.value = value;
   }
+}
+
+function resolveProjectTaskOption(detail, key, fallback) {
+  const tasks = Array.isArray(detail?.tasks)
+    ? [...detail.tasks].sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))
+    : [];
+  for (let index = tasks.length - 1; index >= 0; index -= 1) {
+    const task = tasks[index];
+    if (task?.result && Object.prototype.hasOwnProperty.call(task.result, key)) {
+      return Boolean(task.result[key]);
+    }
+    if (task?.payload && Object.prototype.hasOwnProperty.call(task.payload, key)) {
+      return Boolean(task.payload[key]);
+    }
+  }
+  return fallback;
 }
 
 export function applyBootstrapToForm(payload) {
@@ -41,6 +61,8 @@ export function applyBootstrapToForm(payload) {
   fillInput("llm_provider", payload.llm_provider);
   fillInput("llm_model", payload.llm_model);
   fillInput("continuity_review_mode", payload.continuity_review_mode || "auto");
+  fillInput("seedream_watermark", payload.seedream_watermark);
+  fillInput("seedance_watermark", payload.seedance_watermark);
   setSubmitStatus(
     `${payload.llm_provider} / ${payload.llm_model} 已就绪。`,
   );
@@ -84,9 +106,13 @@ export function clearForm() {
     fillInput("llm_provider", window.storyforgeBootstrap.llm_provider);
     fillInput("llm_model", window.storyforgeBootstrap.llm_model);
     fillInput("continuity_review_mode", window.storyforgeBootstrap.continuity_review_mode || "auto");
+    fillInput("seedream_watermark", window.storyforgeBootstrap.seedream_watermark);
+    fillInput("seedance_watermark", window.storyforgeBootstrap.seedance_watermark);
   } else {
     syncLlmModelPreset();
     fillInput("continuity_review_mode", "auto");
+    fillInput("seedream_watermark", false);
+    fillInput("seedance_watermark", false);
   }
   clearProjectBinding();
   setSubmitStatus("内容已清空，可以重新填写新的故事 brief。");
@@ -114,6 +140,8 @@ export function readProjectSubmission() {
       llm_provider: elements.form.elements.llm_provider.value.trim(),
       llm_model: elements.form.elements.llm_model.value.trim(),
       continuity_review_mode: elements.form.elements.continuity_review_mode.value.trim(),
+      seedream_watermark: Boolean(elements.form.elements.seedream_watermark.checked),
+      seedance_watermark: Boolean(elements.form.elements.seedance_watermark.checked),
     },
   };
 }
@@ -134,6 +162,14 @@ export function applyProjectToForm(detail) {
       || detail.tasks?.[0]?.payload?.continuity_review_mode
       || window.storyforgeBootstrap?.continuity_review_mode
       || "auto",
+  );
+  fillInput(
+    "seedream_watermark",
+    resolveProjectTaskOption(detail, "seedream_watermark", Boolean(window.storyforgeBootstrap?.seedream_watermark)),
+  );
+  fillInput(
+    "seedance_watermark",
+    resolveProjectTaskOption(detail, "seedance_watermark", Boolean(window.storyforgeBootstrap?.seedance_watermark)),
   );
   setProjectBinding(detail.project_id, detail.story_title || detail.title_hint);
 }

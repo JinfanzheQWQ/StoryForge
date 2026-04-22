@@ -30,6 +30,7 @@ model = "doubao-seedream-4-5-251128"
 auto_submit = false
 image_size = "2K"
 response_format = "url"
+watermark = false
 download_outputs = true
 
 [seedance]

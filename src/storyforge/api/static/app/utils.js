@@ -8,6 +8,20 @@ export function normalizeContinuityReviewMode(mode) {
   return "auto";
 }
 
+function normalizeOptionalBoolean(value) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return null;
+}
+
 export function continuityReviewModeLabel(mode) {
   const normalized = normalizeContinuityReviewMode(mode);
   if (normalized === "off") return "关闭";
@@ -187,6 +201,34 @@ export function resolveRunContinuityReviewMode(run) {
     state.bootstrap?.continuity_review_mode,
   ];
   return normalizeContinuityReviewMode(candidates.find((item) => String(item || "").trim()));
+}
+
+export function resolveRunMediaWatermark(run, target) {
+  const key = `${String(target || "").trim().toLowerCase()}_watermark`;
+  const candidates = [
+    run?.latestTask?.payload?.[key],
+    run?.latestTask?.result?.[key],
+    run?.latestVideoTask?.payload?.[key],
+    run?.latestVideoTask?.result?.[key],
+    run?.latestSceneTask?.payload?.[key],
+    run?.latestSceneTask?.result?.[key],
+    run?.latestCharacterTask?.payload?.[key],
+    run?.latestCharacterTask?.result?.[key],
+    run?.latestSegmentContractsTask?.payload?.[key],
+    run?.latestSegmentContractsTask?.result?.[key],
+    run?.latestSceneStructureTask?.payload?.[key],
+    run?.latestSceneStructureTask?.result?.[key],
+    run?.rootTask?.result?.[key],
+    run?.rootTask?.payload?.[key],
+    state.bootstrap?.[key],
+  ];
+  for (const value of candidates) {
+    const normalized = normalizeOptionalBoolean(value);
+    if (normalized !== null) {
+      return normalized;
+    }
+  }
+  return false;
 }
 
 export function findPreviewAsset(artifacts) {

@@ -133,9 +133,13 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 ### 视频域
 
 - [`../src/storyforge/domains/video/service.py`](../src/storyforge/domains/video/service.py)
+- [`../src/storyforge/domains/video/chapter_event_validation.py`](../src/storyforge/domains/video/chapter_event_validation.py)
 - [`../src/storyforge/domains/video/chapter_orchestration.py`](../src/storyforge/domains/video/chapter_orchestration.py)
 - [`../src/storyforge/domains/video/chunk_orchestration.py`](../src/storyforge/domains/video/chunk_orchestration.py)
+- [`../src/storyforge/domains/video/segment_validation.py`](../src/storyforge/domains/video/segment_validation.py)
 - [`../src/storyforge/domains/video/structure_validation.py`](../src/storyforge/domains/video/structure_validation.py)
+- [`../src/storyforge/domains/video/structured_generation.py`](../src/storyforge/domains/video/structured_generation.py)
+- [`../src/storyforge/domains/video/structured_retry_prompts.py`](../src/storyforge/domains/video/structured_retry_prompts.py)
 - [`../src/storyforge/domains/video/text_rules.py`](../src/storyforge/domains/video/text_rules.py)
 - [`../src/storyforge/domains/video/prompting.py`](../src/storyforge/domains/video/prompting.py)
 - [`../src/storyforge/domains/video/repair.py`](../src/storyforge/domains/video/repair.py)
@@ -147,10 +151,14 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 
 维护约定：
 
-- `service.py` 保留公开入口、总编排和共享 retry 基建；不要再把新的 `scene/chunk/transition` 结构校验或 `scene chunk / segment contract` repair 编排继续堆回去
+- `service.py` 保留公开入口与总编排；不要再把新的 chapter / scene / segment 校验、structured 执行基建、retry 文案或 repair 编排继续堆回去
+- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位与 targeted split 校验
 - `chapter_orchestration.py` 负责 `chapter event planner`、`chapter scene planner` 以及 `chapter -> scene` 展开编排
 - `chunk_orchestration.py` 负责 `scene chunk planner`、`segment contract planner` 及其定向 repair orchestration
+- `segment_validation.py` 负责 segment 合同校验，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突
 - `structure_validation.py` 负责 `scene/chunk/transition` 结构校验、软放行与重复/落点/边界判定
+- `structured_generation.py` 负责结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion
+- `structured_retry_prompts.py` 负责结构化 retry 文案 builder 与按错误类型追加的修复提示
 - `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则；不要再在 `service.py` 或新 mixin 里复制一套近似实现
 - prompt 构造放 `prompting.py`
 - LLM 输出修补放 `repair.py`

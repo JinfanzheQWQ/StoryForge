@@ -65,8 +65,12 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - 视频规划已稳定采用 `chapter -> scene -> chunk -> segment` 的分层生成链路
 - 视频域内部维护性拆分已继续推进：
   - `chapter_orchestration.py` 负责 chapter 级编排
+  - `chapter_event_validation.py` 负责 chapter event coverage 校验
   - `chunk_orchestration.py` 负责 scene chunk / segment contract 编排
+  - `segment_validation.py` 负责 segment 合同校验
   - `structure_validation.py` 负责 scene/chunk/transition 结构校验
+  - `structured_generation.py` 负责结构化 LLM 执行与重试循环
+  - `structured_retry_prompts.py` 负责结构化 retry 文案
   - `text_rules.py` 负责共用文本规则
   - `NovelToVideoService` 仍保留稳定公开入口
 - `project.scene_structure` 现在先抽取章节 must-cover 关键事件，再生成 `scene skeleton`
@@ -232,7 +236,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 
 - 应用层已拆分为 container / runtime / handlers / support / persistence
 - 小说域已拆分为 service / prompts / schemas / repair / rules
-- 视频域已拆分为 service / chapter_orchestration / chunk_orchestration / prompting / repair / planning
+- 视频域已拆分为 service / chapter_event_validation / chapter_orchestration / chunk_orchestration / segment_validation / structure_validation / structured_generation / structured_retry_prompts / text_rules / prompting / repair / planning
 - 测试侧 deterministic builders 已与运行时代码分离
 - 最近一次本地基线：
   - `.venv/bin/ruff check src/storyforge tests/test_pipelines.py tests/test_api.py`

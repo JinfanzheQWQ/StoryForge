@@ -55,7 +55,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - 前端创建页只允许选择 `llm_provider`
-- `llm_model` 仍会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
+- `llm_model` 会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
 - 同时会返回默认的 `continuity_review_mode`，当前默认值为 `auto`
 - 同时会返回 `seedream_watermark` 与 `seedance_watermark` 默认值，供前端决定本次 run 是否保留图片 / 视频水印
 
@@ -210,7 +210,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 每个 scene 的首个 chunk / 首个 segment 都会消费 `scene_transition_contract`，把跨 scene 承接落到 `opening_match / timed_beats`
 - `Scene Chunk Planner` 的 prompt 与结构化校验都会读取当前 scene 绑定的 `covered_event_summaries`，提前拦截把后续 scene 关键推进写进当前 scene 的越界 chunk
 - `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
-- `continuity_report.json` 的 `V1` 现在还会直接输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
+- `continuity_report.json` 的 `V1` 还会直接输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
 - `scene_structure_source.json` 是恢复专用的原始 scene skeleton 快照
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 记录进度、失败位置和恢复状态；每完成一个 chunk 就会回写一次 checkpoint
 
@@ -324,7 +324,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 传入 `scene_id` 后会提交该 scene 下全部 segment 的 Seedance clip
 - 单段执行不会自动重新生成其它片段，也不会自动拼接总片
 - `merge_only = true` 不能与 `segment_id` 或 `scene_id` 同时提交
-- 如果传 `merge_only = true`，则不会再向 Seedance 提交任务，而是把当前已生成的本地 mp4 片段按 manifest 顺序合并成 `rendered/full_story.mp4`
+- 如果传 `merge_only = true`，则不向 Seedance 提交任务，而是把当前已生成的本地 mp4 片段按 manifest 顺序合并成 `rendered/full_story.mp4`
 - `seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
 
 手动合并请求示例：
@@ -483,18 +483,18 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `error` 为失败时的可展示原因，前端会直接展示它。
 - 阶段任务会在提交时继承 `pipeline_root_task_id`，并通过 `payload.pipeline_root_task_id` 与 `result.pipeline_root_task_id` 指向同一条 story run。
 - `result.story_source_revision` 用于判断场景结构、分段合同、图片和视频是否仍对应当前正文。
-- `project.segment_contracts` 的 `result` 现在可能额外带 `segment_contract_progress_path` 与 `segment_contract_progress`
+- `project.segment_contracts` 的 `result` 可能额外带 `segment_contract_progress_path` 与 `segment_contract_progress`
 - `segment_contract_progress` 会包含 `status / total_chapters / total_scenes / total_chunks / completed_chapters / completed_scene_count / completed_chunk_count / failed_chapter_number / failed_scene_id / failed_chunk_id / resume_ready / chapters[]`
 - `chapters[].scenes[]` 下会继续带 `chunks[]`、`running_chunk_id`、`failed_chunk_id`
 - 分段合同失败时，`error` 会尽量带上 `chapter / scene_id / chunk_id` 上下文，前端可直接展示失败位置
 - `project.scenes` 的单段任务会带 `segment_id`；场景母图重生成任务会带 `scene_id` 和 `master_only = true`
-- `project.scenes` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部关键帧；内部连续性修复链路还可进一步附带受影响 `segment_ids`，把重跑范围缩小到 scene 内局部片段
-- `project.videos` 现在也可直接带 `scene_id`，表示重跑该 scene 下全部视频片段
-- `project.continuity_repair` 现在可带 `segment_id` 或 `scene_id`
+- `project.scenes` 可直接带 `scene_id`，表示重跑该 scene 下全部关键帧；内部连续性修复链路还可进一步附带受影响 `segment_ids`，把重跑范围缩小到 scene 内局部片段
+- `project.videos` 可直接带 `scene_id`，表示重跑该 scene 下全部视频片段
+- `project.continuity_repair` 可带 `segment_id` 或 `scene_id`
 - `project.continuity_repair_batch` 用于按风险优先级批量回写连续性合同，不会自动重跑媒体
 - `project.continuity_repair` 当前是 `plan-only`；任务会停在 `continuity_repair_plan_completed`，随后由任务状态本身转为 `completed`
 - `project.continuity_repair_batch` 当前也统一是 `plan-only`；任务会停在 `continuity_repair_batch_completed`，随后由任务状态本身转为 `completed`
-- 如果目标没有问题可修，修复任务会以 `completed noop` 结束，不会再报失败
+- 如果目标没有问题可修，修复任务会以 `completed noop` 结束，不会报失败
 - 修复任务的 `result` 会额外带 `repair_execution_mode`、`media_regeneration_required` 和 `pending_media_actions`
 - `scene_id` 修复任务的 `result` 还会额外带 `selection_mode` 与 `affected_segment_ids`，用于解释本次修复是局部联动还是整 scene 方案
 - `project.continuity_repair_batch` 的 `result` 还会额外带 `processed_unit_count`、`repaired_unit_count`、`noop_unit_count`、`failed_unit_count`、`remaining_repairable_count` 与 `has_more_batches`
@@ -515,7 +515,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `continuity_scene_groups`
 - `continuity_segment_groups`
 
-其中 `character_images` 现在除了基础的 `name / path / url / kind` 外，还会额外返回来自 `character_image_manifest.json` 的：
+其中 `character_images` 除了基础的 `name / path / url / kind` 外，还会额外返回来自 `character_image_manifest.json` 的：
 
 - `character_name`
 - `prompt`
@@ -561,7 +561,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `scene_master_frame_request / start_frame_request / mid_frame_request / end_frame_request / video_request` 会返回真实提交时的 `provider / endpoint / variant / payload / reference_bindings`
 - 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
 - 如果某段是非首个 scene 的首段，且上一场尾帧已经可用，`start_frame_request.reference_bindings` 里还会多一张 `temporal` 参考图，对应上一场最后一段尾帧
-- 对旧 run，如果历史上还没有落这些 request 字段，接口会基于当前 manifest 和产物文件回推出一份 `derived_from_manifest` 请求视图
+- 接口返回 manifest 中记录的请求视图；当 manifest 只包含产物文件时，会基于当前 manifest 和产物文件提供 `derived_from_manifest` 请求视图
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
 
@@ -620,7 +620,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `completed`
 - `failed`
 
-服务启动时会扫描上次残留的 `running` 任务，并把它们重新放回 `queued` 等待执行；不会再因为一次服务重启直接写成失败。
+服务启动时会扫描上次残留的 `running` 任务，并把它们重新放回 `queued` 等待执行；不会因为一次服务重启直接写成失败。
 
 ## 当前约束
 

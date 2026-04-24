@@ -132,6 +132,8 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 
 ### 视频域
 
+代码结构：
+
 - [`../src/storyforge/domains/video/service.py`](../src/storyforge/domains/video/service.py)
 - [`../src/storyforge/domains/video/chapter_event_validation.py`](../src/storyforge/domains/video/chapter_event_validation.py)
 - [`../src/storyforge/domains/video/chapter_orchestration.py`](../src/storyforge/domains/video/chapter_orchestration.py)
@@ -151,26 +153,29 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - [`../src/storyforge/pipelines/video_support.py`](../src/storyforge/pipelines/video_support.py)
 - [`../src/storyforge/pipelines/video_models.py`](../src/storyforge/pipelines/video_models.py)
 
+模块职责：
+
+- `service.py` 负责初始化、公开入口、主流程编排、逐章规划调度和 plan 后处理。
+- `chapter_orchestration.py` 负责 `Chapter Event Planner`、`Chapter Scene Planner` 与 `chapter -> scene` 展开编排。
+- `chunk_orchestration.py` 负责 `Scene Chunk Planner`、`Scene Segment Planner`、合同归一化、跨 chunk 承接状态和定向 chunk / segment repair 编排。
+- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位、章节正文读取 helper 与 targeted split 校验。
+- `structure_validation.py` 负责 scene / chunk / transition 结构校验、角色视觉表校验、软放行与重复 / 落点 / 边界判定。
+- `segment_validation.py` 负责 segment contract 与 segment plan 总体验证，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突。
+- `structured_generation.py` 负责结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion。
+- `structured_retry_prompts.py` 负责结构化 retry 文案 builder 与按错误类型追加的修复提示。
+- `prompting.py` 负责 planner prompt、media prompt、repair prompt 和共享规则块。
+- `repair.py` 负责 LLM 输出修补、continuity repair 入口、repair report 组装、repair 结果校验和 plan 重建。
+- `enrichment.py` 负责首帧 / 尾帧本地 prompt、音效与音乐方向补全。
+- `materialization.py` 负责 chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化。
+- `planning.py` 负责默认推导、story memory、媒体任务构建、规划产物路径 / 读取与任务装配。
+- `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则。
+
 维护约定：
 
-- `service.py` 保留初始化、公开入口与总编排；不要再把新的 chapter / scene / segment 校验、structured 执行基建、retry 文案或 repair 编排继续堆回去
-- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位、章节正文读取 helper 与 targeted split 校验
-- `chapter_orchestration.py` 负责 `chapter event planner`、`chapter scene planner` 以及 `chapter -> scene` 展开编排
-- `chunk_orchestration.py` 负责 `scene chunk planner`、`segment contract planner`、合同归一化、跨 chunk 承接状态及其定向 repair orchestration
-- `segment_validation.py` 负责 segment 合同与 segment plan 总体验证，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突
-- `structure_validation.py` 负责 `scene/chunk/transition` 结构校验、角色视觉表校验、软放行与重复/落点/边界判定
-- `structured_generation.py` 负责结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion
-- `structured_retry_prompts.py` 负责结构化 retry 文案 builder 与按错误类型追加的修复提示
-- `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则；不要再在 `service.py` 或新 mixin 里复制一套近似实现
-- prompt 构造放 `prompting.py`
-- LLM 输出修补、continuity repair 入口、repair report 组装与 repair 结果校验放 `repair.py`
-- 本地富化 helper 放 `enrichment.py`，包括首帧/尾帧本地 prompt、音效与音乐方向补全
-- 默认推导、规划产物路径/读取与任务装配放 `planning.py`
-- 运行时对象物化放 `materialization.py`，包括 chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化
-- pipeline facade 不要重新堆积辅助函数
-- `build_video_project()` 只保留主流程编排；角色 profile、voice map、runtime scene、runtime segment 这类物化逻辑不要回填到 `service.py`
-- 运行时默认规划 helper 与测试静态构造逻辑分开维护；测试夹具放 `tests/`，不要回流到 `planning.py`
-- 视频域的普通 structured retry 与 strict repair retry 应继续共用同一套重试执行 / retry request builder，不要再分叉出第三套重试模板
+- `service.py` 只承载入口和总编排，新增校验、structured 执行基建、retry 文案、repair 编排、prompt 组装和媒体任务构建都放到对应模块。
+- pipeline facade 只做阶段入口协调，不堆积视频域 helper。
+- 运行时默认规划 helper 与测试静态构造逻辑分开维护；测试夹具放 `tests/`。
+- 普通 structured retry 与 strict repair retry 共用同一套结构化执行和 retry request builder。
 
 ### 视频 Prompt 维护约定
 
@@ -269,13 +274,13 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 2. scene / segment 顺序乱
    先看 `_build_scene_chunk_planner_user_prompt`、`_build_scene_segment_contract_user_prompt`
 3. 相邻片段重复、像重新开演
-   先看 `_segment_continuity_rule_block`，再看 `repair.py` 和 `service.py` 里的 validator
+   先看 `_segment_continuity_rule_block`，再看 `repair.py`、`segment_validation.py` 和 `structure_validation.py` 里的 validator
 4. 对白 / 字幕说不完
-   先看 `_segment_audio_budget_rule_block`，再看 `service.py` 的时长校验和 repair retry
+   先看 `_segment_audio_budget_rule_block`，再看 `segment_validation.py` 的时长校验和 `repair.py` 的 repair retry
 5. 帧里塞了没出镜的人
    先看 `_frame_character_rule_block`，再看 schema 和 validator
 6. 帧角色字段空了但系统还在往下跑
-   先看 `service.py` 的 `start_frame_characters / mid_frame_characters / end_frame_characters` validator；当前运行时按帧级角色字段严格校验，缺失会直接触发 structured retry / fail-fast
+   先看 `materialization.py` 的 `start_frame_characters / mid_frame_characters / end_frame_characters` validator；当前运行时按帧级角色字段严格校验，缺失会直接触发 structured retry / fail-fast
 
 当前运行时使用的 planner 主链路就是这 3 个活跃 prompt。新需求直接改这 3 个 planner prompt，不要额外再开一套并行总规划写法。
 

@@ -175,7 +175,27 @@ scene skeleton 的额外硬约束：
 - 单个 scene 只能覆盖连续事件块
 - 最后一个 scene 必须覆盖章节最后一个关键事件
 - 如果 scene 漏掉章节后半段事件，结构化阶段会直接失败重试
-- stage2 将 scene skeleton 重建成最终 `scene_plan.json` 时，必须保留 `scene_transition_contract` 与 `covered_event_summaries`，不能在归一化或 subsegment 重编阶段把 scene 级边界信息丢掉
+- `scene_plan.json` 保留 `scene_transition_contract` 与 `covered_event_summaries`，scene 级边界信息
+
+## 视频域代码结构
+
+视频域服务入口是 [`../src/storyforge/domains/video/service.py`](../src/storyforge/domains/video/service.py)。它负责初始化、公开入口、主流程编排、逐章规划调度和 plan 后处理。
+
+核心模块职责：
+
+- `chapter_orchestration.py`：章节事件规划、章节 scene 规划和 `chapter -> scene` 展开编排。
+- `chunk_orchestration.py`：scene chunk 规划、segment contract 规划、合同归一化、跨 chunk 承接状态和定向 repair 编排。
+- `chapter_event_validation.py`：章节事件覆盖、事件粒度、正文定位、章节正文读取和 targeted split 校验。
+- `structure_validation.py`：scene / chunk / transition 结构校验、角色视觉表校验、软放行与重复 / 落点 / 边界判定。
+- `segment_validation.py`：segment contract 与 segment plan 总体验证，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突。
+- `structured_generation.py`：结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion。
+- `structured_retry_prompts.py`：结构化 retry 文案 builder 和按错误类型追加的修复提示。
+- `prompting.py`：planner prompt、media prompt、repair prompt 和共享规则块。
+- `repair.py`：LLM 输出修补、continuity repair 入口、repair report 组装、repair 结果校验和 plan 重建。
+- `enrichment.py`：首帧 / 尾帧本地 prompt、音效和音乐方向补全。
+- `materialization.py`：chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化。
+- `planning.py`：默认推导、story memory、媒体任务构建、规划产物路径 / 读取与任务装配。
+- `text_rules.py`：文本相似度、推进点、边界词、方向词等共用规则。
 
 ## 场景一致性与连续性合同
 
@@ -223,7 +243,7 @@ scene_master_frame
 - 生图阶段按帧选择参考图，不同帧只带当前出镜角色
 - `mid_frame_mode=continuous` 表示中段仍是主镜头连续推进
 - `mid_frame_mode=insert_cut` 表示中段是从主镜头短促切入的单人 / 局部插入镜头
-- 如果首帧和尾帧是同一组双人 / 多人角色，而中段只保留其中一人，现在允许这种 `双人 -> 单人 -> 双人` 结构，但必须显式写 `mid_frame_mode=insert_cut`，并在节拍和运镜中写清“从主镜头切入，再切回主镜头”
+- 如果首帧和尾帧是同一组双人 / 多人角色，而中段只保留其中一人，允许这种 `双人 -> 单人 -> 双人` 结构，但必须显式写 `mid_frame_mode=insert_cut`，并在节拍和运镜中写清“从主镜头切入，再切回主镜头”
 - `shot_state.screen_direction` 必须与尾部 `end_state_lock / end_frame_prompt / 最后一条 timed_beats` 保持同一运动轴线；如果合同一边写“靠近镜头”，一边又写“背影远去 / 走向深处”，结构化阶段会直接判定为无效合同
 
 ## 连续性审校与修复
@@ -284,7 +304,7 @@ Seedance 当前默认使用多模态参考图提交：
 - 如果该段是非首个 scene 的首段，prompt 还会额外压入 `scene_transition_contract` 的 entry / bridge / audio bridge 短指令
 - 如果完整多图组合被接口拒绝，才会逐步降级到更少参考图的合法组合
 - 如果某段没有对白、旁白和字幕，Seedance prompt 会显式声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，避免把静音动作段误提交成有字幕或有说话声的片段
-- 本地自动生成的 `sound_effects` 只允许来自环境基线；手机、书包、花束等瞬时随身道具不会再因为 `scene_bible.fixed_props` 被误写成环境拟音
+- 本地自动生成的 `sound_effects` 只允许来自环境基线；手机、书包、花束等瞬时随身道具不会因为 `scene_bible.fixed_props` 被误写成环境拟音
 
 执行作用域：
 
@@ -334,7 +354,7 @@ provider 策略：
 1. 优先读取 `parsed`
 2. 尝试从 `raw` 中提取 JSON
 3. 再执行一次普通 JSON 恢复调用
-4. 仍失败则抛出明确错误，由外层 structured retry 处理
+4. 失败则抛出明确错误，由外层 structured retry 处理
 
 普通文本生成能力仍可使用 `create_agent()`，但结构化生产链路以 `with_structured_output(...)` 为主。
 

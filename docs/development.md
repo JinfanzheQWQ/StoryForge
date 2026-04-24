@@ -143,6 +143,8 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - [`../src/storyforge/domains/video/text_rules.py`](../src/storyforge/domains/video/text_rules.py)
 - [`../src/storyforge/domains/video/prompting.py`](../src/storyforge/domains/video/prompting.py)
 - [`../src/storyforge/domains/video/repair.py`](../src/storyforge/domains/video/repair.py)
+- [`../src/storyforge/domains/video/enrichment.py`](../src/storyforge/domains/video/enrichment.py)
+- [`../src/storyforge/domains/video/materialization.py`](../src/storyforge/domains/video/materialization.py)
 - [`../src/storyforge/domains/video/planning.py`](../src/storyforge/domains/video/planning.py)
 - [`../src/storyforge/pipelines/video_pipeline.py`](../src/storyforge/pipelines/video_pipeline.py)
 - [`../src/storyforge/pipelines/video_planning.py`](../src/storyforge/pipelines/video_planning.py)
@@ -162,9 +164,11 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则；不要再在 `service.py` 或新 mixin 里复制一套近似实现
 - prompt 构造放 `prompting.py`
 - LLM 输出修补放 `repair.py`
+- 本地富化 helper 放 `enrichment.py`，包括首帧/尾帧本地 prompt、音效与音乐方向补全
 - 默认推导、规划产物路径/读取与任务装配放 `planning.py`
+- 运行时对象物化放 `materialization.py`，包括 chapter scene、scene segment、角色 profile、voice map、runtime scene / segment 与修复结果回写物化
 - pipeline facade 不要重新堆积辅助函数
-- `build_video_project()` 只保留主流程编排；角色 profile、voice map、runtime scene、runtime segment 这类物化逻辑应继续下沉到内部 helper
+- `build_video_project()` 只保留主流程编排；角色 profile、voice map、runtime scene、runtime segment 这类物化逻辑不要回填到 `service.py`
 - 运行时默认规划 helper 与测试静态构造逻辑分开维护；测试夹具放 `tests/`，不要回流到 `planning.py`
 - 视频域的普通 structured retry 与 strict repair retry 应继续共用同一套重试执行 / retry request builder，不要再分叉出第三套重试模板
 

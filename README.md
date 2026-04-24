@@ -26,19 +26,21 @@ StoryForge 是一个面向“小说生成 + 小说转视频”的工程化工作
 
 - 基于 `LangChain >= 1.2` 的结构化多 Agent 小说生成
 - 基于 `DeepSeek` 与 `ChatGPT 5.4` 的双 LLM 接入，页面可切换
-- 视频结构化规划已接入 `chapter -> scene -> segment` 三层结构
-- `project.segment_contracts` 已支持按 scene + scene 内 chunk checkpoint、失败位置回传和从失败位置继续
-- 同一 `scene` 现在会生成并复用 `scene_bible`，用于锁定地点、时间、光线、背景锚点与角色调度
-- 同一 `scene` 现在会先生成并复用 `scene_master_frame`，作为后续关键帧与视频的场景母图
-- 每个 `segment` 现在会生成并复用 `shot_state`，用于锁定景别、镜头推进、动作推进、道具连续性与尾部承接状态
-- 基于 `Doubao Seedream 4.5` 的角色图与场景首尾帧生成
-- 基于 `Seedance 2.0` 的视频片段生成、下载与 `ffmpeg` 合并
+- `chapter -> scene -> chunk -> segment` 四层视频规划结构
+- `project.segment_contracts` 按 chapter / scene / chunk 持续写入 checkpoint，支持失败位置回传和从失败位置继续
+- `story_memory.json` 保存章节级承接、角色关系、环境锚点和固定道具状态
+- `scene_plan.json` 保存 scene 结构、`scene_bible`、`covered_event_ids`、`covered_event_summaries` 与跨 scene 过渡合同
+- `segment_plan.json` 保存逐段执行索引、`shot_state`、`continuity_link`、首帧 / 中段 / 尾帧 prompt 和音频字幕字段
+- `scene_master_frame` 作为无角色空场景母图，锁定同一 scene 的背景环境、光线、固定道具和空间透视
+- 基于 `Doubao Seedream 4.5` 的角色定妆图、场景母图和 segment 关键帧生成
+- 基于 `Seedance 2.0` 的多模态参考图视频片段生成、下载与 `ffmpeg` 合并
+- 连续性审校与合同修复：规则审校、可选 LLM 软审校、segment 修复、scene 修复和批量风险合同修复
 - `FastAPI` + 异步任务队列 + MySQL 项目 / 任务持久化
 - 浏览器端六步式工作台 + HTTP API；CLI 提供服务启动入口
 
 ## 核心工作流
 
-StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
+StoryForge 默认采用六阶段后台任务流：
 
 1. 生成小说正文
 2. 生成场景结构
@@ -47,41 +49,56 @@ StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
 5. 生成场景图
 6. 生成视频
 
-在第 1 步和第 2 步之间，页面会先展示并允许编辑 `story_source`。第 3 步现在会持续回写分段合同进度，后端会为 `scene` 与 scene 内 `chunk` 持续落 checkpoint；失败后可直接“从失败位置继续”。视频合并仍然是可选的手动动作，不自动执行。
+页面在第 1 步和第 2 步之间展示并允许编辑 `story_source`。分段合同阶段会持续回写 `segment_contract_progress`，后端按 chapter / scene / chunk 写入 checkpoint；失败后可直接从失败位置继续。视频合并是可选手动动作。
 
 ## 主要特性
 
 - 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Editorial Reviewer`
-- 小说链路采用 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图；`Story Architect` 负责项目底稿、主题和舞台约束
-- Web 工作台支持先展示并编辑生成后的小说正文；保存正文后，相关结构化结果和媒体资产会被标记为需要重做
-- Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，当前内置 `DeepSeek` 与 `ChatGPT 5.4`
-- 角色结构约定：以 LLM `Cast Analyzer` 结果为主，优先依据已生成小说草稿抽取 cast slots，heuristics 只做规则校验、归一化与轻量 repair
-- 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，仍失败就显式报错
-- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；若第一次 structured 调用空返回，还会再做一次 plain JSON 回收
-- LLM 配置已补 `llm.max_tokens`，当前默认 `8192`；视频分镜规划也已压缩 scene/segment 重复字段，降低 `finish_reason='length'` 导致的 JSON 截断
-- `story_memory` prompt 现在会按章节批次收紧成 `chapter_batch_view + recent_chapter_memory + focus_cast_bible`，scene / chunk planner 还会从正文里抽局部聚焦摘录，进一步降低长章节 prompt 压力
-- `story_memory` 现在还会为每章保存更细粒度的 carry-over 摘要，用于后续章节承接角色关系、环境锚点和固定道具状态
-- 分步结构化阶段具备后端幂等保护：`project.scene_structure` 与 `project.segment_contracts` 都会按正文修订复用已有 queued / running / completed 任务
-- `project.segment_contracts` 会在运行中返回 `segment_contract_progress`；当前前端展示 `章 + scene` 进度，后端同时保留 `chunk` 级恢复状态，并在存在 checkpoint 时给出“从失败位置继续”入口
-- Web、API、CLI 默认都要求真实 LLM provider 配置
-- 视频规划与执行解耦：先产出角色视觉档案、片段规划、场景帧和 Seedance manifest，再决定是否提交真实任务
-- 视频规划已拆成场景主规划与执行索引两层：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 保留给逐段执行和重试
-- 视频 segment 规划在 live LLM 模式下采用 fail-fast：若返回分析模板、伪分镜或空结构，系统会重试并最终显式失败，保证落盘的是可执行规划
-- Seedance manifest 标题继承真实小说标题；加载产物时会优先从 `novel_package.json` / `story_source.json` 恢复标题
-- 角色一致性链路：角色定妆卡 -> 场景首尾帧 -> 视频片段
-- 场景一致性链路：`scene_bible` -> 场景图 prompt -> Seedance 视频 prompt
-- 场景母图链路：`scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
-- 镜头连续性链路：`shot_state` -> 场景图 prompt -> Seedance 视频 prompt
-- 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 场景图 prompt -> Seedance 视频 prompt
-- 连续性审校链路：`continuity_report.json` 同时汇总 `V1` 规则校验与可选 `V2` LLM 软审校，支持 `off / auto / on`
-- 连续性修复链路：时间线高风险 scene 或 segment 可直接触发 `project.continuity_repair`，由 LLM 只重写目标范围合同，并返回后续建议执行的媒体动作，不会自动重跑媒体
-- 项目详情时间线按 `scene` 分组展示多个 `segment`，同场景连续片段会优先按 `scene_id` 复用前一段尾帧
-- 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面，减少信息格、色卡和材质块对角色一致性的干扰
-- 音频与字幕链路：对白、旁白、硬字幕文案会进入 Seedance prompt
+- 小说链路采用 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图
+- Web 工作台支持审阅并编辑生成后的小说正文；保存正文后，相关结构化结果和媒体资产会被标记为需要重做
+- Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，内置 `DeepSeek` 与 `ChatGPT 5.4`
+- 角色结构以 LLM `Cast Analyzer` 结果为主，优先依据小说正文抽取 cast slots；heuristics 负责规则校验、归一化与轻量 repair
+- 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，失败原因会写入任务记录
+- LangChain 结构化主链路按 provider 选择策略：`DeepSeek` 使用 `with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `with_structured_output(method="json_schema", include_raw=True)`；structured 空返回会进入 plain JSON 回收
+- LLM 配置包含 `llm.max_tokens`，默认 `8192`
+- `story_memory` prompt 使用 `chapter_batch_view + recent_chapter_memory + focus_cast_bible`，scene / chunk planner 从正文抽局部聚焦摘录，控制长章节 prompt 长度
+- 分步结构化阶段具备后端幂等保护：`project.scene_structure` 与 `project.segment_contracts` 按正文修订复用已有 queued / running / completed 任务
+- 视频规划与执行解耦：先产出角色视觉档案、scene plan、segment plan、场景帧和 Seedance manifest，再决定是否提交真实媒体任务
+- 视频规划分为场景主规划与执行索引：`scene_plan.json` 负责场景级结构与 `scene_bible`，`segment_plan.json` 负责逐段执行和重试
+- 视频 segment 规划在 live LLM 模式下采用 fail-fast：分析模板、伪分镜、空结构、时长预算不匹配、关键帧角色不完整都会触发结构化重试或显式失败
+- 角色一致性链路：角色定妆卡 -> 场景关键帧 -> 视频片段
+- 场景一致性链路：`scene_bible` -> `scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
+- 镜头连续性链路：`shot_state` -> 关键帧 prompt -> Seedance 视频 prompt
+- 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 关键帧 prompt -> Seedance 视频 prompt
+- Seedance 视频提交使用首帧 / 中段 / 尾帧三张时间锚点图；prompt 使用 `图片1 / 图片2 / 图片3` 绑定起步、中段和收束画面
+- 连续性审校链路：`continuity_report.json` 汇总规则审校与可选 LLM 软审校，支持 `off / auto / on`
+- 连续性修复链路：时间线高风险 scene 或 segment 可触发 `project.continuity_repair`，只回写目标范围合同和报告，媒体重跑由用户手动决定
+- 项目详情时间线按 `scene` 分组展示多个 `segment`，连续片段可复用前一段尾帧作为下一段首帧
+- 角色定妆图使用白底三视图模板：只显示角色姓名，生成正面 / 左侧面 / 背面
+- 音频与字幕链路：对白、旁白、角色音色、环境音、音乐方向和硬字幕文案进入 Seedance prompt
 - 项目级管理：支持同一项目下多次运行结果追踪
 - 元数据持久化：基于 MySQL
-- 页面会展示任务和各阶段失败原因，便于定位 LLM schema、Seedream、Seedance 或下载失败
-- 自动产物落盘：核心 JSON、图片、视频和执行报告会保存到输出目录
+- 页面展示任务和各阶段失败原因，便于定位 LLM schema、Seedream、Seedance 或下载失败
+- 自动产物落盘：核心 JSON、图片、视频和执行报告保存到输出目录
+
+## 代码结构
+
+视频域当前模块职责：
+
+- `src/storyforge/domains/video/service.py`：初始化、公开入口、主流程编排、逐章规划调度和 plan 后处理
+- `src/storyforge/domains/video/chapter_orchestration.py`：章节事件规划、章节 scene 规划和 `chapter -> scene` 展开编排
+- `src/storyforge/domains/video/chunk_orchestration.py`：scene chunk 规划、segment contract 规划、合同归一化、跨 chunk 承接状态和定向 repair 编排
+- `src/storyforge/domains/video/chapter_event_validation.py`：章节事件覆盖、事件粒度、正文定位、章节正文读取和 targeted split 校验
+- `src/storyforge/domains/video/structure_validation.py`：scene / chunk / transition 结构校验、角色视觉表校验、软放行与边界判定
+- `src/storyforge/domains/video/segment_validation.py`：segment contract 与 segment plan 总体验证，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突
+- `src/storyforge/domains/video/prompting.py`：planner prompt、media prompt、repair prompt 和共享规则块
+- `src/storyforge/domains/video/repair.py`：LLM 输出修补、continuity repair 入口、repair report 组装、repair 结果校验和 plan 重建
+- `src/storyforge/domains/video/enrichment.py`：首帧 / 尾帧本地 prompt、音效和音乐方向补全
+- `src/storyforge/domains/video/materialization.py`：chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化
+- `src/storyforge/domains/video/planning.py`：默认推导、story memory、媒体任务构建、规划产物路径 / 读取与任务装配
+- `src/storyforge/domains/video/structured_generation.py`：结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion
+- `src/storyforge/domains/video/structured_retry_prompts.py`：结构化 retry 文案 builder 和按错误类型追加的修复提示
+- `src/storyforge/domains/video/text_rules.py`：文本相似度、推进点、边界词、方向词等共用规则
 
 ## 技术栈
 
@@ -102,7 +119,7 @@ StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
 
 ## 产品预览
 
-下面这组图已经不是简单占位框，而是按当前产品方向绘制的静态 SaaS mockup。后续你只需要把它们替换成真实截图即可，README 结构不用再改。
+下面这组图展示当前产品方向的静态 SaaS mockup，可替换为真实运行截图。
 
 <p align="center">
   <img src="docs/assets/screenshots/home-showcase-mockup.svg" alt="StoryForge home showcase mockup" width="100%">
@@ -112,12 +129,6 @@ StoryForge 默认采用六阶段后台任务流，而不是一键全跑：
   <img src="docs/assets/screenshots/project-detail-mockup.svg" alt="StoryForge project detail mockup" width="49%">
   <img src="docs/assets/screenshots/pipeline-studio-mockup.svg" alt="StoryForge pipeline studio mockup" width="49%">
 </p>
-
-建议后续按同样版式替换为：
-
-- 首页 / 品牌展示截图
-- 项目详情与资产页截图
-- 六步工作流或视频生产页截图
 
 ## 快速开始
 
@@ -153,7 +164,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 
 注意：
 
-- 页面里的 `模型 ID` 现在是只读默认值；如果后端平台不支持该模型，应改后端配置 / 平台映射，而不是在页面手动乱填一个模型名
+- 页面里的 `模型 ID` 是只读默认值；如果后端平台不支持该模型，应改后端配置 / 平台映射，而不是在页面手动填写模型名
 
 还必须配置 MySQL 密码：
 
@@ -196,7 +207,7 @@ uv run storyforge api serve
 1. 在页面创建故事并生成小说
 2. 在“小说”标签页审阅并按需修改正文
 3. 手动触发场景结构生成
-4. 检查 `chapter -> scene` 结构后，再生成分段合同
+4. 检查 `chapter -> scene` 结构后，再生成分段合同；分段合同内部按 scene chunk 执行
    - 如果分段合同在中途失败，页面会显示 `章 + scene` 进度和失败位置，可直接从失败位置继续
 5. 查看 `scene` 分组后的时间线规划
 6. 在同一条 story run 上生成角色图

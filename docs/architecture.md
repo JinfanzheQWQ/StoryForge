@@ -298,11 +298,10 @@ scene_master_frame
 Seedance 当前默认使用多模态参考图提交：
 
 - 首帧 / 中段 / 尾帧会作为有顺序的 `reference_image`
-- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定时间顺序，并收敛成“参考图 + 分阶段画面推进 + 音频字幕约束”的短版结构；其中 `画面推进` 会优先消费 `timed_beats` 的秒数与动作描述
+- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定首帧、中段帧和尾帧，并收敛成“参考图绑定 + 分阶段画面推进 + 音频字幕约束”的短版结构；其中 `画面推进` 会优先消费 `timed_beats` 的秒数与动作描述
 - 如果当前段存在真实旁白或对白，`画面推进` 阶段行也会直接带入口播内容，而不只依赖单独的对白清单
 - 与此同时，上游 `scene segment planner / segment continuity repair` 的 prompt 也会强制口播型片段把台词落进 `timed_beats`，这样下游视频 prompt 不需要再猜哪一拍发生了哪句口播
 - 如果该段是非首个 scene 的首段，prompt 还会额外压入 `scene_transition_contract` 的 entry / bridge / audio bridge 短指令
-- 如果完整多图组合被接口拒绝，才会逐步降级到更少参考图的合法组合
 - 如果某段没有对白、旁白和字幕，Seedance prompt 会显式声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，避免把静音动作段误提交成有字幕或有说话声的片段
 - 本地自动生成的 `sound_effects` 只允许来自环境基线；手机、书包、花束等瞬时随身道具不会因为 `scene_bible.fixed_props` 被误写成环境拟音
 

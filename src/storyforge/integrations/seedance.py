@@ -730,7 +730,7 @@ class SeedanceClient:
         self,
         clip: SeedanceClipTask,
     ) -> list[tuple[str, dict[str, Any], str, list[dict[str, str]]]]:
-        candidates = [
+        return [
             (
                 "timeline_only",
                 *self._build_payload_with_metadata(
@@ -739,44 +739,8 @@ class SeedanceClient:
                     include_start_frame=True,
                     include_end_frame=True,
                 ),
-            ),
-            (
-                "start_mid_only",
-                *self._build_payload_with_metadata(
-                    clip,
-                    include_mid_frame_reference=True,
-                    include_start_frame=True,
-                    include_end_frame=False,
-                ),
-            ),
-            (
-                "start_end_only",
-                *self._build_payload_with_metadata(
-                    clip,
-                    include_mid_frame_reference=False,
-                    include_start_frame=True,
-                    include_end_frame=True,
-                ),
-            ),
-            (
-                "start_only",
-                *self._build_payload_with_metadata(
-                    clip,
-                    include_mid_frame_reference=False,
-                    include_start_frame=True,
-                    include_end_frame=False,
-                ),
-            ),
+            )
         ]
-        unique_candidates: list[tuple[str, dict[str, Any], str, list[dict[str, str]]]] = []
-        seen_signatures: set[str] = set()
-        for variant, payload, resolved_prompt, reference_bindings in candidates:
-            signature = repr(payload)
-            if signature in seen_signatures:
-                continue
-            seen_signatures.add(signature)
-            unique_candidates.append((variant, payload, resolved_prompt, reference_bindings))
-        return unique_candidates
 
     def _build_submit_attempt_debug(
         self,

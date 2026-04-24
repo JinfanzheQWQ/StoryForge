@@ -70,7 +70,7 @@ StoryForge 默认采用六阶段后台任务流：
 - 场景一致性链路：`scene_bible` -> `scene_master_frame` -> 首帧 / 中段 / 尾帧 -> Seedance 参考图
 - 镜头连续性链路：`shot_state` -> 关键帧 prompt -> Seedance 视频 prompt
 - 跨段承接链路：`continuity_link` -> 首帧承接判断 -> 关键帧 prompt -> Seedance 视频 prompt
-- Seedance 视频提交使用首帧 / 中段 / 尾帧三张时间锚点图；prompt 使用 `图片1 / 图片2 / 图片3` 绑定起步、中段和收束画面
+- Seedance 视频提交使用首帧 / 中段 / 尾帧三张时间锚点图；prompt 使用 `图片1 / 图片2 / 图片3` 绑定首帧、中段帧和尾帧，并按阶段写画面推进
 - 连续性审校链路：`continuity_report.json` 汇总规则审校与可选 LLM 软审校，支持 `off / auto / on`
 - 连续性修复链路：时间线高风险 scene 或 segment 可触发 `project.continuity_repair`，只回写目标范围合同和报告，媒体重跑由用户手动决定
 - 项目详情时间线按 `scene` 分组展示多个 `segment`，连续片段可复用前一段尾帧作为下一段首帧

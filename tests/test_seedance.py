@@ -129,7 +129,7 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
         self.assertIn("图片2：中段", payload["content"][0]["text"])
 
-    def test_submit_clip_retries_with_simpler_payload_after_http_400(self) -> None:
+    def test_submit_clip_reports_timeline_payload_rejection_without_retry(self) -> None:
         client = SeedanceClient(SeedanceConfig())
         clip = SeedanceClipTask(
             segment_id="seg-retry",
@@ -160,11 +160,6 @@ class SeedanceClientTestCase(unittest.TestCase):
                 json={"error": {"message": "reference_image is invalid"}},
                 request=request,
             ),
-            httpx.Response(
-                200,
-                json={"id": "task-seedance-1"},
-                request=request,
-            ),
         ]
 
         class FakeClient:
@@ -184,18 +179,19 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         fake_client = FakeClient(responses)
 
-        task_id = client._submit_clip(fake_client, clip)
+        with self.assertRaisesRegex(RuntimeError, "reference_image is invalid"):
+            client._submit_clip(fake_client, clip)
 
-        self.assertEqual(task_id, "task-seedance-1")
-        self.assertEqual(len(fake_client.calls), 2)
-        self.assertEqual(clip.submit_variant, "start_mid_only")
+        self.assertEqual(len(fake_client.calls), 1)
+        self.assertEqual(clip.submit_variant, "timeline_only")
         self.assertIn("提交素材绑定", clip.submitted_prompt)
         self.assertTrue(clip.submitted_reference_bindings)
         self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "start")
         self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "mid")
+        self.assertEqual(clip.submitted_reference_bindings[2]["kind"], "end")
         self.assertEqual(clip.submitted_reference_bindings[0]["label"], "图片1")
         self.assertEqual(clip.submitted_request_info["provider"], "seedance")
-        self.assertEqual(clip.submitted_request_info["variant"], "start_mid_only")
+        self.assertEqual(clip.submitted_request_info["variant"], "timeline_only")
         self.assertEqual(
             clip.submitted_request_info["payload"]["content"][1]["image_url"]["url"],
             "https://example.com/start.png",
@@ -203,10 +199,6 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(
             [item.get("role", "text") for item in fake_client.calls[0]["payload"]["content"]],
             ["text", "reference_image", "reference_image", "reference_image"],
-        )
-        self.assertEqual(
-            [item.get("role", "text") for item in fake_client.calls[1]["payload"]["content"]],
-            ["text", "reference_image", "reference_image"],
         )
         self.assertIn("图片2：中段", fake_client.calls[0]["payload"]["content"][0]["text"])
 
@@ -237,9 +229,6 @@ class SeedanceClientTestCase(unittest.TestCase):
         request = httpx.Request("POST", "https://example.com/tasks")
         responses = [
             httpx.Response(400, json={"error": {"message": "bad timeline_only"}}, request=request),
-            httpx.Response(400, json={"error": {"message": "bad start_mid_only"}}, request=request),
-            httpx.Response(400, json={"error": {"message": "bad start_end_only"}}, request=request),
-            httpx.Response(400, json={"error": {"message": "bad start_only"}}, request=request),
         ]
 
         class FakeClient:
@@ -249,7 +238,7 @@ class SeedanceClientTestCase(unittest.TestCase):
             def post(self, endpoint, json, headers):
                 return self.response_queue.pop(0)
 
-        with self.assertRaisesRegex(RuntimeError, "bad start_only"):
+        with self.assertRaisesRegex(RuntimeError, "bad timeline_only"):
             client._submit_clip(FakeClient(responses), clip)
 
     def test_extract_video_url_from_live_status_shape(self) -> None:

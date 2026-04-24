@@ -2228,23 +2228,8 @@ story memory JSON：
             frame_characters,
             effective_involved_characters,
         )
-        scene_bible_context = self._frame_scene_bible_prompt_context(
-            scene_bible,
-            frame_characters,
-            effective_involved_characters,
-        )
-        shot_state_context = self._frame_shot_state_prompt_context(
-            shot_state,
-            frame_characters,
-            effective_involved_characters,
-            frame_type=frame_type,
-        )
-        continuity_link_context = self._frame_continuity_link_prompt_context(
-            continuity_link,
-            frame_characters,
-            effective_involved_characters,
-            frame_type=frame_type,
-        )
+        # Keep frame prompts short: scene and character consistency are carried by
+        # reference images, while text only describes the current frame action.
         action_prompt = self._frame_action_prompt(
             sanitized_prompt,
             frame_characters,
@@ -2254,9 +2239,6 @@ story memory JSON：
             f"{frame_type}。",
             self._frame_reference_binding_prompt(frame_characters),
             action_prompt,
-            scene_bible_context,
-            shot_state_context,
-            continuity_link_context,
             self._frame_character_presence_prompt(frame_characters),
             self.FRAME_PURE_IMAGE_PROMPT,
         ]
@@ -2264,12 +2246,12 @@ story memory JSON：
 
     def _frame_reference_binding_prompt(self, frame_characters: list[str]) -> str:
         unique_characters = self._merge_unique_character_names(frame_characters)
-        parts = ["图片1是场景参考"]
+        parts = ["图片1是空场景参考图"]
         for index, name in enumerate(unique_characters[:2], start=2):
-            parts.append(f"图片{index}是{name}")
+            parts.append(f"图片{index}是{name}角色参考图")
         if len(unique_characters) > 2:
             parts.append("其余当前帧角色也按对应参考图还原")
-        return "，".join(parts) + "。"
+        return "，".join(parts) + "。只使用这些参考图，不新增其他角色或文字元素。"
 
     def _frame_action_prompt(
         self,
@@ -3564,23 +3546,21 @@ story memory JSON：
         else:
             lines.append("本段无对白、无旁白、无字幕，只保留环境音、拟音和音乐。")
 
-        lines.append("参考图：")
+        lines.append("参考图绑定：")
         start_anchor_line = self._seedance_frame_prompt_text(
             segment.start_frame_prompt,
             segment.start_frame_characters,
             segment.involved_characters,
         )
         if start_anchor_line:
-            lines.append(f"- 图片1：{start_anchor_line}")
+            lines.append(f"- 图片1 是首帧：{start_anchor_line}")
         if has_mid_anchor:
-            lines.append(
-                "- 图片2："
-                + self._seedance_frame_prompt_text(
-                    segment.mid_frame_prompt,
-                    segment.mid_frame_characters,
-                    segment.involved_characters,
-                )
+            mid_anchor_line = self._seedance_frame_prompt_text(
+                segment.mid_frame_prompt,
+                segment.mid_frame_characters,
+                segment.involved_characters,
             )
+            lines.append(f"- 图片2 是中段帧：{mid_anchor_line}")
         end_anchor_line = self._seedance_frame_prompt_text(
             segment.end_frame_prompt,
             segment.end_frame_characters,
@@ -3588,7 +3568,11 @@ story memory JSON：
         )
         if end_anchor_line:
             end_image_label = "图片3" if has_mid_anchor else "图片2"
-            lines.append(f"- {end_image_label}：{end_anchor_line}")
+            lines.append(f"- {end_image_label} 是尾帧：{end_anchor_line}")
+        if has_mid_anchor:
+            lines.append("画面必须按 图片1 -> 图片2 -> 图片3 自然推进。")
+        else:
+            lines.append("画面必须按 图片1 -> 图片2 自然推进。")
         lines.extend(self._seedance_transition_guard_lines(segment))
         lines.extend(self._seedance_scene_transition_lines(segment, scene))
         if narration:

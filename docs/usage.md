@@ -321,21 +321,20 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 - 对应执行报告是 `seedance_execution.json`
 - 视频阶段也是按 segment 单独触发
-- 视频 prompt 会复用同一段所属 scene 的 `scene_bible`，把场景连续性约束直接写进 Seedance 请求
+- 视频 prompt 使用已生成的首帧 / 中段 / 尾帧作为时间锚点；场景连续性在关键帧生成前由 `scene_bible / shot_state / continuity_link` 消化
 - 视频阶段默认按多模态参考图模式提交：首帧 / 中段 / 尾帧会作为有顺序的 `reference_image` 一起送入 Seedance，并在 prompt 里显式绑定成 `图片1 / 图片2 / 图片3`
 - 视频阶段不提交 `scene_master_frame` 或角色图；Seedance 只接收首帧 / 中段 / 尾帧三张时间锚点图
 - `scene_bible / shot_state / continuity_link` 的约束会先被压缩进关键帧描述里，视频基础 prompt 不逐段复述这些大段合同原文
-- 视频基础 prompt 会直接输出 `参考图`：`图片1 / 图片2 / 图片3` 分别描述起步、中段、收束画面，再按开场 / 中段 / 收束分阶段写 `画面推进`；如果 `timed_beats` 已给出明确秒数与动作，会优先直接用这些 beat 来写
+- 视频基础 prompt 会直接输出 `参考图绑定`：`图片1 / 图片2 / 图片3` 分别描述首帧、中段帧、尾帧，再按开场 / 中段 / 收束分阶段写 `画面推进`；如果 `timed_beats` 已给出明确秒数与动作，会优先直接用这些 beat 来写
 - 如果某段有真实旁白或对白，`画面推进` 里也会直接写出该时间段的口播内容，方便你直接看到“哪一秒谁说什么”
 - 上游结构化阶段会明确要求：有旁白或对白的 segment，`timed_beats` 本身就要写出对应时间段里的真实口播内容
 - 如果当前段是非首个 scene 的首段，视频 prompt 还会额外追加一小段跨 scene 承接指令：前几秒先长成 `next_scene_entry_match`，再执行 `bridge_action / visual_bridge`，并按 `audio_bridge` 保持开场音频尾韵
 - Seedance 提交前会再补一层 `提交素材绑定`，只说明本次真实提交里的 `图片1 / 图片2 / 图片3`
-- 视频短版 prompt 保留对白、旁白、角色音色、环境音、音乐和硬字幕要求，并避免重复复述合同原文
+- 视频短版 prompt 保留对白、旁白、角色音色、环境音、音乐和硬字幕要求，并避免复述 scene_bible / shot_state / continuity_link 合同原文
 - 视频短版 prompt 不包含 `片段标题 / 场景与基线 / 镜头与动作` 这些重复栏目
 - 如果某段使用 `mid_frame_mode=insert_cut`，视频 prompt 会再额外写明：`图片1 / 图片3` 是主关系镜头，`图片2` 是插入镜头，必须先建立主关系、再自然切入插入镜头、最后切回主关系
 - 如果关键帧之间角色人数、角色集合或构图关系发生变化，视频 prompt 会明确要求可见的入画 / 靠近 / 离场 / 景别重构过程，避免直接硬跳
 - 如果某个 segment 没有对白、旁白和字幕，视频 prompt 会明确声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，不会对静音动作段追加硬字幕烧录指令
-- 如果完整多图组合被接口拒绝，系统会提交更少参考图的合法组合；中段锚点图是默认时间锚点参考图
 - 只有对应片段场景关键帧已就绪时，时间线里的“生成视频”按钮才会放开
 - 智能修复本身不会自动重跑视频；修复完成后需要你手动点击对应 segment 或 scene 的“生成视频”
 - 修复任务会继续归在当前制作版本下展示，不会额外长出一个新的版本块
@@ -407,14 +406,14 @@ outputs/<story-slug>/
   页面时间线会直接读取这份规划来展示完整片段列表，即使某个片段还没有生成任何图片或视频，也会先显示出来等待单独触发。
 - `scene_image_manifest.json`
   场景关键帧任务清单，记录每个片段的首帧、中段锚点帧（如有）、尾帧、每一帧实际出镜角色、角色参考图和输出位置。
-  单帧生图会默认按短版图片绑定语义生成：`图片1` 是 `scene_master_frame`，`图片2 / 图片3` 是当前帧角色参考，若运行时追加上一帧连续性参考，也只会放在后面辅助衔接，不会覆盖 `图片1` 的场景主参考语义。
+  单帧生图按短版图片绑定语义生成：`图片1` 是 `scene_master_frame`，`图片2 / 图片3` 是当前帧角色参考，prompt 正文只描述当前帧动作；若运行时追加上一帧连续性参考，也只会放在后面辅助衔接，不会覆盖 `图片1` 的场景主参考语义。
 - `seedream_character_execution.json`
   角色图执行报告，只用于确认角色图阶段是否成功以及失败原因。
 - `seedream_scene_execution.json`
   场景图执行报告，只用于确认场景图阶段是否成功以及失败原因。
 - `seedance_manifest.json`
   最终视频提交清单，Seedance 会按这里的每个 clip 去生成视频。
-  StoryForge 默认会用“首帧 + 中段锚点图（如有）+ 尾帧”的多模态组合提交，并在 prompt 里用 `图片1 / 图片2 / 图片3` 明确绑定时间顺序；若 Seedance 对完整组合返回 400，才会自动降级到更保守的图片组合继续重试。
+  StoryForge 默认会用“首帧 + 中段锚点图（如有）+ 尾帧”的多模态组合提交，并在 prompt 里用 `图片1 / 图片2 / 图片3` 明确绑定时间顺序。
   clip 里会同时保存基础视频 prompt，以及提交后回写的 `submitted_prompt / submit_variant / submitted_reference_bindings`，用于还原真实送审内容。
   `title` 应继承真实小说标题，不使用 `segment_video_manifest` 这类文件用途名；读取产物时会优先从 `novel_package.json` / `story_source.json` 恢复标题。
 - `seedance_execution.json`
@@ -463,7 +462,7 @@ outputs/<story-slug>/
 ## 失败与重试
 
 - 所有任务都会在接口和页面上返回 `error` 字段，前端会展示任务级和阶段级失败原因。
-- Seedance 视频任务如果在提交阶段被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和各次降级尝试。
+- Seedance 视频任务如果在提交阶段被接口拒绝，`seedance_execution.json` 会记录真实响应体、请求摘要和本次提交尝试。
 - LLM 结构化输出失败会由 StoryForge 外层最多重试 3 次；失败会显式标记任务失败。
 - LangChain structured output 会优先读取 parsed tool 结果；如果模型没有触发 tool call 但 raw 文本里有 JSON，会自动提取 JSON 校验；如果第一次 structured 调用返回空结构，还会再走一次 LangChain 普通 JSON 回收；两次都拿不到合法 JSON 时，才会显示“模型没有返回结构化对象”这类明确原因。
 - 视频 segment 规划还会额外拒绝带有 `当前片段聚焦`、`结尾要保留`、`当前小段聚焦` 这类分析模板话术的伪分镜；看到这类错误时，应直接重跑“生成分段合同”；如果上游 scene skeleton 也已失效，再先重跑“生成场景结构”。

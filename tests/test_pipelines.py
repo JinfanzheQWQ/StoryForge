@@ -2496,7 +2496,6 @@ class PipelineTestCase(unittest.TestCase):
                         )
                 if task == "video-scene-segment-planner":
                     scene_id = str(request.metadata.get("scene_id", "")).strip()
-                    chunk_id = str(request.metadata.get("chunk_id", "")).strip()
                     if scene_id == "ch01-sc02":
                         return SceneSegmentContractBatchSchema.model_validate(
                             {
@@ -12057,8 +12056,8 @@ class PipelineTestCase(unittest.TestCase):
             "首帧",
         )
 
-        self.assertIn("图片1是场景参考", frame_prompt)
-        self.assertIn("图片2是林远", frame_prompt)
+        self.assertIn("图片1是空场景参考图", frame_prompt)
+        self.assertIn("图片2是林远角色参考图", frame_prompt)
         self.assertIn("纯画面，不要文字、字幕、水印或 Logo。", frame_prompt)
         self.assertNotIn("我喜欢你很久了", frame_prompt)
         self.assertNotIn("毕业倒计时", frame_prompt)
@@ -12169,8 +12168,7 @@ class PipelineTestCase(unittest.TestCase):
             continuity_link=continuity_link,
         )
 
-        self.assertIn("中段停在林晓停在长椅另一侧，和陈默隔着半步相望", frame_prompt)
-        self.assertIn("延续前后关键帧之间已经建立的机位、朝向和动作方向", frame_prompt)
+        self.assertIn("林晓停在长椅另一侧，抬眼看向陈默", frame_prompt)
         self.assertNotIn("随后两人拥抱并亲吻", frame_prompt)
         self.assertNotIn("继续走近", frame_prompt)
 
@@ -12255,9 +12253,9 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertIn("本段无对白、无旁白、无字幕", prompt)
         self.assertIn("字幕约束：本段没有可烧录字幕", prompt)
-        self.assertIn("参考图：", prompt)
-        self.assertIn("图片1：林远独自站在栈道入口", prompt)
-        self.assertIn("图片2：林远仍站在原地", prompt)
+        self.assertIn("参考图绑定：", prompt)
+        self.assertIn("图片1 是首帧：林远独自站在栈道入口", prompt)
+        self.assertIn("图片2 是尾帧：林远仍站在原地", prompt)
         self.assertIn("画面推进 0-3秒：先按图片1建立", prompt)
         self.assertIn("画面推进 3-6秒：在同一组角色和空间里连续推进", prompt)
         self.assertIn("这一段拍出“林远在栈道入口停住，望向前方”", prompt)
@@ -12329,10 +12327,10 @@ class PipelineTestCase(unittest.TestCase):
 
         prompt = service._build_seedance_clip_prompt(segment)
 
-        self.assertIn("参考图：", prompt)
-        self.assertIn("图片1：陈默和林晚一起停在镜湖长椅旁", prompt)
-        self.assertIn("图片2：短促切入林晚的单人反应特写", prompt)
-        self.assertIn("图片3：镜头切回后，两人仍停在镜湖长椅旁对视", prompt)
+        self.assertIn("参考图绑定：", prompt)
+        self.assertIn("图片1 是首帧：陈默和林晚一起停在镜湖长椅旁", prompt)
+        self.assertIn("图片2 是中段帧：短促切入林晚的单人反应特写", prompt)
+        self.assertIn("图片3 是尾帧：镜头切回后，两人仍停在镜湖长椅旁对视", prompt)
         self.assertIn("画面推进 0-3秒：先按图片1建立", prompt)
         self.assertIn("画面推进 3-5秒：再短促切到图片2", prompt)
         self.assertIn("画面推进 5-8秒：最后明确切回图片3", prompt)
@@ -12585,13 +12583,13 @@ class PipelineTestCase(unittest.TestCase):
         )
         video_prompt = service._build_seedance_clip_prompt(segment)
 
-        self.assertIn("图片1是场景参考", frame_prompt)
-        self.assertIn("图片2是林远", frame_prompt)
+        self.assertIn("图片1是空场景参考图", frame_prompt)
+        self.assertIn("图片2是林远角色参考图", frame_prompt)
         self.assertIn("紫藤花架", frame_prompt)
         self.assertNotIn("缓慢推进", frame_prompt)
         self.assertNotIn("苏晴", frame_prompt)
         self.assertIn("开场先承接", frame_prompt)
-        self.assertIn("参考图", video_prompt)
+        self.assertIn("参考图绑定", video_prompt)
         self.assertIn("图片1", video_prompt)
         self.assertIn("图片2", video_prompt)
         self.assertIn("林远站在花架下等待", video_prompt)

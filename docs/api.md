@@ -557,7 +557,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `video_prompt` 是分段合同阶段落盘的基础视频 prompt
 - `submitted_video_prompt`、`submitted_prompt_variant`、`submitted_reference_bindings` 只有该段真正提交过视频后才会有值
 - `mid_frame_mode` 当前取值为 `continuous` 或 `insert_cut`；当前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
-- `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的起步 / 中段 / 收束画面
+- `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的首帧 / 中段帧 / 尾帧
 - `scene_master_frame_request / start_frame_request / mid_frame_request / end_frame_request / video_request` 会返回真实提交时的 `provider / endpoint / variant / payload / reference_bindings`
 - 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
 - 如果某段是非首个 scene 的首段，且上一场尾帧已经可用，`start_frame_request.reference_bindings` 里还会多一张 `temporal` 参考图，对应上一场最后一段尾帧

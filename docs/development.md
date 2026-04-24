@@ -154,9 +154,9 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 维护约定：
 
 - `service.py` 保留公开入口与总编排；不要再把新的 chapter / scene / segment 校验、structured 执行基建、retry 文案或 repair 编排继续堆回去
-- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位与 targeted split 校验
+- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位、章节正文读取 helper 与 targeted split 校验
 - `chapter_orchestration.py` 负责 `chapter event planner`、`chapter scene planner` 以及 `chapter -> scene` 展开编排
-- `chunk_orchestration.py` 负责 `scene chunk planner`、`segment contract planner` 及其定向 repair orchestration
+- `chunk_orchestration.py` 负责 `scene chunk planner`、`segment contract planner`、合同归一化、跨 chunk 承接状态及其定向 repair orchestration
 - `segment_validation.py` 负责 segment 合同校验，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突
 - `structure_validation.py` 负责 `scene/chunk/transition` 结构校验、软放行与重复/落点/边界判定
 - `structured_generation.py` 负责结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion
@@ -166,7 +166,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - LLM 输出修补放 `repair.py`
 - 本地富化 helper 放 `enrichment.py`，包括首帧/尾帧本地 prompt、音效与音乐方向补全
 - 默认推导、规划产物路径/读取与任务装配放 `planning.py`
-- 运行时对象物化放 `materialization.py`，包括 chapter scene、scene segment、角色 profile、voice map、runtime scene / segment 与修复结果回写物化
+- 运行时对象物化放 `materialization.py`，包括 chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化
 - pipeline facade 不要重新堆积辅助函数
 - `build_video_project()` 只保留主流程编排；角色 profile、voice map、runtime scene、runtime segment 这类物化逻辑不要回填到 `service.py`
 - 运行时默认规划 helper 与测试静态构造逻辑分开维护；测试夹具放 `tests/`，不要回流到 `planning.py`

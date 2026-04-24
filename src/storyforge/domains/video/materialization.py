@@ -24,6 +24,22 @@ from storyforge.domains.video.schemas import (
 
 
 class VideoMaterializationMixin:
+    def _require_contract_frame_characters(
+        self,
+        *,
+        field_name: str,
+        frame_characters: list[str],
+        involved_characters: list[str],
+    ) -> list[str]:
+        if not involved_characters:
+            raise ValueError(f"{field_name} 无法校验，因为 involved_characters 为空。")
+        normalized = [
+            name for name in frame_characters if name and name in involved_characters
+        ]
+        if not normalized:
+            raise ValueError(f"{field_name} 不能为空，且只能使用 involved_characters 内角色。")
+        return normalized
+
     def _materialize_chapter_scene(
         self,
         *,

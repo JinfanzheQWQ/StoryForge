@@ -15,6 +15,23 @@ from storyforge.domains.video.text_rules import (
 class VideoChapterEventValidationMixin:
     """Validates chapter event coverage and targeted event splits."""
 
+    def _chapter_story_text(
+        self,
+        *,
+        novel_package: NovelPackage,
+        chapter_number: int,
+    ) -> str:
+        draft = next(
+            (item for item in novel_package.chapters if item.number == chapter_number),
+            None,
+        )
+        if draft is not None and draft.markdown.strip():
+            return draft.markdown
+        chapter = next(
+            item for item in novel_package.outline.chapters if item.number == chapter_number
+        )
+        return chapter.summary
+
     def _chapter_event_end_coverage_min_ratio(
         self,
         chapter_text_length: int,

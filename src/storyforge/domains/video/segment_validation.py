@@ -3,11 +3,13 @@ from __future__ import annotations
 from math import ceil
 import re
 
+from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.errors import (
     SegmentActionSplitRequiredError,
     SegmentSpeechSplitRequiredError,
 )
 from storyforge.domains.video.schemas import (
+    VideoSegmentPlanSchema,
     ChapterSceneSchema,
     SceneSegmentContractBatchSchema,
     SceneSegmentContractSchema,
@@ -34,6 +36,112 @@ TIMED_BEAT_PATTERN = re.compile(
 
 class VideoSegmentValidationMixin:
     """Validates segment contracts and frame-transition constraints."""
+
+    def _validate_segment_plan_output(
+        self,
+        plan: VideoSegmentPlanSchema,
+        *,
+        novel_package: NovelPackage,
+        expected_chapter_numbers: set[int] | None = None,
+    ) -> VideoSegmentPlanSchema:
+        chapter_numbers = expected_chapter_numbers or {
+            item.number for item in novel_package.outline.chapters
+        }
+        chapter_coverage: dict[int, int] = {
+            number: 0 for number in chapter_numbers
+        }
+        forbidden_meta_phrases = (
+            "当前片段聚焦",
+            "结尾要保留",
+            "当前小段聚焦",
+        )
+        if not plan.scenes:
+            raise ValueError("VideoSegmentPlanSchema.scenes 不能为空。")
+        for scene in plan.scenes:
+            if scene.chapter_number not in chapter_numbers:
+                raise ValueError(
+                    f"scene {scene.scene_id} 引用了不存在的 chapter_number={scene.chapter_number}。"
+                )
+            if not scene.title.strip() or not scene.summary.strip():
+                raise ValueError(f"scene {scene.scene_id} 缺少 title 或 summary。")
+            if not scene.segments:
+                raise ValueError(f"scene {scene.scene_id} 至少需要 1 个 segment。")
+        for segment in plan.segments:
+            if segment.chapter_number not in chapter_numbers:
+                raise ValueError(
+                    f"segment {segment.segment_id} 引用了不存在的 chapter_number={segment.chapter_number}。"
+                )
+            chapter_coverage[segment.chapter_number] = chapter_coverage.get(segment.chapter_number, 0) + 1
+            if not segment.involved_characters:
+                raise ValueError(f"segment {segment.segment_id} 缺少 involved_characters。")
+            if not segment.start_frame_characters:
+                raise ValueError(f"segment {segment.segment_id} 缺少 start_frame_characters。")
+            if not segment.end_frame_characters:
+                raise ValueError(f"segment {segment.segment_id} 缺少 end_frame_characters。")
+            if segment.requires_mid_frame and not segment.mid_frame_characters:
+                raise ValueError(
+                    f"segment {segment.segment_id} requires_mid_frame=true 时缺少 mid_frame_characters。"
+                )
+            self._validate_segment_direction_consistency(
+                segment_id=segment.segment_id,
+                screen_direction=segment.shot_state.screen_direction,
+                end_state_lock=segment.shot_state.end_state_lock,
+                end_frame_prompt=segment.end_frame_prompt,
+                timed_beats=segment.timed_beats,
+            )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="start_frame_prompt",
+                prompt_text=segment.start_frame_prompt,
+                frame_characters=segment.start_frame_characters,
+                frame_label="start_frame",
+            )
+            if segment.requires_mid_frame:
+                self._validate_single_frame_focus_conflict(
+                    segment_id=segment.segment_id,
+                    field_name="mid_frame_prompt",
+                    prompt_text=segment.mid_frame_prompt,
+                    frame_characters=segment.mid_frame_characters,
+                    frame_label="mid_frame",
+                )
+            self._validate_single_frame_focus_conflict(
+                segment_id=segment.segment_id,
+                field_name="end_frame_prompt",
+                prompt_text=segment.end_frame_prompt,
+                frame_characters=segment.end_frame_characters,
+                frame_label="end_frame",
+            )
+            fields_to_check = [
+                segment.summary,
+                segment.narration,
+                segment.start_frame_prompt,
+                segment.mid_frame_prompt,
+                segment.end_frame_prompt,
+                *segment.dialogue_lines,
+                *segment.subtitle_lines,
+                *segment.timed_beats,
+            ]
+            joined = "\n".join(item for item in fields_to_check if item).strip()
+            if not joined:
+                raise ValueError(f"segment {segment.segment_id} 缺少有效分镜内容。")
+            matched_phrase = next(
+                (phrase for phrase in forbidden_meta_phrases if phrase in joined),
+                "",
+            )
+            if matched_phrase:
+                raise ValueError(
+                    f"segment {segment.segment_id} 包含分析模板话术“{matched_phrase}”，"
+                    "说明模型没有输出可直接执行的正式分镜。"
+                )
+        missing_chapters = [
+            number for number, count in sorted(chapter_coverage.items()) if count <= 0
+        ]
+        if missing_chapters:
+            raise ValueError(
+                "视频分镜没有覆盖全部章节，缺失章节："
+                + "、".join(str(item) for item in missing_chapters)
+            )
+        return plan
 
     def _fit_duration_to_speech_budget(
         self,

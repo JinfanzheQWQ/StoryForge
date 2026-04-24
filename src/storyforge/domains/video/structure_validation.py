@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.schemas import (
+    CharacterVisualBibleSchema,
     ChapterCoveragePlanSchema,
     ChapterSceneSchema,
     ChapterSceneStructureSchema,
@@ -23,6 +24,41 @@ from storyforge.domains.video.text_rules import (
 
 class VideoStructureValidationMixin:
     """Shared structure validators for chapter/scene/chunk planning."""
+
+    def _validate_character_visual_bible_output(
+        self,
+        visual_bible: CharacterVisualBibleSchema,
+        *,
+        novel_package: NovelPackage,
+    ) -> CharacterVisualBibleSchema:
+        canonical_names = [item.name for item in novel_package.outline.characters]
+        canonical_genders = {
+            item.name: item.gender
+            for item in novel_package.outline.characters
+        }
+        actual_names = [item.name.strip() for item in visual_bible.characters]
+        if len(actual_names) != len(canonical_names):
+            raise ValueError(
+                "CharacterVisualBibleSchema 角色数量必须与小说角色表一致。"
+                f"期望 {len(canonical_names)}，实际 {len(actual_names)}。"
+            )
+        if set(actual_names) != set(canonical_names):
+            raise ValueError(
+                "CharacterVisualBibleSchema 角色名必须与小说角色表完全一致。"
+                f"期望：{canonical_names}；实际：{actual_names}。"
+            )
+        for item in visual_bible.characters:
+            if not item.appearance.strip() or not item.outfit.strip() or not item.portrait_prompt.strip():
+                raise ValueError(
+                    f"角色 {item.name} 缺少 appearance / outfit / portrait_prompt。"
+                )
+            expected_gender = canonical_genders.get(item.name.strip(), "").strip()
+            if expected_gender and item.gender.strip() != expected_gender:
+                raise ValueError(
+                    f"角色 {item.name} 的 gender 必须继承小说角色卡。"
+                    f"期望 {expected_gender}，实际 {item.gender!r}。"
+                )
+        return visual_bible
 
     def _validate_scene_segment_chunk_output(
         self,

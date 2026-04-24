@@ -58,10 +58,10 @@ class VideoRepairMixin:
             inserted_keys.add(scene_key)
 
         if len(inserted_keys) != len(grouped_segments):
-            fallback_plan = VideoSegmentPlanSchema.model_validate(
+            derived_missing_scene_plan = VideoSegmentPlanSchema.model_validate(
                 {"segments": [item.model_dump() for item in replacement_segments]}
             )
-            for scene in fallback_plan.scenes:
+            for scene in derived_missing_scene_plan.scenes:
                 scene_key = (scene.chapter_number, scene.scene_id)
                 if scene_key in inserted_keys:
                     continue

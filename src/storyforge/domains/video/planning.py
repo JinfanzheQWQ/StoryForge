@@ -689,52 +689,6 @@ class VideoPlanningMixin:
             )
         return VideoSegmentPlanSchema.model_validate({"scenes": merged_scenes})
 
-    def _rebuild_plan_preserving_scenes(
-        self,
-        *,
-        source_plan: VideoSegmentPlanSchema,
-        replacement_segments: list[VideoSegmentSchema],
-    ) -> VideoSegmentPlanSchema:
-        grouped_segments: dict[tuple[int, str], list[VideoSegmentSchema]] = {}
-        for segment in replacement_segments:
-            grouped_segments.setdefault(
-                (segment.chapter_number, segment.scene_id),
-                [],
-            ).append(segment)
-
-        rebuilt_scenes: list[dict[str, object]] = []
-        inserted_keys: set[tuple[int, str]] = set()
-        for scene in source_plan.scenes:
-            scene_key = (scene.chapter_number, scene.scene_id)
-            scene_segments = grouped_segments.get(scene_key, [])
-            if not scene_segments:
-                continue
-            involved_characters = list(scene.involved_characters)
-            for segment in scene_segments:
-                for name in segment.involved_characters:
-                    if name not in involved_characters:
-                        involved_characters.append(name)
-            rebuilt_scenes.append(
-                scene.model_copy(
-                    update={
-                        "segments": scene_segments,
-                        "involved_characters": involved_characters,
-                    }
-                ).model_dump()
-            )
-            inserted_keys.add(scene_key)
-
-        if len(inserted_keys) != len(grouped_segments):
-            fallback_plan = VideoSegmentPlanSchema.model_validate(
-                {"segments": [item.model_dump() for item in replacement_segments]}
-            )
-            for scene in fallback_plan.scenes:
-                scene_key = (scene.chapter_number, scene.scene_id)
-                if scene_key in inserted_keys:
-                    continue
-                rebuilt_scenes.append(scene.model_dump())
-
-        return VideoSegmentPlanSchema.model_validate({"scenes": rebuilt_scenes})
 
     def _compact_story_memory_text(
         self,
@@ -1740,7 +1694,7 @@ class VideoPlanningMixin:
     def _default_mid_frame_focus_text(
         self,
         segment: VideoSegment | VideoSegmentSchema,
-        fallback_text: str = "",
+        focus_hint: str = "",
     ) -> str:
         beat_descriptions = self._extract_beat_descriptions(segment.timed_beats)
         if beat_descriptions:
@@ -1749,7 +1703,7 @@ class VideoPlanningMixin:
             if middle_focus:
                 return middle_focus
         for candidate in (
-            fallback_text,
+            focus_hint,
             segment.summary,
             segment.start_frame_prompt,
             segment.end_frame_prompt,

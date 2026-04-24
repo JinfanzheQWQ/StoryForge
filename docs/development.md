@@ -163,7 +163,7 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 - `structured_retry_prompts.py` 负责结构化 retry 文案 builder 与按错误类型追加的修复提示
 - `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则；不要再在 `service.py` 或新 mixin 里复制一套近似实现
 - prompt 构造放 `prompting.py`
-- LLM 输出修补放 `repair.py`
+- LLM 输出修补、continuity repair 入口、repair report 组装与 repair 结果校验放 `repair.py`
 - 本地富化 helper 放 `enrichment.py`，包括首帧/尾帧本地 prompt、音效与音乐方向补全
 - 默认推导、规划产物路径/读取与任务装配放 `planning.py`
 - 运行时对象物化放 `materialization.py`，包括 chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import re
 
+from storyforge.agents.base import PromptRequest
+from storyforge.core.io import to_jsonable
 from storyforge.domains.novel.contracts import NovelPackage
+from storyforge.domains.video.contracts import VideoProjectPackage, VideoScene, VideoSegment
 from storyforge.domains.video.schemas import (
     CharacterVisualBibleSchema,
     ContinuityLinkSchema,
     SceneBibleSchema,
+    SceneContinuityRepairSchema,
+    SegmentContinuityRepairSchema,
     ShotStateSchema,
     VideoSceneSchema,
     VideoSegmentPlanSchema,
@@ -15,6 +20,330 @@ from storyforge.domains.video.schemas import (
 
 
 class VideoRepairMixin:
+    def repair_segment_continuity(
+        self,
+        *,
+        novel_package: NovelPackage,
+        project_package: VideoProjectPackage,
+        segment_id: str,
+        continuity_issues: list[dict[str, object]],
+    ) -> tuple[VideoSegmentSchema, dict[str, object]]:
+        target_index = next(
+            (index for index, item in enumerate(project_package.segments) if item.segment_id == segment_id),
+            -1,
+        )
+        if target_index < 0:
+            raise ValueError(f"Segment {segment_id} not found in current project package.")
+
+        target_segment = project_package.segments[target_index]
+        previous_segment = project_package.segments[target_index - 1] if target_index > 0 else None
+        next_segment = (
+            project_package.segments[target_index + 1]
+            if target_index + 1 < len(project_package.segments)
+            else None
+        )
+        target_scene = next(
+            (scene for scene in project_package.scenes if scene.scene_id == target_segment.scene_id),
+            None,
+        )
+        if target_scene is None:
+            raise ValueError(f"Scene {target_segment.scene_id} not found for segment {segment_id}.")
+
+        request = PromptRequest(
+            system_prompt=(
+                "你是 StoryForge 的 Segment Continuity Repair Agent。"
+                "你只修复目标 segment 的连续性规划，不重写剧情，不改章节结构，不新增角色。"
+                "你的职责是把当前 segment 修成更适合单段重生成的稳定执行合同。"
+            ),
+            user_prompt=self._build_segment_continuity_repair_user_prompt(
+                story_title=project_package.title,
+                character_profiles=project_package.character_profiles,
+                scene_payload=to_jsonable(target_scene),
+                segment_payload=to_jsonable(target_segment),
+                previous_segment_payload=to_jsonable(previous_segment) if previous_segment else None,
+                next_segment_payload=to_jsonable(next_segment) if next_segment else None,
+                continuity_issues=continuity_issues,
+                speech_budget_context={
+                    "current_duration_seconds": target_segment.duration_seconds,
+                    "required_duration_seconds": self._estimate_required_speech_duration(
+                        narration=target_segment.narration,
+                        dialogue_lines=target_segment.dialogue_lines,
+                        subtitle_lines=target_segment.subtitle_lines,
+                    ),
+                    "max_duration_seconds": self.SEEDANCE_MAX_DURATION_SECONDS,
+                    "speech_chars_per_second": self.SPEECH_CHARS_PER_SECOND,
+                },
+            ),
+            metadata={"task": "segment-continuity-repair", "segment_id": segment_id},
+        )
+        repair_patch = self._run_strict_structured_agent(
+            schema=SegmentContinuityRepairSchema,
+            request=request,
+            validator=lambda candidate: self._validate_segment_continuity_repair(
+                candidate,
+                target_segment=target_segment,
+                previous_segment=previous_segment,
+            ),
+        )
+        repaired_segment = self._materialize_repaired_segment(
+            novel_package=novel_package,
+            project_package=project_package,
+            target_segment=target_segment,
+            target_scene=target_scene,
+            previous_segment=previous_segment,
+            repair_patch=repair_patch,
+        )
+        repair_report = {
+            "segment_id": segment_id,
+            "repair_summary": repair_patch.repair_summary.strip(),
+            "continuity_issues": continuity_issues,
+            "raw_patch": repair_patch.model_dump(),
+            "changed_fields": self._collect_segment_changed_fields(target_segment, repaired_segment),
+            "before": to_jsonable(target_segment),
+            "after": repaired_segment.model_dump(),
+        }
+        return repaired_segment, repair_report
+
+    def repair_scene_continuity(
+        self,
+        *,
+        novel_package: NovelPackage,
+        project_package: VideoProjectPackage,
+        scene_id: str,
+        scene_issues: list[dict[str, object]],
+        related_segment_issues: list[dict[str, object]],
+        target_segment_ids: list[str],
+        selection_mode: str,
+    ) -> tuple[VideoScene, dict[str, object]]:
+        target_scene = next(
+            (scene for scene in project_package.scenes if scene.scene_id == scene_id),
+            None,
+        )
+        if target_scene is None:
+            raise ValueError(f"Scene {scene_id} not found in current project package.")
+
+        target_segment_set = {item for item in target_segment_ids if item}
+        target_segments = [
+            segment for segment in target_scene.segments
+            if not target_segment_set or segment.segment_id in target_segment_set
+        ]
+        if not target_segments:
+            raise ValueError(f"Scene {scene_id} has no target segments for continuity repair.")
+
+        request = PromptRequest(
+            system_prompt=(
+                "你是 StoryForge 的 Scene Continuity Repair Agent。"
+                "你只修复目标 scene 的场景连续性基线，不重写剧情，不改章节结构，不新增角色。"
+                "你的职责是把当前 scene 修成更适合后续场景母图、关键帧和视频复用的稳定环境合同。"
+            ),
+            user_prompt=self._build_scene_continuity_repair_user_prompt(
+                story_title=project_package.title,
+                character_profiles=project_package.character_profiles,
+                scene_payload=to_jsonable(target_scene),
+                target_segment_payloads=[to_jsonable(item) for item in target_segments],
+                scene_issues=scene_issues,
+                related_segment_issues=related_segment_issues,
+                selection_mode=selection_mode,
+            ),
+            metadata={"task": "scene-continuity-repair", "scene_id": scene_id},
+        )
+        repair_patch = self._run_strict_structured_agent(
+            schema=SceneContinuityRepairSchema,
+            request=request,
+            validator=lambda candidate: self._validate_scene_continuity_repair(
+                candidate,
+                target_scene=target_scene,
+            ),
+        )
+        repaired_scene = self._materialize_repaired_scene(
+            novel_package=novel_package,
+            target_scene=target_scene,
+            repair_patch=repair_patch,
+        )
+        repair_report = {
+            "scene_id": scene_id,
+            "repair_summary": repair_patch.repair_summary.strip(),
+            "selection_mode": selection_mode,
+            "affected_segment_ids": list(target_segment_ids),
+            "continuity_issues": scene_issues,
+            "related_segment_issues": related_segment_issues,
+            "raw_patch": repair_patch.model_dump(),
+            "changed_fields": self._collect_scene_changed_fields(target_scene, repaired_scene),
+            "before": to_jsonable(target_scene),
+            "after": to_jsonable(repaired_scene),
+        }
+        return repaired_scene, repair_report
+
+    def _validate_segment_continuity_repair(
+        self,
+        candidate: SegmentContinuityRepairSchema,
+        *,
+        target_segment: VideoSegment,
+        previous_segment: VideoSegment | None,
+    ) -> SegmentContinuityRepairSchema:
+        if candidate.segment_id.strip() != target_segment.segment_id:
+            raise ValueError(
+                f"segment_id 必须保持为 {target_segment.segment_id}，实际为 {candidate.segment_id!r}。"
+            )
+
+        involved_characters = {
+            str(name).strip()
+            for name in target_segment.involved_characters
+            if str(name).strip()
+        }
+        if not involved_characters:
+            raise ValueError("目标 segment 缺少 involved_characters，无法执行修复。")
+
+        for field_name, characters in (
+            ("start_frame_characters", candidate.start_frame_characters),
+            ("mid_frame_characters", candidate.mid_frame_characters if candidate.requires_mid_frame else []),
+            ("end_frame_characters", candidate.end_frame_characters),
+        ):
+            invalid_names = [
+                name for name in characters
+                if str(name).strip() and str(name).strip() not in involved_characters
+            ]
+            if invalid_names:
+                raise ValueError(
+                    f"{field_name} 只能使用目标片段已有角色，非法角色：{'、'.join(invalid_names)}。"
+                )
+
+        if not candidate.start_frame_characters:
+            raise ValueError("start_frame_characters 不能为空。")
+        if not candidate.end_frame_characters:
+            raise ValueError("end_frame_characters 不能为空。")
+        if candidate.requires_mid_frame:
+            self._validate_mid_frame_anchor_group_continuity(
+                segment_id=candidate.segment_id,
+                start_frame_characters=candidate.start_frame_characters,
+                mid_frame_characters=candidate.mid_frame_characters,
+                mid_frame_mode=candidate.mid_frame_mode,
+                end_frame_characters=candidate.end_frame_characters,
+            )
+        self._validate_segment_direction_consistency(
+            segment_id=candidate.segment_id,
+            screen_direction=candidate.shot_state.screen_direction,
+            end_state_lock=candidate.shot_state.end_state_lock,
+            end_frame_prompt=candidate.end_frame_prompt,
+            timed_beats=candidate.timed_beats,
+        )
+        self._validate_single_frame_focus_conflict(
+            segment_id=candidate.segment_id,
+            field_name="start_frame_prompt",
+            prompt_text=candidate.start_frame_prompt,
+            frame_characters=candidate.start_frame_characters,
+            frame_label="start_frame",
+        )
+        self._validate_single_frame_focus_conflict(
+            segment_id=candidate.segment_id,
+            field_name="end_frame_prompt",
+            prompt_text=candidate.end_frame_prompt,
+            frame_characters=candidate.end_frame_characters,
+            frame_label="end_frame",
+        )
+        if candidate.requires_mid_frame:
+            if not candidate.mid_frame_prompt.strip():
+                raise ValueError("requires_mid_frame=true 时 mid_frame_prompt 不能为空。")
+            if not candidate.mid_frame_characters:
+                raise ValueError("requires_mid_frame=true 时 mid_frame_characters 不能为空。")
+            self._validate_single_frame_focus_conflict(
+                segment_id=candidate.segment_id,
+                field_name="mid_frame_prompt",
+                prompt_text=candidate.mid_frame_prompt,
+                frame_characters=candidate.mid_frame_characters,
+                frame_label="mid_frame",
+            )
+
+        duration_seconds = self._normalize_seedance_duration(candidate.duration_seconds)
+        if duration_seconds != candidate.duration_seconds:
+            raise ValueError(
+                f"duration_seconds 必须在 {self.SEEDANCE_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒之间。"
+            )
+
+        subtitle_lines = candidate.subtitle_lines or self._build_subtitle_lines(
+            narration=candidate.narration,
+            dialogue_lines=candidate.dialogue_lines,
+            timed_beats=candidate.timed_beats,
+        )
+        required_duration = self._estimate_required_speech_duration(
+            narration=candidate.narration,
+            dialogue_lines=candidate.dialogue_lines,
+            subtitle_lines=subtitle_lines,
+        )
+        duration_seconds = self._fit_duration_to_speech_budget(
+            segment_id=candidate.segment_id,
+            current_duration_seconds=duration_seconds,
+            required_duration_seconds=required_duration,
+            allow_split_retry=False,
+        )
+        if duration_seconds != candidate.duration_seconds:
+            candidate = candidate.model_copy(update={"duration_seconds": duration_seconds})
+
+        self._validate_timed_beats_timeline(
+            segment_id=candidate.segment_id,
+            timed_beats=candidate.timed_beats,
+            duration_seconds=duration_seconds,
+            require_full_coverage=True,
+        )
+        self._validate_keyframe_semantic_distance(
+            segment_id=candidate.segment_id,
+            summary=getattr(candidate, "summary", "") or target_segment.summary,
+            timed_beats=candidate.timed_beats,
+            start_frame_characters=candidate.start_frame_characters,
+            mid_frame_characters=candidate.mid_frame_characters,
+            end_frame_characters=candidate.end_frame_characters,
+            requires_mid_frame=candidate.requires_mid_frame,
+            mid_frame_mode=candidate.mid_frame_mode,
+            continuity_link=candidate.continuity_link,
+            shot_state=candidate.shot_state,
+        )
+
+        transition_mode = candidate.continuity_link.transition_mode.strip().lower()
+        if previous_segment is None and transition_mode == "continue":
+            raise ValueError("首段或无上一段时，continuity_link.transition_mode 不能为 continue。")
+        if (
+            previous_segment is not None
+            and transition_mode == "continue"
+            and candidate.continuity_link.previous_segment_id.strip()
+            and candidate.continuity_link.previous_segment_id.strip() != previous_segment.segment_id
+        ):
+            raise ValueError(
+                f"continue 模式下 previous_segment_id 必须是 {previous_segment.segment_id}。"
+            )
+        return candidate
+
+    def _validate_scene_continuity_repair(
+        self,
+        candidate: SceneContinuityRepairSchema,
+        *,
+        target_scene: VideoScene,
+    ) -> SceneContinuityRepairSchema:
+        if candidate.scene_id.strip() != target_scene.scene_id:
+            raise ValueError(
+                f"scene_id 必须保持为 {target_scene.scene_id}，实际为 {candidate.scene_id!r}。"
+            )
+        if not candidate.scene_anchor.strip():
+            raise ValueError("scene_anchor 不能为空。")
+        scene_bible = candidate.scene_bible
+        required_text_fields = {
+            "location": scene_bible.location,
+            "time_window": scene_bible.time_window,
+            "weather": scene_bible.weather,
+            "lighting": scene_bible.lighting,
+            "spatial_layout": scene_bible.spatial_layout,
+            "continuity_notes": scene_bible.continuity_notes,
+        }
+        missing_fields = [key for key, value in required_text_fields.items() if not str(value or "").strip()]
+        if missing_fields:
+            raise ValueError("scene_bible 缺少必要字段：" + "、".join(missing_fields))
+        if len([item for item in scene_bible.background_anchors if str(item or "").strip()]) < 2:
+            raise ValueError("scene_bible.background_anchors 至少需要 2 个。")
+        if len([item for item in scene_bible.fixed_props if str(item or "").strip()]) < 1:
+            raise ValueError("scene_bible.fixed_props 至少需要 1 个。")
+        if len([item for item in scene_bible.dominant_palette if str(item or "").strip()]) < 1:
+            raise ValueError("scene_bible.dominant_palette 至少需要 1 个。")
+        return candidate
+
     def _rebuild_plan_preserving_scenes(
         self,
         *,

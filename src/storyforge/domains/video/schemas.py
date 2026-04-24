@@ -185,6 +185,19 @@ class ChapterSceneSchema(BaseModel):
         default_factory=SceneTransitionContractSchema,
         description="当前 scene 相对上一 scene 的过渡合同；首个 scene 可为空",
     )
+    @model_validator(mode="after")
+    def normalize_transition_contract_entry(self) -> "ChapterSceneSchema":
+        self.scene_transition_contract = SceneTransitionContractSchema.model_validate(
+            _normalize_scene_transition_contract_for_scene(
+                self.scene_transition_contract,
+                title=self.title,
+                summary=self.summary,
+                scene_anchor=self.scene_anchor,
+                scene_bible=self.scene_bible,
+                involved_characters=self.involved_characters,
+            )
+        )
+        return self
 
 
 class ChapterSceneStructureSchema(BaseModel):
@@ -593,10 +606,15 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             default_summary=summary,
             scene_anchor_default=scene_anchor,
         )
-        scene_transition_contract = _normalize_scene_transition_contract(
-            scene_payload.get("scene_transition_contract"),
-        )
         involved_characters = _normalize_name_list(scene_payload.get("involved_characters", []))
+        scene_transition_contract = _normalize_scene_transition_contract_for_scene(
+            scene_payload.get("scene_transition_contract"),
+            title=title,
+            summary=summary,
+            scene_anchor=scene_anchor,
+            scene_bible=scene_bible,
+            involved_characters=involved_characters,
+        )
         scene_master_frame_prompt = str(scene_payload.get("scene_master_frame_prompt") or "").strip()
         scene_master_frame_path = str(scene_payload.get("scene_master_frame_path") or "").strip()
         scene_master_frame_url = str(scene_payload.get("scene_master_frame_url") or "").strip()
@@ -627,6 +645,13 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 payload.get("shot_state"),
                 default_summary=str(payload.get("summary") or summary),
                 scene_anchor_default=scene_anchor,
+            )
+            payload["shot_state"] = _normalize_shared_shot_state_for_frame_groups(
+                payload["shot_state"],
+                start_frame_characters=_normalize_name_list(payload.get("start_frame_characters", [])),
+                mid_frame_characters=_normalize_name_list(payload.get("mid_frame_characters", [])),
+                end_frame_characters=_normalize_name_list(payload.get("end_frame_characters", [])),
+                requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
             )
             payload["continuity_link"] = _normalize_continuity_link(
                 payload.get("continuity_link"),
@@ -679,6 +704,12 @@ def _normalize_scene_structure_payloads(raw_scenes: list[object]) -> list[dict[s
         title = str(payload.get("title") or payload.get("scene_title") or f"场景 {index}").strip()
         summary = str(payload.get("summary") or payload.get("scene_summary") or title).strip()
         scene_anchor = str(payload.get("scene_anchor") or "").strip()
+        involved_characters = _normalize_name_list(payload.get("involved_characters", []))
+        scene_bible = _normalize_scene_bible(
+            payload.get("scene_bible"),
+            default_summary=summary or title or f"场景 {index}",
+            scene_anchor_default=scene_anchor,
+        )
         normalized.append(
             {
                 "scene_id": scene_id,
@@ -686,20 +717,21 @@ def _normalize_scene_structure_payloads(raw_scenes: list[object]) -> list[dict[s
                 "title": title or f"场景 {index}",
                 "summary": summary or title or f"场景 {index}",
                 "scene_anchor": scene_anchor,
-                "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
+                "involved_characters": involved_characters,
                 "covered_event_ids": _normalize_name_list(payload.get("covered_event_ids", [])),
                 "covered_event_summaries": [
                     str(item).strip()
                     for item in payload.get("covered_event_summaries", [])
                     if str(item).strip()
                 ],
-                "scene_bible": _normalize_scene_bible(
-                    payload.get("scene_bible"),
-                    default_summary=summary or title or f"场景 {index}",
-                    scene_anchor_default=scene_anchor,
-                ),
-                "scene_transition_contract": _normalize_scene_transition_contract(
+                "scene_bible": scene_bible,
+                "scene_transition_contract": _normalize_scene_transition_contract_for_scene(
                     payload.get("scene_transition_contract"),
+                    title=title or f"场景 {index}",
+                    summary=summary or title or f"场景 {index}",
+                    scene_anchor=scene_anchor,
+                    scene_bible=scene_bible,
+                    involved_characters=involved_characters,
                 ),
             }
         )
@@ -712,6 +744,26 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
         payload = _coerce_mapping(raw_segment)
         if payload is None:
             continue
+        timed_beats = [
+            str(item).strip()
+            for item in payload.get("timed_beats", [])
+            if str(item).strip()
+        ]
+        start_frame_characters = _normalize_name_list(payload.get("start_frame_characters", []))
+        mid_frame_characters = _normalize_name_list(payload.get("mid_frame_characters", []))
+        end_frame_characters = _normalize_name_list(payload.get("end_frame_characters", []))
+        shot_state = _normalize_shot_state(
+            payload.get("shot_state"),
+            default_summary=str(payload.get("summary") or ""),
+            scene_anchor_default="",
+        )
+        shot_state = _normalize_shared_shot_state_for_frame_groups(
+            shot_state,
+            start_frame_characters=start_frame_characters,
+            mid_frame_characters=mid_frame_characters,
+            end_frame_characters=end_frame_characters,
+            requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
+        )
         normalized_payload = {
             "segment_id": str(payload.get("segment_id") or f"segment-{index:02d}").strip()
             or f"segment-{index:02d}",
@@ -720,14 +772,14 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
             "title": str(payload.get("title") or f"片段 {index}").strip() or f"片段 {index}",
             "summary": str(payload.get("summary") or "").strip(),
             "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
-            "start_frame_characters": _normalize_name_list(payload.get("start_frame_characters", [])),
-            "mid_frame_characters": _normalize_name_list(payload.get("mid_frame_characters", [])),
+            "start_frame_characters": start_frame_characters,
+            "mid_frame_characters": mid_frame_characters,
             "mid_frame_mode": (
                 "insert_cut"
                 if str(payload.get("mid_frame_mode", "") or "").strip().lower() == "insert_cut"
                 else "continuous"
             ),
-            "end_frame_characters": _normalize_name_list(payload.get("end_frame_characters", [])),
+            "end_frame_characters": end_frame_characters,
             "narration": str(payload.get("narration") or "").strip(),
             "dialogue_lines": [
                 str(item).strip()
@@ -739,31 +791,19 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
                 for item in payload.get("subtitle_lines", [])
                 if str(item).strip()
             ],
-            "timed_beats": [
-                str(item).strip()
-                for item in payload.get("timed_beats", [])
-                if str(item).strip()
-            ],
+            "timed_beats": timed_beats,
             "duration_seconds": int(payload.get("duration_seconds") or 0),
             "requires_mid_frame": bool(payload.get("requires_mid_frame", False)),
             "transition_hint": str(payload.get("transition_hint") or "auto").strip() or "auto",
-            "shot_state": _normalize_shot_state(
-                payload.get("shot_state"),
-                default_summary=str(payload.get("summary") or ""),
-                scene_anchor_default="",
-            ),
+            "shot_state": shot_state,
             "continuity_link": _normalize_continuity_link(
                 payload.get("continuity_link"),
             ),
             "motion_plan": _normalize_motion_plan(
                 payload.get("motion_plan"),
                 summary=str(payload.get("summary") or ""),
-                timed_beats=[
-                    str(item).strip()
-                    for item in payload.get("timed_beats", [])
-                    if str(item).strip()
-                ],
-                shot_state=payload.get("shot_state"),
+                timed_beats=timed_beats,
+                shot_state=shot_state,
                 requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
             ),
         }
@@ -808,6 +848,13 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
         payload["scene_summary"] = scene_summary
         payload["scene_anchor"] = scene_anchor
         payload["scene_bible"] = dict(scene_bible)
+        shot_state = _normalize_shared_shot_state_for_frame_groups(
+            shot_state,
+            start_frame_characters=_normalize_name_list(payload.get("start_frame_characters", [])),
+            mid_frame_characters=_normalize_name_list(payload.get("mid_frame_characters", [])),
+            end_frame_characters=_normalize_name_list(payload.get("end_frame_characters", [])),
+            requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
+        )
         payload["shot_state"] = dict(shot_state)
         payload["continuity_link"] = dict(
             _normalize_continuity_link(payload.get("continuity_link"))
@@ -856,8 +903,13 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
         if _scene_bible_has_signal(scene_bible) and not _scene_bible_has_signal(group.get("scene_bible", {})):
             group["scene_bible"] = scene_bible
         current_transition_contract = _coerce_mapping(group.get("scene_transition_contract")) or {}
-        incoming_transition_contract = _normalize_scene_transition_contract(
-            payload.get("scene_transition_contract")
+        incoming_transition_contract = _normalize_scene_transition_contract_for_scene(
+            payload.get("scene_transition_contract"),
+            title=scene_title or f"场景 {index}",
+            summary=scene_summary or scene_title or f"场景 {index}",
+            scene_anchor=scene_anchor,
+            scene_bible=scene_bible,
+            involved_characters=_normalize_name_list(payload.get("involved_characters", [])),
         )
         if incoming_transition_contract.get("previous_scene_id") and not current_transition_contract.get(
             "previous_scene_id"
@@ -1008,6 +1060,82 @@ def _normalize_shot_state(
     return normalized
 
 
+def _normalize_shared_shot_state_for_frame_groups(
+    shot_state: object,
+    *,
+    start_frame_characters: list[str],
+    mid_frame_characters: list[str],
+    end_frame_characters: list[str],
+    requires_mid_frame: bool,
+) -> dict[str, object]:
+    normalized = ShotStateSchema.model_validate(_coerce_mapping(shot_state) or {}).model_dump()
+    multi_frame_groups = [
+        _unique_names(start_frame_characters),
+        _unique_names(mid_frame_characters) if requires_mid_frame else [],
+        _unique_names(end_frame_characters),
+    ]
+    multi_frame_groups = [group for group in multi_frame_groups if len(group) >= 2]
+    if not multi_frame_groups:
+        return normalized
+    frame_names = "、".join(multi_frame_groups[0][:3])
+    shared_framing = f"多人同框中景关系镜头，保持 {frame_names} 同框，完整交代角色相对位置。"
+    shared_motion = f"镜头轻微推进或稳定跟随，保持 {frame_names} 多人同框；只通过站位、视线和表情差异突出主要情绪。"
+    if _shared_shot_text_has_single_subject_focus(
+        str(normalized.get("framing", "") or ""),
+        multi_frame_groups,
+    ):
+        normalized["framing"] = shared_framing
+    if _shared_shot_text_has_single_subject_focus(
+        str(normalized.get("camera_motion", "") or ""),
+        multi_frame_groups,
+    ):
+        normalized["camera_motion"] = shared_motion
+    return normalized
+
+
+def _shared_shot_text_has_single_subject_focus(
+    text: str,
+    multi_frame_groups: list[list[str]],
+) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    if any(
+        token in normalized
+        for token in (
+            "双人特写",
+            "两人特写",
+            "双人近景",
+            "两人近景",
+            "双人中近景",
+            "两人中近景",
+            "双人同框",
+            "两人同框",
+            "多人同框",
+        )
+    ):
+        return False
+    focus_tokens = ("特写", "大特写", "近景", "中近景", "侧脸", "脸部", "面部", "半脸")
+    if not any(token in normalized for token in focus_tokens):
+        return False
+    frame_names = {name for group in multi_frame_groups for name in group}
+    if any(name in normalized for name in frame_names):
+        return True
+    return any(
+        token in normalized
+        for token in ("推向", "推近", "推进到", "聚焦到", "切到", "拉到", "摇到")
+    )
+
+
+def _unique_names(names: list[str]) -> list[str]:
+    unique: list[str] = []
+    for raw_name in names:
+        name = str(raw_name or "").strip()
+        if name and name not in unique:
+            unique.append(name)
+    return unique
+
+
 def _normalize_continuity_link(raw_continuity_link: object) -> dict[str, object]:
     payload = _coerce_mapping(raw_continuity_link) or {}
     normalized = ContinuityLinkSchema.model_validate(payload).model_dump()
@@ -1085,6 +1213,124 @@ def _normalize_scene_transition_contract(raw_contract: object) -> dict[str, obje
         normalized.get("carry_over_elements", [])
     )
     return normalized
+
+
+def _normalize_scene_transition_contract_for_scene(
+    raw_contract: object,
+    *,
+    title: str,
+    summary: str,
+    scene_anchor: str,
+    scene_bible: object,
+    involved_characters: list[str],
+) -> dict[str, object]:
+    normalized = _normalize_scene_transition_contract(raw_contract)
+    if not str(normalized.get("previous_scene_id", "") or "").strip():
+        return normalized
+    if _transition_entry_has_current_scene_signal(
+        str(normalized.get("next_scene_entry_match", "") or ""),
+        title=title,
+        summary=summary,
+        scene_anchor=scene_anchor,
+        scene_bible=scene_bible,
+    ):
+        return normalized
+
+    current_opening = _build_scene_transition_entry_default(
+        title=title,
+        summary=summary,
+        scene_anchor=scene_anchor,
+        scene_bible=scene_bible,
+        involved_characters=involved_characters,
+    )
+    existing_entry = str(normalized.get("next_scene_entry_match", "") or "").strip(" ，。；;")
+    normalized["next_scene_entry_match"] = (
+        f"{current_opening}；{existing_entry}" if existing_entry else current_opening
+    )
+    return normalized
+
+
+def _build_scene_transition_entry_default(
+    *,
+    title: str,
+    summary: str,
+    scene_anchor: str,
+    scene_bible: object,
+    involved_characters: list[str],
+) -> str:
+    scene_payload = _coerce_mapping(scene_bible) or {}
+    location = str(scene_payload.get("location", "") or "").strip()
+    spatial_layout = str(scene_payload.get("spatial_layout", "") or "").strip()
+    character_blocking = str(scene_payload.get("character_blocking", "") or "").strip()
+    background_anchors = [
+        str(item).strip()
+        for item in list(scene_payload.get("background_anchors", []) or [])[:2]
+        if str(item).strip()
+    ]
+    scene_place = location or scene_anchor or title or summary or "当前场景"
+    if character_blocking:
+        blocking = character_blocking
+    else:
+        names = "、".join(involved_characters[:3]) or "当前出镜角色"
+        blocking = f"{names}先落在当前场景的开场站位"
+    background = "、".join(background_anchors) or spatial_layout
+    if background:
+        return f"当前场开头先建立{scene_place}，{blocking}，画面可见{background}"
+    return f"当前场开头先建立{scene_place}，{blocking}"
+
+
+def _transition_entry_has_current_scene_signal(
+    text: str,
+    *,
+    title: str,
+    summary: str,
+    scene_anchor: str,
+    scene_bible: object,
+) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    scene_payload = _coerce_mapping(scene_bible) or {}
+    anchors = [
+        title,
+        scene_anchor,
+        str(scene_payload.get("location", "") or ""),
+        str(scene_payload.get("spatial_layout", "") or ""),
+        str(scene_payload.get("character_blocking", "") or ""),
+    ]
+    anchors.extend(str(item) for item in list(scene_payload.get("background_anchors", []) or []))
+    anchors.extend(str(item) for item in list(scene_payload.get("fixed_props", []) or []))
+    concrete_anchors = [item.strip() for item in anchors if len(str(item).strip()) >= 2]
+    if any(anchor in normalized for anchor in concrete_anchors[:8]):
+        return True
+    signal = " ".join([summary, scene_anchor, " ".join(concrete_anchors[:8])])
+    return _simple_text_overlap(normalized, signal) >= 0.08
+
+
+def _simple_text_overlap(left: str, right: str) -> float:
+    left_tokens = _scene_signal_tokens(left)
+    right_tokens = _scene_signal_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(len(left_tokens), 1)
+
+
+def _scene_signal_tokens(text: str) -> set[str]:
+    normalized = str(text or "")
+    tokens: set[str] = set()
+    current = []
+    for char in normalized:
+        if "\u4e00" <= char <= "\u9fff":
+            current.append(char)
+        else:
+            if len(current) >= 2:
+                chunk = "".join(current)
+                tokens.update(chunk[index:index + 2] for index in range(len(chunk) - 1))
+            current = []
+    if len(current) >= 2:
+        chunk = "".join(current)
+        tokens.update(chunk[index:index + 2] for index in range(len(chunk) - 1))
+    return tokens
 
 
 def _scene_bible_has_signal(raw_scene_bible: object) -> bool:

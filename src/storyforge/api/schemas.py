@@ -197,6 +197,8 @@ class PlannedSegmentArtifactResponse(BaseModel):
     end_frame_prompt: str = ""
     video_prompt: str = ""
     submitted_video_prompt: str = ""
+    seedance_motion_prompt: str = ""
+    motion_plan: dict[str, str] = Field(default_factory=dict)
     submitted_prompt_variant: str = ""
     submitted_reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)
     scene_master_frame_request: SubmittedRequestResponse | None = None

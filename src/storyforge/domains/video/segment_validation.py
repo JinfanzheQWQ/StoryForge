@@ -215,6 +215,32 @@ class VideoSegmentValidationMixin:
                 f"尾部约 {uncovered_seconds:g}s 缺少明确动作或收束节拍。"
             )
 
+    def _extend_last_timed_beat_to_duration(
+        self,
+        timed_beats: list[str],
+        *,
+        duration_seconds: int,
+    ) -> list[str]:
+        if not timed_beats:
+            return timed_beats
+        last_index = -1
+        last_match = None
+        for index, beat in enumerate(timed_beats):
+            match = TIMED_BEAT_PATTERN.search(str(beat))
+            if match is not None:
+                last_index = index
+                last_match = match
+        if last_match is None:
+            return timed_beats
+        end_seconds = float(last_match.group("end"))
+        if end_seconds >= duration_seconds - self.TIMED_BEAT_COVERAGE_TOLERANCE_SECONDS:
+            return timed_beats
+        updated = list(timed_beats)
+        original = str(updated[last_index])
+        replacement = f"{last_match.group('start')}-{duration_seconds:g}秒"
+        updated[last_index] = TIMED_BEAT_PATTERN.sub(replacement, original, count=1)
+        return updated
+
     def _validate_segment_action_capacity(
         self,
         *,
@@ -226,6 +252,12 @@ class VideoSegmentValidationMixin:
         action_node_count = self._estimate_segment_action_node_count(timed_beats)
         max_action_nodes = self._segment_action_node_budget(duration_seconds)
         if action_node_count <= max_action_nodes:
+            return
+        fitted_duration = self._fit_duration_to_action_budget(
+            action_node_count=action_node_count,
+            current_duration_seconds=duration_seconds,
+        )
+        if fitted_duration > duration_seconds:
             return
         required_segment_count = min(
             self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
@@ -244,6 +276,22 @@ class VideoSegmentValidationMixin:
             f"当前约有 {action_node_count} 个推进点，"
             f"但 {duration_seconds} 秒片段最多只允许 {max_action_nodes} 个。"
         )
+
+    def _fit_duration_to_action_budget(
+        self,
+        *,
+        action_node_count: int,
+        current_duration_seconds: int,
+    ) -> int:
+        if action_node_count <= self._segment_action_node_budget(current_duration_seconds):
+            return current_duration_seconds
+        for candidate_duration in range(
+            max(current_duration_seconds, self.PLANNER_MIN_DURATION_SECONDS),
+            self.SEEDANCE_MAX_DURATION_SECONDS + 1,
+        ):
+            if action_node_count <= self._segment_action_node_budget(candidate_duration):
+                return candidate_duration
+        return current_duration_seconds
 
     def _estimate_segment_action_node_count(
         self,
@@ -274,7 +322,9 @@ class VideoSegmentValidationMixin:
     ) -> int:
         if duration_seconds <= 7:
             return self.SEGMENT_ACTION_NODE_BUDGET_SHORT
-        return self.SEGMENT_ACTION_NODE_BUDGET_LONG
+        if duration_seconds <= 9:
+            return self.SEGMENT_ACTION_NODE_BUDGET_LONG
+        return self.SEGMENT_ACTION_NODE_BUDGET_LONG + 1
 
     def _validate_keyframe_semantic_distance(
         self,
@@ -567,6 +617,21 @@ class VideoSegmentValidationMixin:
             if fitted_duration != segment.duration_seconds:
                 segment = segment.model_copy(
                     update={"duration_seconds": fitted_duration}
+                )
+            action_node_count = self._estimate_segment_action_node_count(segment.timed_beats)
+            action_fitted_duration = self._fit_duration_to_action_budget(
+                action_node_count=action_node_count,
+                current_duration_seconds=segment.duration_seconds,
+            )
+            if action_fitted_duration != segment.duration_seconds:
+                segment = segment.model_copy(
+                    update={
+                        "duration_seconds": action_fitted_duration,
+                        "timed_beats": self._extend_last_timed_beat_to_duration(
+                            segment.timed_beats,
+                            duration_seconds=action_fitted_duration,
+                        ),
+                    }
                 )
             self._validate_timed_beats_timeline(
                 segment_id=segment.segment_id,

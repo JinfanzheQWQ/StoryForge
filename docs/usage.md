@@ -252,9 +252,10 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - scene chunk 规划还会前置检查动作容量：如果 `must_cover + transition_goal` 已经明显包含多轮推进，但 `expected_segment_count` 仍过小，这一步会直接失败重试，而不是把压力留到后面的 segment planner
 - 如果 scene chunk 在常规重试后仍然卡在“动作容量过载”，系统会自动触发一次 `video-scene-chunk-repair`，把失败 chunk、失败原因和最低所需 segment 数再次交给 LLM 定向修复
 - 如果 scene segment planner 在常规重试后仍然卡在“`timed_beats` 最后一拍过早结束、尾部缺少收束 beat”，系统会自动触发一次 `video-scene-segment-timeline-repair`，把失败 batch、失败原因和出错 `segment_id` 再交给 LLM 定向补尾部节拍
-- 如果 scene segment planner 在常规重试后仍然卡在“某个 segment 动作推进点过多、当前 chunk 至少要拆成 N 段”，系统会自动触发一次 `video-scene-segment-action-repair`，把失败 batch、出错 `segment_id`、推进点数量和最低所需 segment 数再交给 LLM 定向拆动作链
+- 如果某个 segment 只是因为时长偏短导致轻微动作容量超载，系统会先自动扩秒到可容纳动作的最小时长；扩秒时会同步把最后一条 `timed_beats` 延到新时长；如果仍未覆盖完整时长，会先触发 `video-scene-segment-timeline-repair` 补尾部节拍
+- 如果扩到单段 12 秒上限后仍然动作过载，系统才会触发 `video-scene-segment-action-repair`，把失败 batch、出错 `segment_id`、推进点数量和最低所需 segment 数再交给 LLM 定向拆动作链
 - `video-scene-segment-action-repair` 是迭代式的：如果 repair 第一轮后还有新的过载子段，或 repair 拆出更多段但触发 chunk 段数上限，系统会继续基于最新失败 batch 再跑下一轮修复
-- 如果 scene segment planner 在常规重试后仍然卡在“多人同帧却仍要求单人特写”，系统会自动触发一次 `video-scene-segment-focus-repair`，把失败 batch、出错 `segment_id`、冲突字段、冲突帧和该帧角色组再交给 LLM 定向修镜头一致性
+- 多人同帧镜头冲突会先在 schema normalize 阶段兜底清理：共享 `shot_state.framing / shot_state.camera_motion` 会被改成多人同框关系镜头；如果实际帧 prompt 或 repair 输出仍残留冲突，系统会自动触发 `video-scene-segment-focus-repair` 定向修镜头一致性
 - `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state`、`continuity_link` 与 `motion_plan`
 - `scene_structure_source.json` 是恢复用的原始 scene skeleton 快照，供失败后从当前位置继续时读取，不参与图片和视频执行
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 持续回写进度、失败章节、失败 scene 和失败 chunk；如果前端看到“从失败位置继续”，底层依赖的就是这份 checkpoint
@@ -273,7 +274,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `V1` 还会直接提示 scene 边界风险：`scene_transition_exit_state_drift`、`scene_transition_entry_weak`、`scene_transition_bridge_weak`、`scene_transition_opening_not_consumed`、`scene_transition_bridge_not_consumed`
 - `segment contracts` 会检查 scene 首段是否消费 `scene_transition_contract`、无中段片段的 `start -> end` 关键帧语义是否过平，以及当前 chunk 的最后一个 segment 是否真正落到 `transition_goal`
 - 其中“动作容量 / 开场承接 / 关键帧过平 / 收束不够落地”这类质量问题，当前链路会优先 repair；repair 失败时会记入 `planner_warnings` 后继续规划，默认不整 chunk 卡死
-- 如果动作容量超载，系统不会直接整批失败：会在当前 chunk 内自动重试，并临时提高该 chunk 的可输出 segment 上限，要求模型把这轮动作链拆成更合理的正式片段
+- 如果动作容量超载，系统不会直接整批失败：先尝试自动扩秒；扩秒仍装不下时，会在当前 chunk 内自动重试，并临时提高该 chunk 的可输出 segment 上限，要求模型把这轮动作链拆成更合理的正式片段
 
 ### 4. 生成角色图
 
@@ -341,7 +342,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 修复任务会继续归在当前制作版本下展示，不会额外长出一个新的版本块
 - 连续性修复器会更严格检查对白 / 旁白 / 硬字幕是否装得进当前时长；超预算时会优先压缩文本，而不是直接保留一份说不完的修复合同
 - 当前链路默认不用 `summary` 补 `narration`；如果本段已经有 `dialogue_lines`，运行时还会清掉复述动作 / 对白的描述性 `narration`，减少本地重复拆段和告白节奏被打碎
-- 视频提交后，segment 卡片会额外展示真实送往 Seedance 的最终 prompt、submit variant 和参考图绑定顺序，便于排查为什么某次视频结果异常
+- 视频提交后，segment 卡片会额外展示 `motion_plan`、最终 Seedance prompt 的参考图绑定 / 画面推进摘录、submit variant、真实请求 payload 和参考图绑定顺序，便于排查视频跳帧原因
 
 ### 6. 手动合并总片
 

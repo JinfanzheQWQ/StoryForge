@@ -1613,6 +1613,18 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("该帧角色是 `苏晴、林远`", retry_request.user_prompt)
         self.assertIn("不要再写“推向 苏晴 侧脸特写”", retry_request.user_prompt)
 
+    def test_action_repair_focus_conflict_error_is_routed_to_focus_repair(self) -> None:
+        service = NovelToVideoService(backend=self.video_backend)
+
+        self.assertTrue(
+            service._should_repair_scene_chunk_contract_batch_after_focus_conflict_failure(
+                ValueError(
+                    "segment ch01-sc01-seg04b 的 shot_state.camera_motion 在 start_frame "
+                    "(林屿、苏晚) 多人同帧时仍要求单人特写，这会导致同一角色在单帧里重复出现。"
+                )
+            )
+        )
+
     def test_video_scene_segment_focus_repair_retry_keeps_shared_lens_language(self) -> None:
         service = NovelToVideoService(backend=self.video_backend)
         retry_request = service._build_repair_retry_request(
@@ -4949,6 +4961,125 @@ class PipelineTestCase(unittest.TestCase):
                 chapter_event_plan=chapter_event_plan,
             )
 
+    def test_chapter_scene_transition_entry_is_backfilled_to_current_scene_opening(self) -> None:
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc02",
+                "chapter_number": 1,
+                "title": "镜湖步道",
+                "summary": "两人从花廊出口走入镜湖步道。",
+                "scene_anchor": "镜湖步道 / 傍晚 / 微风",
+                "involved_characters": ["陈默", "林晚"],
+                "covered_event_ids": ["ch01-ev02"],
+                "scene_transition_contract": {
+                    "previous_scene_id": "ch01-sc01",
+                    "transition_mode": "adjacent_move",
+                    "previous_scene_exit_state": "两人刚从花廊下并肩迈步离开。",
+                    "next_scene_entry_match": "承接上一场的沉默。",
+                    "bridge_action": "沿花廊出口继续前行，顺势 reveal 镜湖步道。",
+                    "carry_over_elements": ["并肩关系", "向右前方行进"],
+                    "screen_direction_policy": "保持向右前方行进。",
+                    "visual_bridge": "先跟脚步，再露出镜湖步道与栏杆。",
+                    "transition_focus_seconds": 2,
+                },
+                "scene_bible": {
+                    "location": "镜湖步道",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "湖边暖色侧光",
+                    "background_anchors": ["镜湖", "步道"],
+                    "fixed_props": ["栏杆"],
+                    "spatial_layout": "步道沿湖延伸",
+                    "character_blocking": "两人并肩进入镜湖步道",
+                    "continuity_notes": "先承接花廊离场，再稳定到镜湖空间",
+                },
+            }
+        )
+
+        entry_match = scene.scene_transition_contract.next_scene_entry_match
+
+        self.assertIn("镜湖步道", entry_match)
+        self.assertIn("两人并肩进入镜湖步道", entry_match)
+        self.assertIn("承接上一场的沉默", entry_match)
+
+    def test_chapter_scene_structure_accepts_filmable_transition_entry_with_current_anchor(self) -> None:
+        service = NovelToVideoService()
+        chapter_event_plan = ChapterCoveragePlanSchema.model_validate(
+            {
+                "chapter_number": 1,
+                "events": [
+                    {
+                        "event_id": "ch01-ev01",
+                        "summary": "陈默在花廊下等到林晚。",
+                        "source_evidence": ["花廊", "等到"],
+                        "involved_characters": ["陈默", "林晚"],
+                    },
+                    {
+                        "event_id": "ch01-ev02",
+                        "summary": "两人离开花廊走向镜湖。",
+                        "source_evidence": ["离开花廊", "镜湖"],
+                        "involved_characters": ["陈默", "林晚"],
+                    },
+                ],
+            }
+        )
+        structure = ChapterSceneStructureSchema.model_validate(
+            {
+                "scenes": [
+                    {
+                        "scene_id": "ch01-sc01",
+                        "chapter_number": 1,
+                        "title": "花廊相遇",
+                        "summary": "陈默终于在花廊下等到林晚。",
+                        "scene_anchor": "花廊 / 傍晚 / 微风",
+                        "involved_characters": ["陈默", "林晚"],
+                        "covered_event_ids": ["ch01-ev01"],
+                        "scene_bible": {
+                            "location": "校园花廊",
+                            "background_anchors": ["花廊"],
+                            "spatial_layout": "花廊通向湖边步道",
+                            "character_blocking": "两人在花廊入口会面",
+                        },
+                    },
+                    {
+                        "scene_id": "ch01-sc02",
+                        "chapter_number": 1,
+                        "title": "走向镜湖",
+                        "summary": "两人离开花廊后继续走向镜湖步道。",
+                        "scene_anchor": "镜湖步道 / 傍晚 / 微风",
+                        "involved_characters": ["陈默", "林晚"],
+                        "covered_event_ids": ["ch01-ev02"],
+                        "scene_transition_contract": {
+                            "previous_scene_id": "ch01-sc01",
+                            "transition_mode": "adjacent_move",
+                            "previous_scene_exit_state": "两人在花廊入口并肩迈步离开。",
+                            "next_scene_entry_match": "当前场开头先看到镜湖步道，陈默和林晚并肩从画面左侧进入，栏杆和湖面在右侧出现。",
+                            "bridge_action": "两人沿花廊出口继续前行，顺势进入镜湖步道。",
+                            "carry_over_elements": ["并肩关系", "向右前方行进"],
+                            "screen_direction_policy": "保持向右前方行进。",
+                            "visual_bridge": "先跟脚步，再露出镜湖步道与栏杆。",
+                            "transition_focus_seconds": 2,
+                        },
+                        "scene_bible": {
+                            "location": "镜湖步道",
+                            "background_anchors": ["镜湖", "步道", "栏杆"],
+                            "spatial_layout": "步道沿湖延伸",
+                            "character_blocking": "两人并肩进入镜湖步道",
+                        },
+                    },
+                ]
+            }
+        )
+
+        validated = service._validate_chapter_scene_structure_output(
+            structure,
+            novel_package=None,
+            chapter_number=1,
+            chapter_event_plan=chapter_event_plan,
+        )
+
+        self.assertEqual(len(validated.scenes), 2)
+
     def test_scene_chunk_output_requires_consuming_scene_transition_contract(self) -> None:
         service = NovelToVideoService()
         scene = ChapterSceneSchema.model_validate(
@@ -5793,6 +5924,183 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual(validated.segments[0].segment_id, "tmp-seg-02")
 
+    def test_scene_segment_contract_output_auto_expands_short_duration_to_fit_action_budget(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖会面",
+                "summary": "陈默在镜湖边等待林晚走近。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": [],
+                    "spatial_layout": "长椅靠湖，步道从右侧延伸",
+                    "character_blocking": "陈默站在长椅旁，林晚从步道走近",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "她走近",
+                        "summary": "陈默看见林晚走近，两人在长椅旁停下。",
+                        "involved_characters": ["陈默", "林晚"],
+                        "start_frame_characters": ["陈默"],
+                        "mid_frame_characters": ["陈默", "林晚"],
+                        "end_frame_characters": ["陈默", "林晚"],
+                        "narration": "",
+                        "dialogue_lines": [],
+                        "subtitle_lines": [],
+                        "timed_beats": [
+                            "0-2秒：陈默站在长椅旁等待。",
+                            "2-5秒：林晚从步道走近，两人在长椅旁停下。",
+                            "5-8秒：两人对视，气氛安静下来。",
+                        ],
+                        "duration_seconds": 5,
+                        "requires_mid_frame": True,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "framing": "双人中景",
+                            "camera_motion": "稳定轻微前推",
+                            "blocking": "陈默在长椅旁，林晚从右侧步道走近后停下",
+                            "action_progression": "从等待到走近，再到停下对视",
+                            "emotion_progression": "紧张转为安静",
+                            "screen_direction": "林晚从右侧走近陈默",
+                            "end_state_lock": "两人在长椅旁停下对视",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "陈默已经站在镜湖长椅旁等待。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "林晚走近，两人停下对视。",
+                            "transition_reason": "当前 chunk 起始。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        validated = service._validate_scene_segment_contract_output(
+            contracts,
+            scene=scene,
+        )
+
+        self.assertEqual(validated.segments[0].duration_seconds, 8)
+
+    def test_scene_segment_contract_output_auto_expands_medium_duration_to_fit_action_budget(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "title": "镜湖会面",
+                "summary": "陈默和林晚在镜湖边经历一连串动作。",
+                "scene_anchor": "镜湖长椅，傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "scene_bible": {
+                    "location": "镜湖长椅",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "柔和侧光",
+                    "dominant_palette": ["暖橙", "深蓝"],
+                    "background_anchors": ["镜湖", "长椅"],
+                    "fixed_props": [],
+                    "spatial_layout": "长椅靠湖，步道从右侧延伸",
+                    "character_blocking": "两人在长椅旁移动并停下",
+                    "continuity_notes": "保持镜湖与长椅关系稳定",
+                },
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc01",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "title": "连续动作",
+                        "summary": "两人完成过多连续动作。",
+                        "involved_characters": ["陈默", "林晚"],
+                        "start_frame_characters": ["陈默", "林晚"],
+                        "mid_frame_characters": ["陈默", "林晚"],
+                        "end_frame_characters": ["陈默", "林晚"],
+                        "narration": "",
+                        "dialogue_lines": [],
+                        "subtitle_lines": [],
+                        "timed_beats": [
+                            "0-2秒：陈默抬头。",
+                            "2-4秒：林晚停步。",
+                            "4-6秒：陈默递出信封。",
+                            "6-10秒：林晚接过信封后，两人停住对视。",
+                        ],
+                        "duration_seconds": 8,
+                        "requires_mid_frame": True,
+                        "transition_hint": "auto",
+                        "shot_state": {
+                            "framing": "双人中景",
+                            "camera_motion": "稳定跟拍",
+                            "blocking": "两人在长椅旁连续移动",
+                            "action_progression": "完成多轮连续动作",
+                            "emotion_progression": "紧张推进到回应",
+                            "screen_direction": "保持同一运动轴线",
+                            "end_state_lock": "两人并肩走向湖边",
+                        },
+                        "continuity_link": {
+                            "previous_segment_id": "",
+                            "transition_mode": "start",
+                            "opening_match": "两人已经站在镜湖长椅旁。",
+                            "carry_over_elements": [],
+                            "allowed_changes": "完成多轮动作。",
+                            "transition_reason": "当前 chunk 起始。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        validated = service._validate_scene_segment_contract_output(
+            contracts,
+            scene=scene,
+        )
+
+        self.assertEqual(validated.segments[0].duration_seconds, 10)
+
+    def test_scene_segment_contract_output_still_splits_when_action_budget_exceeds_max_duration(self) -> None:
+        service = NovelToVideoService()
+        action_beats = [
+            "0-3秒：陈默抬头，林晚停步，陈默递出信封。",
+            "3-6秒：林晚接过信封，低头读信，抬头看向陈默。",
+            "6-9秒：陈默后退半步，林晚靠近一步，两人重新停住。",
+            "9-12秒：陈默开口，林晚回应，两人并肩走向湖边。",
+            "12-15秒：两人停下回头，重新走回长椅旁。",
+        ]
+
+        with self.assertRaisesRegex(SegmentActionSplitRequiredError, "动作容量过载"):
+            service._validate_segment_action_capacity(
+                segment_id="ch01-sc01-seg02",
+                timed_beats=action_beats,
+                duration_seconds=12,
+                allow_split_retry=True,
+            )
+
     def test_scene_segment_contract_output_auto_expands_duration_to_fit_speech_budget(self) -> None:
         service = NovelToVideoService()
         scene = ChapterSceneSchema.model_validate(
@@ -5867,7 +6175,7 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertEqual(validated.segments[0].duration_seconds, 12)
 
-    def test_scene_segment_contract_output_rejects_multi_character_single_subject_closeup_prompt(self) -> None:
+    def test_scene_segment_contract_output_normalizes_multi_character_shared_shot_closeup(self) -> None:
         service = NovelToVideoService()
         scene = ChapterSceneSchema.model_validate(
             {
@@ -5938,14 +6246,16 @@ class PipelineTestCase(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(
-            ValueError,
-            "shot_state.camera_motion 在 mid_frame .* 多人同帧时仍要求单人特写",
-        ):
-            service._validate_scene_segment_contract_output(
-                contracts,
-                scene=scene,
-            )
+        validated = service._validate_scene_segment_contract_output(
+            contracts,
+            scene=scene,
+        )
+
+        self.assertEqual(
+            validated.segments[0].shot_state.camera_motion,
+            "镜头轻微推进或稳定跟随，保持 陈默、林晚 多人同框；只通过站位、视线和表情差异突出主要情绪。",
+        )
+        self.assertIn("多人", validated.segments[0].motion_plan.camera_path)
 
     def test_scene_segment_contract_output_rejects_mid_frame_partial_drop_of_anchor_pair(self) -> None:
         service = NovelToVideoService()
@@ -7400,6 +7710,183 @@ class PipelineTestCase(unittest.TestCase):
             result.segments[0].timed_beats,
         )
 
+    def test_timeline_repair_auto_expands_when_repaired_beats_are_action_dense(self) -> None:
+        class DenseTimelineRepairBackend:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.requests: list[PromptRequest] = []
+
+            def generate(self, request: PromptRequest):  # pragma: no cover - protocol stub
+                raise NotImplementedError
+
+            def generate_structured(self, request: PromptRequest, schema):
+                self.calls += 1
+                self.requests.append(request)
+                if request.metadata.get("task") == "video-scene-segment-timeline-repair":
+                    return {
+                        "scene_id": "ch01-sc03",
+                        "chapter_number": 1,
+                        "segments": [
+                            {
+                                "segment_id": "ch01-sc03-seg02",
+                                "chapter_number": 1,
+                                "scene_id": "ch01-sc03",
+                                "title": "密集动作补尾",
+                                "summary": "两人在长椅旁完成一组密集动作。",
+                                "involved_characters": ["林屿", "苏晚"],
+                                "start_frame_characters": ["林屿", "苏晚"],
+                                "mid_frame_characters": ["林屿", "苏晚"],
+                                "end_frame_characters": ["林屿", "苏晚"],
+                                "narration": "",
+                                "dialogue_lines": [],
+                                "subtitle_lines": [],
+                                "timed_beats": [
+                                    "0-2秒：林屿抬头。",
+                                    "2-4秒：苏晚停步。",
+                                    "4-6秒：林屿递出信封。",
+                                    "6-8秒：苏晚接过信封。",
+                                ],
+                                "duration_seconds": 8,
+                                "requires_mid_frame": True,
+                                "transition_hint": "auto",
+                                "shot_state": {
+                                    "framing": "双人中景",
+                                    "camera_motion": "稳定轻微前推",
+                                    "blocking": "两人在长椅旁面对面站定",
+                                    "action_progression": "从抬头到停步，再到递出和接过信封",
+                                    "emotion_progression": "紧张推进到安静",
+                                    "screen_direction": "保持面对面轴线",
+                                    "end_state_lock": "苏晚接过信封后停住",
+                                },
+                                "continuity_link": {
+                                    "previous_segment_id": "",
+                                    "transition_mode": "start",
+                                    "opening_match": "两人已经站在长椅旁。",
+                                    "carry_over_elements": [],
+                                    "allowed_changes": "完成递出和接过信封。",
+                                    "transition_reason": "当前 chunk 起始。",
+                                },
+                            }
+                        ],
+                    }
+                return {
+                    "scene_id": "ch01-sc03",
+                    "chapter_number": 1,
+                    "segments": [
+                        {
+                            "segment_id": "ch01-sc03-seg02",
+                            "chapter_number": 1,
+                            "scene_id": "ch01-sc03",
+                            "title": "密集动作",
+                            "summary": "两人在长椅旁开始一组动作。",
+                            "involved_characters": ["林屿", "苏晚"],
+                            "start_frame_characters": ["林屿", "苏晚"],
+                            "mid_frame_characters": ["林屿", "苏晚"],
+                            "end_frame_characters": ["林屿", "苏晚"],
+                            "narration": "",
+                            "dialogue_lines": [],
+                            "subtitle_lines": [],
+                            "timed_beats": [
+                                "0-2秒：林屿抬头。",
+                                "2-4秒：苏晚停步。",
+                                "4-6秒：林屿递出信封。",
+                                "6-8秒：苏晚接过信封。",
+                            ],
+                            "duration_seconds": 10,
+                            "requires_mid_frame": True,
+                            "transition_hint": "auto",
+                            "shot_state": {
+                                "framing": "双人中景",
+                                "camera_motion": "稳定轻微前推",
+                                "blocking": "两人在长椅旁面对面站定",
+                                "action_progression": "从抬头到停步，再到递出和接过信封",
+                                "emotion_progression": "紧张推进到安静",
+                                "screen_direction": "保持面对面轴线",
+                                "end_state_lock": "苏晚接过信封后停住",
+                            },
+                            "continuity_link": {
+                                "previous_segment_id": "",
+                                "transition_mode": "start",
+                                "opening_match": "两人已经站在长椅旁。",
+                                "carry_over_elements": [],
+                                "allowed_changes": "完成递出和接过信封。",
+                                "transition_reason": "当前 chunk 起始。",
+                            },
+                        }
+                    ],
+                }
+
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root / "dense-timeline-repair",
+        )
+        backend = DenseTimelineRepairBackend()
+        service = NovelToVideoService(
+            backend=backend,
+            segment_duration_seconds=config.video.segment_duration_seconds,
+            aspect_ratio=config.video.aspect_ratio,
+            fps=config.video.fps,
+            character_image_provider=config.video.character_image_provider,
+            scene_image_provider=config.video.scene_image_provider,
+            seedance_config=config.seedance,
+        )
+        visual_bible = build_test_visual_bible(story_result.novel_package)
+        story_memory = service._build_story_memory(
+            story_result.novel_package,
+            visual_bible,
+            str(self.temp_root / "dense-timeline-repair-memory"),
+        )
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc03",
+                "chapter_number": 1,
+                "title": "长椅动作",
+                "summary": "林屿和苏晚在长椅旁完成递信动作。",
+                "scene_anchor": "长椅旁，傍晚，暖色侧光",
+                "involved_characters": ["林屿", "苏晚"],
+                "scene_bible": {
+                    "location": "长椅旁",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "暖色侧光",
+                    "dominant_palette": ["暖橙", "浅蓝"],
+                    "background_anchors": ["长椅", "树影", "石板路"],
+                    "fixed_props": ["信封"],
+                    "spatial_layout": "长椅靠近石板路，两人面对面站立",
+                    "character_blocking": "两人面对面完成递信动作",
+                    "continuity_notes": "保持长椅和两人面对面站位稳定",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc03-c01",
+                "order_index": 1,
+                "title": "递出信封",
+                "summary": "林屿递出信封，苏晚接过。",
+                "must_cover": ["抬头", "停步", "递出信封", "接过信封"],
+                "transition_goal": "苏晚接过信封后停住。",
+                "expected_segment_count": 1,
+            }
+        )
+
+        result = service._build_scene_chunk_contract_batch(
+            novel_package=story_result.novel_package,
+            story_memory=story_memory,
+            chapter_number=1,
+            scene=scene,
+            chunk=chunk,
+            previous_chunk_exit_state={},
+            previous_tail_segment=None,
+        )
+
+        self.assertEqual(result.segments[0].duration_seconds, 10)
+        self.assertEqual(backend.requests[-1].metadata.get("task"), "video-scene-segment-timeline-repair")
+
     def test_scene_chunk_contract_batch_runs_action_repair_after_chunk_retries_exhausted(self) -> None:
         class ActionRepairBackend:
             def __init__(self) -> None:
@@ -7976,7 +8463,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("ch01-sc03-seg04a", backend.requests[-1].user_prompt)
         self.assertIn("当前约有 3 个推进点", backend.requests[-1].user_prompt)
 
-    def test_scene_chunk_contract_batch_runs_focus_repair_after_chunk_retries_exhausted(self) -> None:
+    def test_scene_chunk_contract_batch_normalizes_focus_conflict_without_extra_repair(self) -> None:
         class FocusRepairBackend:
             def __init__(self) -> None:
                 self.calls = 0
@@ -8146,29 +8633,19 @@ class PipelineTestCase(unittest.TestCase):
             previous_tail_segment=None,
         )
 
-        self.assertEqual(backend.calls, 4)
+        self.assertEqual(backend.calls, 1)
         self.assertEqual(len(result.segments), 1)
         self.assertEqual(
             backend.requests[-1].metadata.get("task"),
-            "video-scene-segment-focus-repair",
+            "video-scene-segment-planner",
         )
-        self.assertEqual(
-            backend.requests[-1].metadata.get("offending_segment_id"),
-            "ch01-sc01-seg05",
-        )
-        self.assertEqual(
-            backend.requests[-1].metadata.get("field_name"),
-            "shot_state.framing",
-        )
-        self.assertEqual(
-            backend.requests[-1].metadata.get("frame_label"),
-            "start_frame",
-        )
-        self.assertIn("当前失败字段是 `shot_state.framing`", backend.requests[-1].user_prompt)
-        self.assertIn("该帧当前角色组是 `林屿、苏晚`", backend.requests[-1].user_prompt)
         self.assertEqual(
             result.segments[0].shot_state.framing,
-            "双人中近景，保持林屿和苏晚同框。",
+            "多人同框中景关系镜头，保持 林屿、苏晚 同框，完整交代角色相对位置。",
+        )
+        self.assertEqual(
+            result.segments[0].shot_state.camera_motion,
+            "镜头轻微推进或稳定跟随，保持 林屿、苏晚 多人同框；只通过站位、视线和表情差异突出主要情绪。",
         )
 
     def test_build_subtitle_lines_does_not_fallback_to_timed_beats(self) -> None:

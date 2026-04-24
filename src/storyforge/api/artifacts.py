@@ -409,6 +409,10 @@ def _collect_planned_segments(
                 end_frame_prompt=scene_task.end_frame_prompt if scene_task else segment.end_frame_prompt,
                 video_prompt=clip_task.prompt if clip_task else "",
                 submitted_video_prompt=clip_task.submitted_prompt if clip_task else "",
+                seedance_motion_prompt=_extract_seedance_motion_prompt(
+                    str((clip_task.submitted_prompt if clip_task else "") or (clip_task.prompt if clip_task else "") or ""),
+                ),
+                motion_plan=_build_motion_plan_response(segment),
                 submitted_prompt_variant=clip_task.submit_variant if clip_task else "",
                 submitted_reference_bindings=_build_prompt_reference_bindings(
                     clip_task.submitted_reference_bindings if clip_task else [],
@@ -485,6 +489,61 @@ def _collect_planned_segments(
             )
         )
     return planned_segments
+
+
+def _build_motion_plan_response(segment: VideoSegment) -> dict[str, str]:
+    motion_plan = getattr(segment, "motion_plan", None)
+    if motion_plan is None:
+        return {}
+    if isinstance(motion_plan, dict):
+        payload = motion_plan
+    elif hasattr(motion_plan, "__dict__"):
+        payload = vars(motion_plan)
+    else:
+        payload = {
+            key: getattr(motion_plan, key, "")
+            for key in (
+                "start_to_mid",
+                "mid_to_end",
+                "camera_path",
+                "character_motion",
+                "continuity_guard",
+            )
+        }
+    return {
+        key: str(payload.get(key, "") or "").strip()
+        for key in (
+            "start_to_mid",
+            "mid_to_end",
+            "camera_path",
+            "character_motion",
+            "continuity_guard",
+        )
+        if str(payload.get(key, "") or "").strip()
+    }
+
+
+def _extract_seedance_motion_prompt(prompt: str) -> str:
+    lines: list[str] = []
+    capture_prefixes = (
+        "参考图绑定",
+        "- 图片",
+        "画面必须按",
+        "画面推进",
+        "插入镜头",
+        "角色变化",
+        "跨场承接",
+        "视觉过桥",
+        "方向：",
+        "音频承接",
+    )
+    for raw_line in str(prompt or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if any(line.startswith(prefix) for prefix in capture_prefixes):
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def _build_prompt_reference_bindings(

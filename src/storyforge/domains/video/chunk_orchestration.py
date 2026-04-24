@@ -656,18 +656,58 @@ class VideoSceneChunkOrchestrationMixin:
                 "chunk_order_index": chunk.order_index,
             },
         )
-        return self._run_strict_structured_agent(
-            schema=SceneSegmentContractBatchSchema,
-            request=request,
-            validator=lambda value, current_scene=scene, current_chunk=chunk, current_previous_tail=previous_tail_segment, current_limit=effective_expected_segment_count: self._validate_scene_chunk_contract_output(
+        retry_state: dict[str, object] = {"last_candidate": None}
+
+        def validate_timeline_candidate(
+            value: SceneSegmentContractBatchSchema,
+            *,
+            current_scene: ChapterSceneSchema = scene,
+            current_chunk: SceneSegmentChunkSchema = chunk,
+            current_previous_tail: SceneSegmentContractSchema | None = previous_tail_segment,
+            current_limit: int = effective_expected_segment_count,
+        ) -> SceneSegmentContractBatchSchema:
+            retry_state["last_candidate"] = value
+            return self._validate_scene_chunk_contract_output(
                 value,
                 scene=current_scene,
                 chunk=current_chunk,
                 previous_tail_segment=current_previous_tail,
                 effective_expected_segment_count=current_limit,
-            ),
-            attempts=max(2, self.structured_retry_attempts),
-        )
+            )
+
+        try:
+            return self._run_strict_structured_agent(
+                schema=SceneSegmentContractBatchSchema,
+                request=request,
+                validator=validate_timeline_candidate,
+                attempts=max(2, self.structured_retry_attempts),
+            )
+        except VideoStructuredGenerationError as exc:
+            last_candidate = retry_state.get("last_candidate")
+            if (
+                isinstance(exc.cause, SegmentActionSplitRequiredError)
+                and isinstance(last_candidate, SceneSegmentContractBatchSchema)
+            ):
+                next_limit = min(
+                    self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
+                    max(
+                        int(effective_expected_segment_count),
+                        int(exc.cause.required_segment_count),
+                    ),
+                )
+                return self._repair_scene_chunk_contract_batch_after_action_failure(
+                    novel_package=novel_package,
+                    story_memory=story_memory,
+                    chapter_number=chapter_number,
+                    scene=scene,
+                    chunk=chunk,
+                    previous_chunk_exit_state=previous_chunk_exit_state,
+                    previous_tail_segment=previous_tail_segment,
+                    failed_contracts=last_candidate,
+                    split_error=exc.cause,
+                    effective_expected_segment_count=next_limit,
+                )
+            raise
 
     def _repair_scene_chunk_contract_batch_after_action_failure(
         self,
@@ -810,6 +850,19 @@ class VideoSceneChunkOrchestrationMixin:
                         current_limit = next_limit
                         next_round_attempts = 1
                         continue
+                    if self._should_repair_scene_chunk_contract_batch_after_focus_conflict_failure(exc.cause):
+                        return self._repair_scene_chunk_contract_batch_after_focus_conflict_failure(
+                            novel_package=novel_package,
+                            story_memory=story_memory,
+                            chapter_number=chapter_number,
+                            scene=scene,
+                            chunk=chunk,
+                            previous_chunk_exit_state=previous_chunk_exit_state,
+                            previous_tail_segment=previous_tail_segment,
+                            failed_contracts=last_candidate,
+                            failure=exc.cause,
+                            effective_expected_segment_count=current_limit,
+                        )
                     if self._should_soften_scene_chunk_contract_validation(exc.cause):
                         next_limit = min(
                             self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,

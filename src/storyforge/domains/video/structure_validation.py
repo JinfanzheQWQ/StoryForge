@@ -1101,21 +1101,16 @@ class VideoStructureValidationMixin:
             )
 
         previous_scene_signal = self._build_scene_transition_previous_scene_signal(previous_scene)
-        current_scene_signal = self._build_scene_transition_current_scene_signal(current_scene)
         previous_overlap = max(
             text_overlap_ratio(str(contract.previous_scene_exit_state or "").strip(), previous_scene_signal),
             text_overlap_ratio(" ".join(contract.carry_over_elements), previous_scene_signal),
-        )
-        current_overlap = max(
-            text_overlap_ratio(str(contract.next_scene_entry_match or "").strip(), current_scene_signal),
-            text_overlap_ratio(str(contract.visual_bridge or "").strip(), current_scene_signal),
         )
         if transition_mode != "hard_cut" and previous_overlap < 0.12:
             raise ValueError(
                 f"scene {current_scene.scene_id} 的 scene_transition_contract.previous_scene_exit_state "
                 "没有明显承接上一 scene 已成立的尾部状态。"
             )
-        if current_overlap < 0.12:
+        if not self._scene_transition_entry_matches_current_scene(current_scene, contract):
             raise ValueError(
                 f"scene {current_scene.scene_id} 的 scene_transition_contract.next_scene_entry_match "
                 "没有明显落到当前 scene 的开场状态。"
@@ -1151,3 +1146,59 @@ class VideoStructureValidationMixin:
             )
             if str(part).strip()
         )
+
+    def _scene_transition_entry_matches_current_scene(
+        self,
+        scene: ChapterSceneSchema,
+        contract,
+    ) -> bool:
+        entry_text = str(contract.next_scene_entry_match or "").strip()
+        if not entry_text:
+            return False
+        current_signal = self._build_scene_transition_current_scene_signal(scene)
+        visual_bridge = str(contract.visual_bridge or "").strip()
+        if max(
+            text_overlap_ratio(entry_text, current_signal),
+            text_overlap_ratio(visual_bridge, current_signal),
+        ) >= 0.12:
+            return self._scene_transition_entry_has_filmable_state(entry_text)
+        if not self._scene_transition_entry_has_current_anchor(scene, entry_text):
+            return False
+        return self._scene_transition_entry_has_filmable_state(entry_text)
+
+    def _scene_transition_entry_has_current_anchor(
+        self,
+        scene: ChapterSceneSchema,
+        entry_text: str,
+    ) -> bool:
+        normalized = normalize_similarity_text(entry_text)
+        anchors = [
+            scene.title,
+            scene.scene_anchor,
+            scene.scene_bible.location,
+            scene.scene_bible.spatial_layout,
+            scene.scene_bible.character_blocking,
+            scene.scene_bible.continuity_notes,
+            *scene.scene_bible.background_anchors,
+            *scene.scene_bible.fixed_props,
+        ]
+        for anchor in anchors:
+            anchor_text = str(anchor or "").strip()
+            if len(anchor_text) < 2:
+                continue
+            if normalize_similarity_text(anchor_text) in normalized:
+                return True
+        return False
+
+    def _scene_transition_entry_has_filmable_state(self, entry_text: str) -> bool:
+        text = str(entry_text or "").strip()
+        if not text:
+            return False
+        filmable_tokens = (
+            "站", "坐", "停", "走", "进入", "入画", "来到", "到达", "看向", "望向",
+            "面向", "背对", "并肩", "靠近", "转身", "低头", "抬头", "拿着", "握着",
+            "停在", "站在", "坐在", "位于", "处在", "开头", "第一秒", "先建立",
+        )
+        if any(token in text for token in filmable_tokens):
+            return True
+        return bool(extract_progression_signal_terms(text))

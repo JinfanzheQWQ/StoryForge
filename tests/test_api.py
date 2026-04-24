@@ -485,6 +485,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("end_frame_prompt", first_planned_segment)
             self.assertIn("video_prompt", first_planned_segment)
             self.assertIn("submitted_video_prompt", first_planned_segment)
+            self.assertIn("seedance_motion_prompt", first_planned_segment)
+            self.assertIn("motion_plan", first_planned_segment)
             self.assertIn("submitted_prompt_variant", first_planned_segment)
             self.assertIn("submitted_reference_bindings", first_planned_segment)
             self.assertIn("scene_master_frame_request", first_planned_segment)

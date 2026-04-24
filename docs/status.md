@@ -137,9 +137,10 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - segment contract prompt 要求：如果当前 chunk 的 `must_cover / transition_goal` 已经是开口、回应、靠近、牵手、拥抱、亲吻或离开决定，最后一个 segment 必须真正落到这个结果，不要只写“准备做”
 - `scene chunk -> segment contract` 会检查最后一个 segment 是否真正落到当前 chunk 的 `transition_goal`；这类“收束不够落地”的问题会优先走 repair，repair 失败时降级成 planner warning，不会默认卡死主链路
 - 如果 scene segment planner 的常规重试已经耗尽，但最后失败仍是“某个 segment 的 `timed_beats` 尾部没有覆盖完整时长”，系统会自动追加一次 `video-scene-segment-timeline-repair`，只定向补该段尾部 beat，而不是整 chunk 直接失败
-- 如果 scene segment planner 的常规重试已经耗尽，但最后失败仍是“某个 segment 的动作容量过载”，系统会自动追加一次 `video-scene-segment-action-repair`，只定向拆该段的动作链，而不是整 chunk 直接失败
+- 如果某个 segment 只是因为时长偏短导致轻微动作容量超载，合同校验会先把 `duration_seconds` 自动拉到可容纳动作的最小时长；扩秒时会同步把最后一条 `timed_beats` 延到新时长；如果仍未覆盖完整时长，再交给 `video-scene-segment-timeline-repair` 补尾部节拍
+- 如果扩到 12 秒后动作容量仍然超载，系统才会追加 `video-scene-segment-action-repair`，只定向拆该段的动作链，而不是整 chunk 直接失败
 - `video-scene-segment-action-repair` 会迭代消化后续失败：如果第一轮 repair 后仍残留过载子段，或 repair 拆出更多段后触发 chunk 段数上限，系统会继续拿最新失败 batch 再跑下一轮
-- 如果 scene segment planner 的常规重试已经耗尽，但最后失败仍是“多人同帧却仍要求单人特写”，系统会自动追加一次 `video-scene-segment-focus-repair`，只定向修该段的共享镜头字段，而不是整 chunk 直接失败
+- 多人同帧镜头冲突先由 schema normalize 兜底：共享 `shot_state.framing / shot_state.camera_motion` 会被改成多人同框关系镜头；如果后续仍残留冲突，系统会自动追加 `video-scene-segment-focus-repair` 定向修镜头字段
 - segment contract prompt 明确 `mid_frame_characters` 必须跟随中段 beat 的真实出镜角色，不能直接照搬 scene cast，也不能把只在尾帧出现的人提前写进中段帧
 - segment contract 包含 `mid_frame_mode`：
   - `continuous` 表示中段仍是主镜头连续推进
@@ -155,7 +156,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - 跨 chunk 首段必须在结构化阶段就写成 `continue / cut`，不能把后续 chunk 首段重新写成 `start`
 - 跨 chunk 首段会显式继承上一 chunk 尾部状态摘要：`visible_tail_state`、`carry_over_elements`、`opening_match_seed` 会一起进入 prompt、校验和重试，减少“同一 scene 像重新开演”的情况
 - segment 合同阶段会直接校验对白 / 字幕与时长预算是否匹配，超预算会进入结构化重试
-- segment 合同阶段会直接校验动作容量：5-6 秒片段最多允许 1-2 个可见推进点，8-12 秒最多 2-3 个；如果 `timed_beats` 把多轮动作、对白轮次或关系变化硬塞进同一段，会直接触发 chunk 内拆段重试
+- segment 合同阶段会直接校验动作容量：5-6 秒片段最多允许 1-2 个可见推进点，8-9 秒最多 3 个，10-12 秒最多 4 个；轻微超载优先自动扩秒，扩到 12 秒仍装不下时才触发 chunk 内拆段重试
 - 如果某个 segment 的对白预算仍在单段 12 秒上限内，但 LLM 把 `duration_seconds` 写短了，合同校验会直接把该段时长补到所需秒数，而不是因为 `9 秒 / 12 秒` 这种预算错配直接失败
 - 如果某个 segment 的对白预算已经超过单段 12 秒上限，当前 chunk 会在结构化阶段自动触发“重拆段”重试：临时提高该 chunk 的 segment 上限，并要求模型把这轮对白拆成多个正式 segment，而不是直接整批失败
 - 动作容量过载也已接入同一条结构化重试链：系统会临时提高当前 chunk 的 `effective_expected_segment_count`，并在 retry prompt 中直接写明“至少拆成 N 个 segment”
@@ -226,7 +227,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
   - 单段生成场景图
   - 单段生成视频
   - 手动合并总片
-- 时间线可直接展开查看场景母图 prompt、每段图片 prompt、视频基础 prompt，以及视频提交后真实送往 Seedance 的最终 prompt / submit variant / 参考图绑定顺序
+- 时间线可直接展开查看场景母图 prompt、每段图片 prompt、`motion_plan`、Seedance 画面推进摘录、视频基础 prompt，以及视频提交后真实送往 Seedance 的最终 prompt / submit variant / 参考图绑定顺序
 - 时间线还会展示场景母图、首帧、中段帧、尾帧和视频片段的真实提交参数 JSON，可直接核对当次到底用了哪些图、按什么顺序提交
 - 项目、任务、任务结果已持久化到 MySQL
 - 删除项目支持，会同步清理安全范围内的输出目录

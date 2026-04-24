@@ -555,6 +555,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `video_prompt` 是分段合同阶段落盘的基础视频 prompt；画面推进会消费 `motion_plan` 并绑定 `图片1 / 图片2 / 图片3`
+- `motion_plan` 返回当前 segment 的画面推进合同，`seedance_motion_prompt` 返回最终 Seedance prompt 中的参考图绑定与画面推进摘录
 - `submitted_video_prompt`、`submitted_prompt_variant`、`submitted_reference_bindings` 只有该段真正提交过视频后才会有值
 - `mid_frame_mode` 当前取值为 `continuous` 或 `insert_cut`；当前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
 - `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的首帧 / 中段帧 / 尾帧

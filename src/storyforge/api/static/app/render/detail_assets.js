@@ -459,6 +459,40 @@ function renderSubmittedReferenceBindings(bindings, title = "参考图绑定", n
   `;
 }
 
+function renderMotionPlanSection(motionPlan) {
+  if (!motionPlan || typeof motionPlan !== "object") {
+    return "";
+  }
+  const rows = [
+    ["图片1 -> 图片2", motionPlan.start_to_mid || motionPlan.startToMid || ""],
+    ["图片2 -> 图片3", motionPlan.mid_to_end || motionPlan.midToEnd || ""],
+    ["镜头路径", motionPlan.camera_path || motionPlan.cameraPath || ""],
+    ["角色运动", motionPlan.character_motion || motionPlan.characterMotion || ""],
+    ["连续性防跳", motionPlan.continuity_guard || motionPlan.continuityGuard || ""],
+  ].filter(([, value]) => String(value || "").trim());
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <section class="prompt-section">
+      <div class="prompt-section-head">
+        <strong>画面推进合同 motion_plan</strong>
+        <span>分段合同 / 后处理补齐</span>
+      </div>
+      <div class="prompt-binding-list prompt-motion-list">
+        ${rows.map(([label, value]) => `
+          <article class="prompt-binding-item">
+            <div>
+              <strong>${escapeHtml(label)}</strong>
+            </div>
+            <p>${escapeHtml(value)}</p>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderSubmittedRequest(title, request, emptyNote = "提交后可见") {
   const payload = request?.payload && typeof request.payload === "object"
     ? request.payload
@@ -519,6 +553,8 @@ function renderSegmentPromptPanel(segment) {
     renderSubmittedRequest("首帧实际提交参数", segment.startFrameRequest, "首帧提交后可见"),
     hasMidFrame ? renderSubmittedRequest("中段实际提交参数", segment.midFrameRequest, "中段提交后可见") : "",
     renderSubmittedRequest("尾帧实际提交参数", segment.endFrameRequest, "尾帧提交后可见"),
+    renderMotionPlanSection(segment.motionPlan),
+    renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
     renderPromptSection("视频规划 Prompt", segment.videoPrompt, "segment_contracts 阶段落盘"),
     renderPromptSection(
       "视频实际提交 Prompt",
@@ -568,6 +604,8 @@ function buildTimelineSegments(artifacts) {
       endFramePrompt: segment.end_frame_prompt || "",
       videoPrompt: segment.video_prompt || "",
       submittedVideoPrompt: segment.submitted_video_prompt || "",
+      seedanceMotionPrompt: segment.seedance_motion_prompt || "",
+      motionPlan: segment.motion_plan && typeof segment.motion_plan === "object" ? segment.motion_plan : {},
       submittedPromptVariant: segment.submitted_prompt_variant || "",
       sceneMasterFrameRequest: normalizeSubmittedRequest(segment.scene_master_frame_request),
       startFrameRequest: normalizeSubmittedRequest(segment.start_frame_request),
@@ -602,6 +640,8 @@ function buildTimelineSegments(artifacts) {
         midFrame: null,
         endFrame: null,
         clip: null,
+        seedanceMotionPrompt: "",
+        motionPlan: {},
         sceneReady: false,
         videoReady: false,
       });

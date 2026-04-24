@@ -444,10 +444,11 @@ class VideoStructuredRetryPromptMixin:
             retry_note += (
                 " 这次失败说明跨 scene 过渡合同没有被真正消费。"
                 "如果当前不是首个 scene，就必须先用 `scene_transition_contract` 建立上一场尾部到当前场开头的桥。"
-                "本次至少要做到三点："
+                "本次至少要做到四点："
                 "第一，scene 级合同里的 `previous_scene_id / transition_mode / next_scene_entry_match` 不能缺；"
-                "第二，首个 chunk 必须把 `bridge_action` 和 `visual_bridge` 写进自己的开场推进；"
-                "第三，首个 segment 的 `opening_match` 和前 1-2 条 `timed_beats` 必须先承接上一场尾部，再 reveal 当前场环境。"
+                "第二，`next_scene_entry_match` 必须写成当前 scene 第一秒可拍画面，包含当前地点/背景锚点 + 角色站位/朝向/动作停点，不能只写抽象情绪或只复述上一场尾部；"
+                "第三，首个 chunk 必须把 `bridge_action` 和 `visual_bridge` 写进自己的开场推进；"
+                "第四，首个 segment 的 `opening_match` 和前 1-2 条 `timed_beats` 必须先承接上一场尾部，再 reveal 当前场环境。"
                 "不要把新 scene 直接写成毫无来由的重新开场。"
             )
         if (

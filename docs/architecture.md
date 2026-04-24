@@ -154,7 +154,7 @@ chapter -> scene -> chunk -> segment
 3. `Scene Chunk Planner`
    只生成当前 `scene` 的连续 chunks，并要求首个 chunk 消费跨 scene 过渡合同；prompt 与结构化校验都会同时读取当前 scene 绑定的 `covered_event_ids + covered_event_summaries`，提前拦截把后续 scene 关键推进偷写进本 scene 的越界 chunk；同时会校验 `must_cover / transition_goal` 与 `expected_segment_count` 是否匹配，提前拦截动作容量明显过载的 chunk；如果常规重试后仍卡在动作容量过载，会自动进入一次 `video-scene-chunk-repair`，只定向修当前失败 chunk
 4. `Scene Segment Planner`
-   只生成当前 chunk 的 `segment contracts`，并要求首个 segment 把 scene 级 entry state 落到 `opening_match / timed_beats`；同时会按 `timed_beats` 校验时长预算、动作容量和关键帧距离，必要时在当前 chunk 内直接触发结构化重试拆段；如果常规重试后仍卡在某个 segment 的尾部 beat 覆盖不完整，会自动进入一次 `video-scene-segment-timeline-repair`；如果仍卡在某个 segment 的动作容量过载，会自动进入一次 `video-scene-segment-action-repair`
+   只生成当前 chunk 的 `segment contracts`，并要求首个 segment 把 scene 级 entry state 落到 `opening_match / timed_beats`；同时会按 `timed_beats` 校验时长预算、动作容量和关键帧距离；动作轻微超载时先自动扩秒并同步延长最后一条 beat，尾部 beat 仍不完整才进入 `video-scene-segment-timeline-repair`，扩到 12 秒仍超载才进入 `video-scene-segment-action-repair`；共享镜头字段会先归一化多人同框关系镜头，残留镜头冲突再交给 `video-scene-segment-focus-repair`
 5. `本地 Prompt 组装`
    本地补齐图片 / 视频阶段需要的 prompt 字段
 
@@ -202,7 +202,7 @@ scene skeleton 的额外硬约束：
 视频规划的核心合同由三层构成：
 
 - `scene_transition_contract`
-  锁定当前 scene 如何从上一场进入，包括 entry match、bridge action 和 reveal 方式
+  锁定当前 scene 如何从上一场进入，包括 entry match、bridge action 和 reveal 方式；`next_scene_entry_match` 表示当前 scene 第一秒可拍开场画面
 - `scene_bible`
   锁定地点、时间、天气、光线、背景锚点、固定道具和空间布局
 - `shot_state`

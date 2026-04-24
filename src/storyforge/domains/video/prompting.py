@@ -343,7 +343,8 @@ class VideoPromptingMixin:
 - 从第二个 scene 开始，必须显式填写 `scene_transition_contract`，说明它如何从上一场进入当前场。
 - `scene_transition_contract.transition_mode` 只能取 `direct_continue / adjacent_move / motivated_cut / hard_cut`。
 - 如果不是 `hard_cut`，就必须写清：`previous_scene_id`、`previous_scene_exit_state`、`next_scene_entry_match`、`bridge_action`、`carry_over_elements`、`visual_bridge`。
-- `next_scene_entry_match` 必须描述当前场第一段开头先建立的可拍状态；`bridge_action` 必须写上一场尾部如何过渡到当前场开头。
+- `next_scene_entry_match` 必须写成当前 scene 第一秒能直接拍到的开场画面：当前地点/背景锚点 + 角色站位/朝向/动作停点；不得只写“承接上一场情绪”“继续上一场沉默”或只复述上一场尾部。
+- `previous_scene_exit_state` 只写上一场最后能看到什么；`bridge_action` 写上一场尾部如何过渡到当前场开头；`visual_bridge` 写当前场新环境如何 reveal。
 - `transition_focus_seconds` 通常只写 1-3 秒；不要把整场都写成过渡段。
 - 如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene。
 - 不要把过多相邻关键事件一口气吞进同一个 scene；如果当前事件块已经明显形成“会面 -> 开口 -> 回应 -> 关系落点”这类多阶段链路，应优先拆成多个 scene，而不是把压力全部留给后面的 chunk planner。

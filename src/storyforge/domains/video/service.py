@@ -16,7 +16,10 @@ from storyforge.agents.base import (
 from storyforge.core.io import to_jsonable
 from storyforge.core.config import SeedanceConfig
 from storyforge.domains.novel.contracts import NovelPackage
+from storyforge.domains.video.chapter_orchestration import VideoChapterOrchestrationMixin
+from storyforge.domains.video.chunk_orchestration import VideoSceneChunkOrchestrationMixin
 from storyforge.domains.video.errors import (
+    SegmentActionSplitRequiredError,
     SegmentSpeechSplitRequiredError,
     VideoStructuredGenerationError,
 )
@@ -25,6 +28,7 @@ from storyforge.domains.video.contracts import (
     ContinuityLink,
     SceneBible,
     ShotState,
+    StoryMemoryPackage,
     VideoProjectPackage,
     VideoScene,
     VideoSegment,
@@ -32,13 +36,14 @@ from storyforge.domains.video.contracts import (
 from storyforge.domains.video.planning import VideoPlanningMixin
 from storyforge.domains.video.prompting import VideoPromptingMixin
 from storyforge.domains.video.repair import VideoRepairMixin
+from storyforge.domains.video.structure_validation import VideoStructureValidationMixin
 from storyforge.domains.video.schemas import (
+    ChapterCoverageEventSchema,
+    ChapterCoverageEventSplitPlanSchema,
     ChapterCoveragePlanSchema,
     ChapterSceneSchema,
-    ChapterSceneStructureSchema,
     CharacterVisualBibleSchema,
     SceneContinuityRepairSchema,
-    SceneSegmentChunkPlanSchema,
     SceneSegmentChunkSchema,
     SceneSegmentContractBatchSchema,
     SceneSegmentContractSchema,
@@ -46,161 +51,48 @@ from storyforge.domains.video.schemas import (
     VideoSegmentPlanSchema,
     VideoSegmentSchema,
 )
+from storyforge.domains.video.text_rules import (
+    ACTION_STEP_SPLIT_PATTERN,
+    DIRECTION_APPROACH_PATTERNS,
+    DIRECTION_RETREAT_PATTERNS,
+    GENERIC_OPENING_MATCH_PHRASES,
+    TIMED_BEAT_PREFIX_PATTERN,
+    estimate_progression_node_count_from_texts as _estimate_progression_node_count_from_texts,
+    extract_progression_signal_terms as _extract_progression_signal_terms,
+    normalize_similarity_text as _normalize_similarity_text,
+    progress_text_too_generic as _progress_text_too_generic,
+    text_explicitly_stalled as _text_explicitly_stalled,
+    text_new_signal_count as _text_new_signal_count,
+    text_overlap_ratio as _text_overlap_ratio,
+)
 
 
 StructuredModelT = TypeVar("StructuredModelT", bound=BaseModel)
 TIMED_BEAT_PATTERN = re.compile(r"(?P<start>\d+(?:\.\d+)?)\s*[-~到]\s*(?P<end>\d+(?:\.\d+)?)\s*秒")
-GENERIC_PROGRESS_FILLER_TERMS = (
-    "继续",
-    "承接",
-    "保持",
-    "延续",
-    "推进",
-    "过渡",
-    "状态",
-    "情绪",
-    "动作",
-    "关系",
-    "当前",
-    "片段",
-    "场景",
-)
-PROGRESSION_SIGNAL_TERMS = (
-    "走",
-    "跑",
-    "停",
-    "回头",
-    "转身",
-    "抬头",
-    "低头",
-    "看",
-    "望",
-    "靠近",
-    "走近",
-    "迈步",
-    "前进",
-    "后退",
-    "进入",
-    "离开",
-    "伸手",
-    "递",
-    "接",
-    "开口",
-    "说",
-    "回答",
-    "拥抱",
-    "亲吻",
-    "坐下",
-    "起身",
-)
-NO_PROGRESS_PHRASES = (
-    "没有新的动作推进",
-    "没有继续前进",
-    "继续保持",
-    "保持当前",
-    "停在原地",
-    "仍停在",
-    "继续停在",
-    "没有推进",
-)
-GENERIC_OPENING_MATCH_PHRASES = (
-    "承接上一段继续",
-    "场景开始",
-    "开场进入",
-    "继续推进",
-    "继续当前状态",
-    "新场景开始",
-)
-DIRECTION_APPROACH_PATTERNS = (
-    re.compile(r"从(?:画面)?深处向(?:画面)?浅处"),
-    re.compile(r"(?:走近|靠近|接近|逼近|冲向)(?:镜头|画面前方|前景)?"),
-    re.compile(r"向(?:镜头|画面前方|画面浅处|前景|近处)"),
-    re.compile(r"由远及近"),
-    re.compile(r"朝(?:镜头|前方)走来"),
-)
-DIRECTION_RETREAT_PATTERNS = (
-    re.compile(r"从(?:画面)?浅处向(?:画面)?深处"),
-    re.compile(r"(?:走向|走进|迈向|退向)(?:远处|深处|后方)"),
-    re.compile(r"向(?:画面深处|远处|远方|深处|后方)"),
-    re.compile(r"(?:背影|身影).{0,6}(?:远去|渐远|离开)"),
-    re.compile(r"渐行渐远"),
-    re.compile(r"离镜头越来越远"),
-    re.compile(r"由近及远"),
-)
-
-
-def _normalize_similarity_text(value: str) -> str:
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").strip().lower())
-
-
-def _text_ngrams(value: str) -> set[str]:
-    normalized = _normalize_similarity_text(value)
-    if not normalized:
-        return set()
-    if len(normalized) <= 3:
-        return {normalized}
-    grams: set[str] = set()
-    for size in (2, 3):
-        if len(normalized) < size:
-            continue
-        grams.update(
-            normalized[index : index + size]
-            for index in range(len(normalized) - size + 1)
-        )
-    return grams
-
-
-def _text_overlap_ratio(left: str, right: str) -> float:
-    left_grams = _text_ngrams(left)
-    right_grams = _text_ngrams(right)
-    if not left_grams or not right_grams:
-        return 0.0
-    return len(left_grams & right_grams) / min(len(left_grams), len(right_grams))
-
-
-def _text_new_signal_count(previous: str, current: str) -> int:
-    return len(_text_ngrams(current) - _text_ngrams(previous))
-
-
-def _progress_text_too_generic(text: str) -> bool:
-    normalized = _normalize_similarity_text(text)
-    if not normalized:
-        return True
-    reduced = normalized
-    for token in GENERIC_PROGRESS_FILLER_TERMS:
-        reduced = reduced.replace(token, "")
-    return len(reduced) < 6
-
-
-def _extract_progression_signal_terms(text: str) -> set[str]:
-    normalized = _normalize_similarity_text(text)
-    return {
-        term
-        for term in PROGRESSION_SIGNAL_TERMS
-        if term and term in normalized
-    }
-
-
-def _text_explicitly_stalled(text: str) -> bool:
-    normalized = _normalize_similarity_text(text)
-    return any(
-        _normalize_similarity_text(phrase) in normalized
-        for phrase in NO_PROGRESS_PHRASES
-    )
-
-
 class NovelToVideoService(
+    VideoStructureValidationMixin,
+    VideoChapterOrchestrationMixin,
+    VideoSceneChunkOrchestrationMixin,
     VideoPromptingMixin,
     VideoRepairMixin,
     VideoPlanningMixin,
 ):
     CHAPTER_EVENT_END_COVERAGE_MIN_RATIO = 0.72
+    CHAPTER_EVENT_END_COVERAGE_MEDIUM_RATIO = 0.64
+    CHAPTER_EVENT_END_COVERAGE_SHORT_RATIO = 0.58
+    CHAPTER_EVENT_END_COVERAGE_MEDIUM_MIN_CHARS = 360
+    CHAPTER_EVENT_END_COVERAGE_SHORT_MIN_CHARS = 120
     PLANNER_MIN_DURATION_SECONDS = 5
     SEEDANCE_MIN_DURATION_SECONDS = 2
     SEEDANCE_MAX_DURATION_SECONDS = 12
+    TIMED_BEAT_COVERAGE_TOLERANCE_SECONDS = 0.75
     SPEECH_CHARS_PER_SECOND = 3
     SCENE_SEGMENT_CHUNK_MAX_SEGMENTS = 4
     SCENE_MAX_EXPECTED_SEGMENTS = 8
+    CHAPTER_EVENT_MAX_PROGRESS_NODES = 2
+    CHAPTER_EVENT_EDGE_MAX_PROGRESS_NODES = 3
+    SEGMENT_ACTION_NODE_BUDGET_SHORT = 2
+    SEGMENT_ACTION_NODE_BUDGET_LONG = 3
 
     def __init__(
         self,
@@ -223,6 +115,30 @@ class NovelToVideoService(
         self.scene_image_provider = scene_image_provider
         self.seedance_config = seedance_config or SeedanceConfig()
         self.structured_retry_attempts = max(1, structured_retry_attempts)
+        self._planner_warnings: list[str] = []
+
+    def _record_planner_warning(self, message: str) -> None:
+        normalized = " ".join(str(message or "").split()).strip()
+        if normalized and normalized not in self._planner_warnings:
+            self._planner_warnings.append(normalized)
+
+    def _flush_planner_warnings_to_story_memory(
+        self,
+        story_memory: StoryMemoryPackage,
+    ) -> StoryMemoryPackage:
+        if not self._planner_warnings:
+            return story_memory
+        existing = [
+            " ".join(str(item or "").split()).strip()
+            for item in story_memory.generation_notes.planner_warnings
+            if " ".join(str(item or "").split()).strip()
+        ]
+        for warning in self._planner_warnings:
+            if warning not in existing:
+                existing.append(warning)
+        story_memory.generation_notes.planner_warnings = existing[-40:]
+        self._planner_warnings = []
+        return story_memory
 
     def build_video_project(self, novel_package: NovelPackage, output_dir: str) -> VideoProjectPackage:
         visual_bible = self._run_structured_agent(
@@ -269,6 +185,7 @@ class NovelToVideoService(
         )
         manifest = self._build_seedance_manifest(
             novel_package.outline.title,
+            scenes,
             segments,
             scene_images,
             output_dir,
@@ -326,6 +243,7 @@ class NovelToVideoService(
                 chapter_plan=chapter_plan,
                 chapter_number=chapter.number,
             )
+            story_memory = self._flush_planner_warnings_to_story_memory(story_memory)
             chapter_plans.append(chapter_plan)
 
         merged_plan = self._merge_chapter_segment_plans(chapter_plans)
@@ -345,360 +263,8 @@ class NovelToVideoService(
             novel_package=novel_package,
             plan=merged_plan,
         )
+        story_memory = self._flush_planner_warnings_to_story_memory(story_memory)
         return merged_plan, story_memory
-
-    def _plan_chapter_scene_structure(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-    ) -> ChapterSceneStructureSchema:
-        chapter_event_plan = self._run_structured_agent(
-            schema=ChapterCoveragePlanSchema,
-            request=PromptRequest(
-                system_prompt=(
-                    "你是章节关键事件提取 Agent。"
-                    "请只提取当前章节里后续场景规划必须覆盖的关键推进事件。"
-                    "不要生成 scene，不要生成 segment，不要生成图片 prompt。"
-                ),
-                user_prompt=self._build_chapter_event_coverage_user_prompt(
-                    novel_package,
-                    chapter_number=chapter_number,
-                ),
-                metadata={
-                    "task": "video-chapter-event-planner",
-                    "chapter_number": chapter_number,
-                },
-            ),
-            validator=lambda value, chapter_number=chapter_number: self._validate_chapter_event_coverage_output(
-                value,
-                novel_package=novel_package,
-                chapter_number=chapter_number,
-            ),
-        )
-        return self._run_structured_agent(
-            schema=ChapterSceneStructureSchema,
-            request=PromptRequest(
-                system_prompt=(
-                    "你是章节场景规划 Agent。"
-                    "请只规划当前章节有哪些 scene。"
-                    "只输出 scene 结构，不要输出 segment，不要输出图片 prompt。"
-                ),
-                user_prompt=self._build_chapter_scene_planner_user_prompt(
-                    novel_package,
-                    chapter_number=chapter_number,
-                    story_memory=story_memory,
-                    chapter_event_plan=chapter_event_plan,
-                ),
-                metadata={
-                    "task": "video-chapter-scene-planner",
-                    "chapter_number": chapter_number,
-                },
-            ),
-            validator=lambda value, chapter_number=chapter_number, chapter_event_plan=chapter_event_plan: self._validate_chapter_scene_structure_output(
-                value,
-                novel_package=novel_package,
-                chapter_number=chapter_number,
-                chapter_event_plan=chapter_event_plan,
-            ),
-        )
-
-    def _build_chapter_plan_from_scene_structure(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-        scene_structure: ChapterSceneStructureSchema,
-    ) -> VideoSegmentPlanSchema:
-        scene_plans = [
-            self._build_scene_plan_from_scene_structure(
-                novel_package=novel_package,
-                story_memory=story_memory,
-                chapter_number=chapter_number,
-                raw_scene=scene,
-            )
-            for scene in scene_structure.scenes
-        ]
-        return self._merge_chapter_segment_plans(scene_plans)
-
-    def _build_scene_plan_from_scene_structure(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-        raw_scene: ChapterSceneSchema,
-    ) -> VideoSegmentPlanSchema:
-        materialized_scene = self._materialize_chapter_scene(
-            raw_scene=raw_scene,
-            novel_package=novel_package,
-            chapter_number=chapter_number,
-        )
-        chunk_plan = self._plan_scene_chunk_outline(
-            novel_package=novel_package,
-            story_memory=story_memory,
-            chapter_number=chapter_number,
-            scene=materialized_scene,
-        )
-        chunk_batches: list[SceneSegmentContractBatchSchema] = []
-        previous_chunk_exit_state: dict[str, object] | None = None
-        previous_tail_segment: SceneSegmentContractSchema | None = None
-        for chunk in chunk_plan.chunks:
-            chunk_contracts = self._build_scene_chunk_contract_batch(
-                novel_package=novel_package,
-                story_memory=story_memory,
-                chapter_number=chapter_number,
-                scene=materialized_scene,
-                chunk=chunk,
-                previous_chunk_exit_state=previous_chunk_exit_state,
-                previous_tail_segment=previous_tail_segment,
-            )
-            chunk_batches.append(chunk_contracts)
-            previous_tail_segment = chunk_contracts.segments[-1]
-            previous_chunk_exit_state = self._build_scene_chunk_exit_state(previous_tail_segment)
-        return self._build_scene_plan_from_chunk_batches(
-            novel_package=novel_package,
-            scene=materialized_scene,
-            chunk_batches=chunk_batches,
-        )
-
-    def _plan_scene_chunk_outline(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-        scene: ChapterSceneSchema,
-    ) -> SceneSegmentChunkPlanSchema:
-        return self._run_structured_agent(
-            schema=SceneSegmentChunkPlanSchema,
-            request=PromptRequest(
-                system_prompt=(
-                    "你是场景内分块规划 Agent。"
-                    "请先把一个 scene 拆成更小的连续 chunk。"
-                    "只输出短小的 chunk 大纲，不要输出 segments。"
-                ),
-                user_prompt=self._build_scene_chunk_planner_user_prompt(
-                    novel_package,
-                    chapter_number=chapter_number,
-                    story_memory=story_memory,
-                    scene_payload=scene.model_dump(),
-                ),
-                metadata={
-                    "task": "video-scene-chunk-planner",
-                    "chapter_number": chapter_number,
-                    "scene_id": scene.scene_id,
-                },
-            ),
-            validator=lambda value, current_scene=scene: self._validate_scene_segment_chunk_output(
-                value,
-                scene=current_scene,
-            ),
-        )
-
-    def _build_scene_chunk_contract_batch(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-        scene: ChapterSceneSchema,
-        chunk: SceneSegmentChunkSchema,
-        previous_chunk_exit_state: dict[str, object] | None,
-        previous_tail_segment: SceneSegmentContractSchema | None,
-    ) -> SceneSegmentContractBatchSchema:
-        task_metadata = {
-            "task": "video-scene-segment-planner",
-            "chapter_number": chapter_number,
-            "scene_id": scene.scene_id,
-            "chunk_id": chunk.chunk_id,
-            "chunk_order_index": chunk.order_index,
-        }
-        retry_state = {
-            "effective_expected_segment_count": int(chunk.expected_segment_count),
-            "forced_min_segments": 0,
-            "last_candidate": None,
-        }
-
-        def request_builder(
-            *,
-            request: PromptRequest,
-            schema: type[StructuredModelT],
-            attempt: int,
-            last_error: Exception | None,
-        ) -> PromptRequest:
-            if isinstance(last_error, SegmentSpeechSplitRequiredError):
-                retry_state["effective_expected_segment_count"] = min(
-                    self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
-                    max(
-                        int(retry_state["effective_expected_segment_count"]),
-                        int(last_error.required_segment_count),
-                    ),
-                )
-                retry_state["forced_min_segments"] = max(
-                    int(retry_state["forced_min_segments"]),
-                    int(last_error.required_segment_count),
-                )
-            base_request = PromptRequest(
-                system_prompt=(
-                    "你是场景内分段导演 Agent。"
-                    "请只为目标 scene 的当前 chunk 生成可执行的 segment contracts。"
-                    "不要输出图片 prompt，不要输出环境音与音乐方向。"
-                ),
-                user_prompt=self._build_scene_segment_contract_user_prompt(
-                    novel_package,
-                    chapter_number=chapter_number,
-                    story_memory=story_memory,
-                    scene_payload=scene.model_dump(),
-                    chunk_payload=chunk.model_dump(),
-                    previous_chunk_exit_state=previous_chunk_exit_state,
-                    max_segments_override=int(retry_state["effective_expected_segment_count"]),
-                    forced_min_segments=(
-                        int(retry_state["forced_min_segments"]) or None
-                    ),
-                ),
-                metadata={
-                    **task_metadata,
-                    "effective_expected_segment_count": int(
-                        retry_state["effective_expected_segment_count"]
-                    ),
-                },
-            )
-            return self._build_retry_request(
-                request=base_request,
-                schema=schema,
-                attempt=attempt,
-                last_error=last_error,
-            )
-
-        def validate_chunk_candidate(
-            value: SceneSegmentContractBatchSchema,
-            *,
-            current_scene: ChapterSceneSchema = scene,
-            current_chunk: SceneSegmentChunkSchema = chunk,
-            current_previous_tail: SceneSegmentContractSchema | None = previous_tail_segment,
-        ) -> SceneSegmentContractBatchSchema:
-            retry_state["last_candidate"] = value
-            return self._validate_scene_chunk_contract_output(
-                value,
-                scene=current_scene,
-                chunk=current_chunk,
-                previous_tail_segment=current_previous_tail,
-                effective_expected_segment_count=int(
-                    retry_state["effective_expected_segment_count"]
-                ),
-            )
-
-        try:
-            chunk_contracts = self._execute_structured_request(
-                schema=SceneSegmentContractBatchSchema,
-                request=PromptRequest(
-                    system_prompt="",
-                    user_prompt="",
-                    metadata=task_metadata,
-                ),
-                attempts=self.structured_retry_attempts,
-                validator=validate_chunk_candidate,
-                request_builder=request_builder,
-                response_coercer=self._coerce_structured_response,
-                failure_builder=lambda last_error: VideoStructuredGenerationError(
-                    task=str(task_metadata.get("task", "video-scene-segment-planner")),
-                    schema_name=SceneSegmentContractBatchSchema.__name__,
-                    attempts=self.structured_retry_attempts,
-                    cause=last_error or RuntimeError("unknown structured generation failure"),
-                    metadata=dict(task_metadata),
-                ),
-            )
-        except VideoStructuredGenerationError as exc:
-            last_candidate = retry_state.get("last_candidate")
-            if (
-                isinstance(exc.cause, SegmentSpeechSplitRequiredError)
-                and isinstance(last_candidate, SceneSegmentContractBatchSchema)
-            ):
-                effective_expected_segment_count = min(
-                    self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
-                    max(
-                        int(retry_state["effective_expected_segment_count"]),
-                        int(exc.cause.required_segment_count),
-                    ),
-                )
-                chunk_contracts = self._repair_scene_chunk_contract_batch_after_split_failure(
-                    novel_package=novel_package,
-                    story_memory=story_memory,
-                    chapter_number=chapter_number,
-                    scene=scene,
-                    chunk=chunk,
-                    previous_chunk_exit_state=previous_chunk_exit_state,
-                    previous_tail_segment=previous_tail_segment,
-                    failed_contracts=last_candidate,
-                    split_error=exc.cause,
-                    effective_expected_segment_count=effective_expected_segment_count,
-                )
-            else:
-                raise
-        return self._normalize_scene_chunk_contract_batch(
-            scene=scene,
-            chunk=chunk,
-            contracts=chunk_contracts,
-            previous_tail_segment=previous_tail_segment,
-        )
-
-    def _repair_scene_chunk_contract_batch_after_split_failure(
-        self,
-        *,
-        novel_package: NovelPackage,
-        story_memory,
-        chapter_number: int,
-        scene: ChapterSceneSchema,
-        chunk: SceneSegmentChunkSchema,
-        previous_chunk_exit_state: dict[str, object] | None,
-        previous_tail_segment: SceneSegmentContractSchema | None,
-        failed_contracts: SceneSegmentContractBatchSchema,
-        split_error: SegmentSpeechSplitRequiredError,
-        effective_expected_segment_count: int,
-    ) -> SceneSegmentContractBatchSchema:
-        request = PromptRequest(
-            system_prompt=(
-                "你是 StoryForge 的超长对白拆段修复 Agent。"
-                "你只修复当前 chunk 里超出单段 12 秒上限的片段，"
-                "把失败合同重写成可执行的正式 segment contracts。"
-            ),
-            user_prompt=self._build_scene_segment_overflow_repair_user_prompt(
-                novel_package,
-                chapter_number=chapter_number,
-                story_memory=story_memory,
-                scene_payload=scene.model_dump(),
-                chunk_payload=chunk.model_dump(),
-                previous_chunk_exit_state=previous_chunk_exit_state,
-                failed_contract_payload=failed_contracts.model_dump(),
-                offending_segment_id=split_error.segment_id,
-                required_duration_seconds=split_error.required_duration_seconds,
-                current_duration_seconds=split_error.current_duration_seconds,
-                required_segment_count=split_error.required_segment_count,
-                max_segments_override=effective_expected_segment_count,
-            ),
-            metadata={
-                "task": "video-scene-segment-overflow-repair",
-                "chapter_number": chapter_number,
-                "scene_id": scene.scene_id,
-                "chunk_id": chunk.chunk_id,
-                "chunk_order_index": chunk.order_index,
-            },
-        )
-        return self._run_strict_structured_agent(
-            schema=SceneSegmentContractBatchSchema,
-            request=request,
-            validator=lambda value, current_scene=scene, current_chunk=chunk, current_previous_tail=previous_tail_segment, current_limit=effective_expected_segment_count: self._validate_scene_chunk_contract_output(
-                value,
-                scene=current_scene,
-                chunk=current_chunk,
-                previous_tail_segment=current_previous_tail,
-                effective_expected_segment_count=current_limit,
-            ),
-            attempts=max(2, self.structured_retry_attempts),
-        )
 
     def _build_scene_plan_from_chunk_batches(
         self,
@@ -725,271 +291,6 @@ class NovelToVideoService(
                     }
                 ]
             }
-        )
-
-    def _validate_scene_segment_chunk_output(
-        self,
-        chunk_plan: SceneSegmentChunkPlanSchema,
-        *,
-        scene: ChapterSceneSchema,
-    ) -> SceneSegmentChunkPlanSchema:
-        if not chunk_plan.chunks:
-            raise ValueError(f"scene {scene.scene_id} 没有产出任何 chunk。")
-        if len(chunk_plan.chunks) > 4:
-            raise ValueError(
-                f"scene {scene.scene_id} 的 chunk 数过多，最多允许 4 个，实际 {len(chunk_plan.chunks)} 个。"
-            )
-        seen_chunk_ids: set[str] = set()
-        normalized_chunks: list[SceneSegmentChunkSchema] = []
-        total_expected_segments = 0
-        previous_chunk: SceneSegmentChunkSchema | None = None
-        for order_index, chunk in enumerate(
-            sorted(chunk_plan.chunks, key=lambda item: item.order_index),
-            start=1,
-        ):
-            if chunk.chunk_id in seen_chunk_ids:
-                raise ValueError(f"scene {scene.scene_id} 的 chunk_id 重复：{chunk.chunk_id}")
-            seen_chunk_ids.add(chunk.chunk_id)
-            if not chunk.title.strip() or not chunk.summary.strip():
-                raise ValueError(f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 缺少 title 或 summary。")
-            must_cover = [item for item in chunk.must_cover if item.strip()]
-            if not must_cover:
-                must_cover = [chunk.summary.strip()]
-            normalized_chunk = chunk.model_copy(
-                update={
-                    "order_index": order_index,
-                    "must_cover": must_cover[:3],
-                }
-            )
-            if (
-                previous_chunk is not None
-                and self._scene_chunks_look_duplicate(previous_chunk, normalized_chunk)
-            ):
-                raise ValueError(
-                    f"scene {scene.scene_id} 的相邻 chunk {previous_chunk.chunk_id} 与 "
-                    f"{normalized_chunk.chunk_id} 重复表达同一事件，缺少明确推进。"
-                )
-            total_expected_segments += normalized_chunk.expected_segment_count
-            normalized_chunks.append(normalized_chunk)
-            previous_chunk = normalized_chunk
-        if total_expected_segments > self.SCENE_MAX_EXPECTED_SEGMENTS:
-            raise ValueError(
-                f"scene {scene.scene_id} 预期共 {total_expected_segments} 个 segment，"
-                f"超过 scene 上限 {self.SCENE_MAX_EXPECTED_SEGMENTS}。"
-            )
-        return chunk_plan.model_copy(
-            update={
-                "scene_id": scene.scene_id,
-                "chapter_number": scene.chapter_number,
-                "chunks": normalized_chunks,
-            }
-        )
-
-    def _validate_scene_chunk_contract_output(
-        self,
-        contracts: SceneSegmentContractBatchSchema,
-        *,
-        scene: ChapterSceneSchema,
-        chunk: SceneSegmentChunkSchema,
-        previous_tail_segment: SceneSegmentContractSchema | None = None,
-        effective_expected_segment_count: int | None = None,
-    ) -> SceneSegmentContractBatchSchema:
-        contracts = self._validate_scene_segment_contract_output(
-            contracts,
-            scene=scene,
-            allow_nonstart_first_segment=previous_tail_segment is not None,
-        )
-        segment_count = len(contracts.segments)
-        if segment_count > self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS:
-            raise ValueError(
-                f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 输出了 {segment_count} 个 segment，"
-                f"超过单 chunk 上限 {self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS}。"
-            )
-        current_chunk_segment_limit = int(
-            effective_expected_segment_count or chunk.expected_segment_count
-        )
-        max_allowed_segments = min(
-            self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
-            current_chunk_segment_limit,
-        )
-        if segment_count > max_allowed_segments:
-            raise ValueError(
-                f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 预期 "
-                f"{current_chunk_segment_limit} 个 segment，实际输出 {segment_count} 个，"
-                "超过当前 chunk 的执行上限。"
-            )
-        if previous_tail_segment is not None:
-            first_segment = contracts.segments[0]
-            first_transition_mode = first_segment.continuity_link.transition_mode.strip().lower()
-            if first_transition_mode not in {"continue", "cut"}:
-                raise ValueError(
-                    f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 首段必须承接上一 chunk，"
-                    "transition_mode 只能是 continue 或 cut。"
-                )
-            if first_transition_mode == "continue":
-                previous_tail_state = self._build_scene_chunk_exit_state(previous_tail_segment)
-                previous_end_state = str(previous_tail_state.get("visible_tail_state", "") or "")
-                opening_seed = str(previous_tail_state.get("opening_match_seed", "") or "")
-                carry_over_state = " ".join(
-                    str(item).strip()
-                    for item in list(previous_tail_state.get("carry_over_elements", []) or [])
-                    if str(item).strip()
-                )
-                opening_text = first_segment.continuity_link.opening_match.strip()
-                opening_overlap = max(
-                    _text_overlap_ratio(opening_text, previous_end_state),
-                    _text_overlap_ratio(opening_text, opening_seed),
-                    _text_overlap_ratio(opening_text, carry_over_state),
-                )
-                if opening_overlap < 0.22:
-                    raise ValueError(
-                        f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 首段 opening_match "
-                        "没有明确承接上一 chunk 尾部状态。"
-                    )
-        previous_segment: SceneSegmentContractSchema | None = None
-        for segment in contracts.segments:
-            if (
-                previous_segment is not None
-                and self._scene_chunk_segments_look_duplicate(previous_segment, segment)
-            ):
-                raise ValueError(
-                    f"scene {scene.scene_id} 的 chunk {chunk.chunk_id} 中，"
-                    f"相邻 segment {previous_segment.segment_id} 与 {segment.segment_id} "
-                    "重复表达同一事件，缺少动作推进。"
-                )
-            previous_segment = segment
-        return contracts.model_copy(
-            update={
-                "scene_id": scene.scene_id,
-                "chapter_number": scene.chapter_number,
-            }
-        )
-
-    def _scene_chunks_look_duplicate(
-        self,
-        previous_chunk: SceneSegmentChunkSchema,
-        current_chunk: SceneSegmentChunkSchema,
-    ) -> bool:
-        previous_signature = " ".join(
-            [
-                previous_chunk.title,
-                previous_chunk.summary,
-                " ".join(previous_chunk.must_cover),
-                previous_chunk.transition_goal,
-            ]
-        )
-        current_signature = " ".join(
-            [
-                current_chunk.title,
-                current_chunk.summary,
-                " ".join(current_chunk.must_cover),
-                current_chunk.transition_goal,
-            ]
-        )
-        signature_overlap = _text_overlap_ratio(previous_signature, current_signature)
-        summary_overlap = _text_overlap_ratio(previous_chunk.summary, current_chunk.summary)
-        must_cover_overlap = _text_overlap_ratio(
-            " ".join(previous_chunk.must_cover),
-            " ".join(current_chunk.must_cover),
-        )
-        new_signal_count = _text_new_signal_count(previous_signature, current_signature)
-        transition_overlap = _text_overlap_ratio(
-            previous_chunk.transition_goal,
-            current_chunk.transition_goal,
-        )
-        return (
-            (
-                signature_overlap >= 0.78
-                and summary_overlap >= 0.74
-                and must_cover_overlap >= 0.7
-                and new_signal_count <= 2
-                and (
-                    transition_overlap >= 0.55
-                    or _progress_text_too_generic(current_chunk.transition_goal)
-                )
-            )
-            or (
-                summary_overlap >= 0.45
-                and must_cover_overlap >= 0.28
-                and (
-                    not (
-                        _extract_progression_signal_terms(current_signature)
-                        - _extract_progression_signal_terms(previous_signature)
-                    )
-                    or _text_explicitly_stalled(current_signature)
-                )
-                and _progress_text_too_generic(current_chunk.transition_goal)
-            )
-        )
-
-    def _scene_chunk_segments_look_duplicate(
-        self,
-        previous_segment: SceneSegmentContractSchema,
-        current_segment: SceneSegmentContractSchema,
-    ) -> bool:
-        previous_action = (
-            previous_segment.shot_state.action_progression.strip()
-            or previous_segment.summary.strip()
-        )
-        current_action = (
-            current_segment.shot_state.action_progression.strip()
-            or current_segment.summary.strip()
-        )
-        previous_signature = " ".join(
-            [
-                previous_segment.title,
-                previous_segment.summary,
-                previous_action,
-                " ".join(previous_segment.timed_beats),
-            ]
-        )
-        current_signature = " ".join(
-            [
-                current_segment.title,
-                current_segment.summary,
-                current_action,
-                " ".join(current_segment.timed_beats),
-            ]
-        )
-        summary_overlap = _text_overlap_ratio(previous_segment.summary, current_segment.summary)
-        action_overlap = _text_overlap_ratio(previous_action, current_action)
-        beats_overlap = _text_overlap_ratio(
-            " ".join(previous_segment.timed_beats),
-            " ".join(current_segment.timed_beats),
-        )
-        signature_overlap = _text_overlap_ratio(previous_signature, current_signature)
-        new_signal_count = _text_new_signal_count(previous_signature, current_signature)
-        allowed_changes = current_segment.continuity_link.allowed_changes.strip()
-        return (
-            (
-                summary_overlap >= 0.74
-                and action_overlap >= 0.74
-                and signature_overlap >= 0.78
-                and beats_overlap >= 0.62
-                and new_signal_count <= 2
-                and (
-                    not allowed_changes
-                    or _progress_text_too_generic(allowed_changes)
-                    or _text_overlap_ratio(previous_action, allowed_changes) >= 0.72
-                )
-            )
-            or (
-                summary_overlap >= 0.45
-                and action_overlap >= 0.3
-                and beats_overlap >= 0.45
-                and (
-                    not (
-                        _extract_progression_signal_terms(current_signature)
-                        - _extract_progression_signal_terms(previous_signature)
-                    )
-                    or _text_explicitly_stalled(current_signature)
-                )
-                and (
-                    not allowed_changes
-                    or _progress_text_too_generic(allowed_changes)
-                    or _text_explicitly_stalled(allowed_changes)
-                )
-            )
         )
 
     def _normalize_scene_chunk_contract_batch(
@@ -1236,6 +537,18 @@ class NovelToVideoService(
         )
         return chapter.summary
 
+    def _chapter_event_end_coverage_min_ratio(
+        self,
+        chapter_text_length: int,
+    ) -> float:
+        if chapter_text_length >= 800:
+            return self.CHAPTER_EVENT_END_COVERAGE_MIN_RATIO
+        if chapter_text_length >= self.CHAPTER_EVENT_END_COVERAGE_MEDIUM_MIN_CHARS:
+            return self.CHAPTER_EVENT_END_COVERAGE_MEDIUM_RATIO
+        if chapter_text_length >= self.CHAPTER_EVENT_END_COVERAGE_SHORT_MIN_CHARS:
+            return self.CHAPTER_EVENT_END_COVERAGE_SHORT_RATIO
+        return 0.0
+
     def _normalize_event_evidence_text(self, text: str) -> str:
         return "".join(str(text or "").split())
 
@@ -1267,6 +580,7 @@ class NovelToVideoService(
         *,
         novel_package: NovelPackage,
         chapter_number: int,
+        action_capacity_event_ids: set[str] | None = None,
     ) -> ChapterCoveragePlanSchema:
         if chapter_event_plan.chapter_number not in (0, chapter_number):
             raise ValueError(
@@ -1336,10 +650,19 @@ class NovelToVideoService(
                     f"关键事件 {event.event_id} 使用了不存在的角色名："
                     + "、".join(invalid_names)
                 )
+            if action_capacity_event_ids is None or event.event_id in action_capacity_event_ids:
+                self._validate_chapter_event_action_capacity(
+                    event,
+                    event_index=index,
+                    total_events=len(chapter_event_plan.events),
+                )
 
+        minimum_end_ratio = self._chapter_event_end_coverage_min_ratio(
+            len(normalized_chapter_text)
+        )
         if (
-            len(normalized_chapter_text) >= 800
-            and last_position < int(len(normalized_chapter_text) * self.CHAPTER_EVENT_END_COVERAGE_MIN_RATIO)
+            minimum_end_ratio > 0
+            and last_position < int(len(normalized_chapter_text) * minimum_end_ratio)
         ):
             raise ValueError(
                 "章节关键事件没有覆盖到章节尾部的真实收束；最后一个 must-cover event 结束得过早。"
@@ -1347,91 +670,152 @@ class NovelToVideoService(
 
         return chapter_event_plan.model_copy(update={"chapter_number": chapter_number})
 
-    def _validate_chapter_scene_structure_output(
+    def _validate_chapter_event_split_plan(
         self,
-        structure: ChapterSceneStructureSchema,
+        split_plan: ChapterCoverageEventSplitPlanSchema,
         *,
+        chapter_event_plan: ChapterCoveragePlanSchema,
         novel_package: NovelPackage,
         chapter_number: int,
-        chapter_event_plan: ChapterCoveragePlanSchema,
-    ) -> ChapterSceneStructureSchema:
-        if not structure.scenes:
-            raise ValueError("ChapterSceneStructureSchema.scenes 不能为空。")
-        expected_event_ids = [item.event_id for item in chapter_event_plan.events]
-        event_character_map = {
-            item.event_id: {
-                name.strip()
-                for name in item.involved_characters
-                if name.strip()
-            }
-            for item in chapter_event_plan.events
+        offending_event_index: int,
+    ) -> ChapterCoverageEventSplitPlanSchema:
+        if len(split_plan.events) < 2:
+            raise ValueError("定向拆分粗事件时，replacement events 至少需要 2 条。")
+        if len(split_plan.events) > 4:
+            raise ValueError("定向拆分粗事件时，replacement events 最多允许 4 条。")
+        allowed_names = {
+            item.name.strip()
+            for item in novel_package.outline.characters
+            if item.name.strip()
         }
-        seen_scene_ids: set[str] = set()
-        covered_event_sequence: list[str] = []
-        for scene in structure.scenes:
-            if scene.chapter_number != chapter_number:
-                raise ValueError(
-                    f"scene {scene.scene_id} 的 chapter_number 必须为 {chapter_number}。"
-                )
-            if not scene.scene_id.strip():
-                raise ValueError("scene_id 不能为空。")
-            if scene.scene_id in seen_scene_ids:
-                raise ValueError(f"scene_id 重复：{scene.scene_id}")
-            seen_scene_ids.add(scene.scene_id)
-            if not scene.title.strip() or not scene.summary.strip():
-                raise ValueError(f"scene {scene.scene_id} 缺少 title 或 summary。")
-            if not scene.covered_event_ids:
-                raise ValueError(f"scene {scene.scene_id} 的 covered_event_ids 不能为空。")
-            if len(scene.covered_event_ids) != len(set(scene.covered_event_ids)):
-                raise ValueError(f"scene {scene.scene_id} 的 covered_event_ids 不能重复。")
-            invalid_event_ids = [
-                event_id
-                for event_id in scene.covered_event_ids
-                if event_id not in expected_event_ids
+        for index, event in enumerate(split_plan.events, start=1):
+            if not event.summary.strip():
+                raise ValueError(f"replacement event #{index} 缺少 summary。")
+            if not [item.strip() for item in event.source_evidence if item.strip()]:
+                raise ValueError(f"replacement event #{index} 缺少 source_evidence。")
+            invalid_names = [
+                name
+                for name in event.involved_characters
+                if name.strip() and name.strip() not in allowed_names
             ]
-            if invalid_event_ids:
+            if invalid_names:
                 raise ValueError(
-                    f"scene {scene.scene_id} 使用了不存在的关键事件 ID："
-                    + "、".join(invalid_event_ids)
+                    "replacement event 使用了不存在的角色名：" + "、".join(invalid_names)
                 )
-            positions = [expected_event_ids.index(event_id) for event_id in scene.covered_event_ids]
-            if positions != list(range(positions[0], positions[0] + len(positions))):
-                raise ValueError(
-                    f"scene {scene.scene_id} 的 covered_event_ids 必须对应连续事件块，不能跳过中间事件。"
-                )
-            required_characters: set[str] = set()
-            for event_id in scene.covered_event_ids:
-                required_characters.update(event_character_map.get(event_id, set()))
-            missing_characters = sorted(
-                name for name in required_characters
-                if name not in scene.involved_characters
-            )
-            if missing_characters:
-                raise ValueError(
-                    f"scene {scene.scene_id} 覆盖了包含这些角色的关键事件，但 involved_characters 缺失："
-                    + "、".join(missing_characters)
-                )
-            covered_event_sequence.extend(scene.covered_event_ids)
+        merged_plan = self._merge_chapter_event_split_plan(
+            chapter_event_plan=chapter_event_plan,
+            split_plan=split_plan,
+            chapter_number=chapter_number,
+            offending_event_index=offending_event_index,
+        )
+        replacement_event_ids = {
+            item.event_id
+            for item in merged_plan.events[
+                offending_event_index:offending_event_index + len(split_plan.events)
+            ]
+        }
+        self._validate_chapter_event_coverage_output(
+            merged_plan,
+            novel_package=novel_package,
+            chapter_number=chapter_number,
+            action_capacity_event_ids=replacement_event_ids,
+        )
+        return split_plan
 
-        if covered_event_sequence != expected_event_ids:
-            missing_event_ids = [
-                event_id for event_id in expected_event_ids
-                if event_id not in covered_event_sequence
-            ]
-            repeated_event_ids = [
-                event_id for event_id in covered_event_sequence
-                if covered_event_sequence.count(event_id) > 1
-            ]
-            details: list[str] = []
-            if missing_event_ids:
-                details.append("缺失：" + "、".join(missing_event_ids))
-            if repeated_event_ids:
-                details.append("重复：" + "、".join(dict.fromkeys(repeated_event_ids)))
-            raise ValueError(
-                "scene structure 的关键事件覆盖不完整或顺序错误。"
-                + ("；".join(details) if details else "")
-            )
-        return structure
+    def _merge_chapter_event_split_plan(
+        self,
+        *,
+        chapter_event_plan: ChapterCoveragePlanSchema,
+        split_plan: ChapterCoverageEventSplitPlanSchema,
+        chapter_number: int,
+        offending_event_index: int,
+    ) -> ChapterCoveragePlanSchema:
+        merged_events: list[ChapterCoverageEventSchema] = []
+        prefix = f"ch{chapter_number:02d}-ev"
+        for index, event in enumerate(chapter_event_plan.events):
+            if index != offending_event_index:
+                merged_events.append(
+                    ChapterCoverageEventSchema(
+                        event_id="",
+                        summary=event.summary,
+                        source_evidence=list(event.source_evidence),
+                        involved_characters=list(event.involved_characters),
+                    )
+                )
+                continue
+            for replacement in split_plan.events:
+                merged_events.append(
+                    ChapterCoverageEventSchema(
+                        event_id="",
+                        summary=replacement.summary,
+                        source_evidence=list(replacement.source_evidence),
+                        involved_characters=list(replacement.involved_characters),
+                    )
+                )
+        for index, event in enumerate(merged_events, start=1):
+            event.event_id = f"{prefix}{index:02d}"
+        return ChapterCoveragePlanSchema(
+            chapter_number=chapter_number,
+            events=merged_events,
+        )
+
+    def _validate_chapter_event_action_capacity(
+        self,
+        event: ChapterCoverageEventSchema,
+        *,
+        event_index: int,
+        total_events: int,
+    ) -> None:
+        event_node_count = self._estimate_chapter_event_node_count(event)
+        max_progress_nodes = self._chapter_event_progress_node_budget(
+            event_index=event_index,
+            total_events=total_events,
+        )
+        if event_node_count <= max_progress_nodes:
+            return
+        raise ValueError(
+            f"关键事件 {event.event_id} 过于粗："
+            f"当前至少包含 {event_node_count} 个推进点。"
+            "请拆成更细的相邻 event，不要把多轮动作、对白和关系结果合并成同一个关键事件。"
+        )
+
+    def _chapter_event_progress_node_budget(
+        self,
+        *,
+        event_index: int,
+        total_events: int,
+    ) -> int:
+        if total_events <= 1:
+            return self.CHAPTER_EVENT_MAX_PROGRESS_NODES
+        if event_index in {1, total_events}:
+            return self.CHAPTER_EVENT_EDGE_MAX_PROGRESS_NODES
+        return self.CHAPTER_EVENT_MAX_PROGRESS_NODES
+
+    def _estimate_chapter_event_node_count(
+        self,
+        event: ChapterCoverageEventSchema,
+    ) -> int:
+        summary_text = str(event.summary or "").strip()
+        if summary_text:
+            summary_count = _estimate_progression_node_count_from_texts([summary_text])
+            if summary_count >= 2:
+                return summary_count
+
+        evidence_texts = [
+            str(item or "").strip()
+            for item in list(event.source_evidence or [])
+            if str(item or "").strip()
+        ]
+        if not summary_text:
+            return _estimate_progression_node_count_from_texts(evidence_texts)
+
+        summary_signals = _extract_progression_signal_terms(summary_text)
+        evidence_signals = _extract_progression_signal_terms(" ".join(evidence_texts))
+        extra_evidence_signals = evidence_signals - summary_signals
+        if len(extra_evidence_signals) >= 2:
+            return _estimate_progression_node_count_from_texts(evidence_texts)
+
+        return _estimate_progression_node_count_from_texts([summary_text])
 
     def _fit_duration_to_speech_budget(
         self,
@@ -1464,12 +848,338 @@ class NovelToVideoService(
             )
         return required_duration_seconds
 
+    def _validate_timed_beats_timeline(
+        self,
+        *,
+        segment_id: str,
+        timed_beats: list[str],
+        duration_seconds: int,
+        require_full_coverage: bool,
+    ) -> None:
+        if not timed_beats:
+            raise ValueError(f"segment {segment_id} 缺少 timed_beats。")
+
+        max_end_seconds = 0.0
+        parsed_any = False
+        for beat in timed_beats:
+            match = TIMED_BEAT_PATTERN.search(str(beat))
+            if match is None:
+                continue
+            parsed_any = True
+            start_seconds = float(match.group("start"))
+            end_seconds = float(match.group("end"))
+            if start_seconds >= end_seconds:
+                raise ValueError(f"timed_beats 存在无效时间范围：{beat}")
+            max_end_seconds = max(max_end_seconds, end_seconds)
+
+        if parsed_any and max_end_seconds > duration_seconds + 0.2:
+            raise ValueError(
+                f"segment {segment_id} 的 timed_beats 最后结束时间 {max_end_seconds:g}s "
+                f"超过当前片段时长 {duration_seconds}s。"
+            )
+        if (
+            require_full_coverage
+            and parsed_any
+            and max_end_seconds < duration_seconds - self.TIMED_BEAT_COVERAGE_TOLERANCE_SECONDS
+        ):
+            uncovered_seconds = round(duration_seconds - max_end_seconds, 2)
+            raise ValueError(
+                f"segment {segment_id} 的 timed_beats 最后结束时间 {max_end_seconds:g}s "
+                f"早于当前片段时长 {duration_seconds}s，"
+                f"尾部约 {uncovered_seconds:g}s 缺少明确动作或收束节拍。"
+            )
+
+    def _validate_segment_action_capacity(
+        self,
+        *,
+        segment_id: str,
+        timed_beats: list[str],
+        duration_seconds: int,
+        allow_split_retry: bool,
+    ) -> None:
+        action_node_count = self._estimate_segment_action_node_count(timed_beats)
+        max_action_nodes = self._segment_action_node_budget(duration_seconds)
+        if action_node_count <= max_action_nodes:
+            return
+        required_segment_count = min(
+            self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
+            max(2, ceil(action_node_count / max_action_nodes)),
+        )
+        if allow_split_retry:
+            raise SegmentActionSplitRequiredError(
+                segment_id=segment_id,
+                action_node_count=action_node_count,
+                current_duration_seconds=duration_seconds,
+                max_action_nodes=max_action_nodes,
+                required_segment_count=required_segment_count,
+            )
+        raise ValueError(
+            f"segment {segment_id} 的动作容量过载："
+            f"当前约有 {action_node_count} 个推进点，"
+            f"但 {duration_seconds} 秒片段最多只允许 {max_action_nodes} 个。"
+        )
+
+    def _estimate_segment_action_node_count(
+        self,
+        timed_beats: list[str],
+    ) -> int:
+        total_nodes = 0
+        for beat in timed_beats:
+            description = TIMED_BEAT_PREFIX_PATTERN.sub("", str(beat or "").strip())
+            if not description:
+                continue
+            clause_count = 0
+            for raw_clause in ACTION_STEP_SPLIT_PATTERN.split(description):
+                clause = str(raw_clause or "").strip(" ，。；;")
+                if not clause:
+                    continue
+                normalized = _normalize_similarity_text(clause)
+                if len(normalized) < 4:
+                    continue
+                if _progress_text_too_generic(clause) and not _extract_progression_signal_terms(clause):
+                    continue
+                clause_count += 1
+            total_nodes += max(1, clause_count)
+        return max(1, total_nodes)
+
+    def _segment_action_node_budget(
+        self,
+        duration_seconds: int,
+    ) -> int:
+        if duration_seconds <= 7:
+            return self.SEGMENT_ACTION_NODE_BUDGET_SHORT
+        return self.SEGMENT_ACTION_NODE_BUDGET_LONG
+
+    def _validate_keyframe_semantic_distance(
+        self,
+        *,
+        segment_id: str,
+        summary: str,
+        timed_beats: list[str],
+        start_frame_characters: list[str],
+        mid_frame_characters: list[str],
+        end_frame_characters: list[str],
+        requires_mid_frame: bool,
+        mid_frame_mode: str,
+        continuity_link,
+        shot_state,
+    ) -> None:
+        anchor_specs = [
+            (
+                "start_frame",
+                self._normalize_anchor_characters(start_frame_characters),
+                self._build_start_anchor_state_text(
+                    summary=summary,
+                    timed_beats=timed_beats,
+                    continuity_link=continuity_link,
+                    shot_state=shot_state,
+                ),
+            ),
+        ]
+        if requires_mid_frame:
+            if self._normalize_mid_frame_mode(mid_frame_mode) == "insert_cut":
+                return
+            anchor_specs.append(
+                (
+                    "mid_frame",
+                    self._normalize_anchor_characters(mid_frame_characters),
+                    self._build_mid_anchor_state_text(
+                        summary=summary,
+                        timed_beats=timed_beats,
+                        shot_state=shot_state,
+                    ),
+                )
+            )
+        anchor_specs.append(
+            (
+                "end_frame",
+                self._normalize_anchor_characters(end_frame_characters),
+                self._build_end_anchor_state_text(
+                    summary=summary,
+                    timed_beats=timed_beats,
+                    shot_state=shot_state,
+                ),
+            )
+        )
+
+        for (left_label, left_chars, left_state), (right_label, right_chars, right_state) in zip(
+            anchor_specs,
+            anchor_specs[1:],
+        ):
+            if not left_chars or left_chars != right_chars:
+                continue
+            if not left_state or not right_state:
+                continue
+            if (
+                not requires_mid_frame
+                and left_label == "start_frame"
+                and right_label == "end_frame"
+            ):
+                if not self._start_end_keyframes_too_static(
+                    left_state=left_state,
+                    right_state=right_state,
+                    allowed_changes=str(continuity_link.allowed_changes or "").strip(),
+                ):
+                    continue
+            elif not self._keyframe_states_too_similar(left_state, right_state):
+                continue
+            anchor_names = "、".join(left_chars)
+            raise ValueError(
+                f"segment {segment_id} 的 {left_label} 与 {right_label} 关键帧语义距离过近。"
+                f"当前同组角色为 {anchor_names}，但两帧都在描述几乎相同的可见状态。"
+                "首中尾锚点必须体现可见的动作推进、站位变化、表情变化或收束差异，"
+                "不要只把同一句状态换个说法重复三遍。"
+            )
+
+    def _normalize_anchor_characters(self, characters: list[str]) -> list[str]:
+        return [
+            str(name).strip()
+            for name in characters
+            if str(name).strip()
+        ]
+
+    def _build_start_anchor_state_text(
+        self,
+        *,
+        summary: str,
+        timed_beats: list[str],
+        continuity_link,
+        shot_state,
+    ) -> str:
+        return self._first_nonempty_anchor_text(
+            str(continuity_link.opening_match or "").strip(),
+            self._first_timed_beat_text(timed_beats),
+            str(shot_state.blocking or "").strip(),
+            str(summary or "").strip(),
+        )
+
+    def _build_mid_anchor_state_text(
+        self,
+        *,
+        summary: str,
+        timed_beats: list[str],
+        shot_state,
+    ) -> str:
+        return self._first_nonempty_anchor_text(
+            self._middle_timed_beat_text(timed_beats),
+            str(shot_state.blocking or "").strip(),
+            str(shot_state.action_progression or "").strip(),
+            str(summary or "").strip(),
+        )
+
+    def _build_end_anchor_state_text(
+        self,
+        *,
+        summary: str,
+        timed_beats: list[str],
+        shot_state,
+    ) -> str:
+        return self._first_nonempty_anchor_text(
+            str(shot_state.end_state_lock or "").strip(),
+            self._last_timed_beat_text(timed_beats),
+            str(shot_state.action_progression or "").strip(),
+            str(summary or "").strip(),
+        )
+
+    def _first_timed_beat_text(self, timed_beats: list[str]) -> str:
+        return str(timed_beats[0] or "").strip() if timed_beats else ""
+
+    def _middle_timed_beat_text(self, timed_beats: list[str]) -> str:
+        if not timed_beats:
+            return ""
+        return str(timed_beats[len(timed_beats) // 2] or "").strip()
+
+    def _last_timed_beat_text(self, timed_beats: list[str]) -> str:
+        return str(timed_beats[-1] or "").strip() if timed_beats else ""
+
+    def _first_nonempty_anchor_text(self, *values: str) -> str:
+        for value in values:
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _keyframe_states_too_similar(self, left_state: str, right_state: str) -> bool:
+        normalized_left = self._normalize_anchor_state_for_similarity(left_state)
+        normalized_right = self._normalize_anchor_state_for_similarity(right_state)
+        overlap = _text_overlap_ratio(normalized_left, normalized_right)
+        if overlap < 0.82:
+            stalled_overlap = (
+                overlap >= 0.72
+                and (
+                    _text_explicitly_stalled(normalized_left)
+                    or _text_explicitly_stalled(normalized_right)
+                )
+            )
+            if not stalled_overlap:
+                return False
+        new_signal_count = _text_new_signal_count(normalized_left, normalized_right)
+        left_terms = _extract_progression_signal_terms(normalized_left)
+        right_terms = _extract_progression_signal_terms(normalized_right)
+        if right_terms - left_terms:
+            return False
+        if (
+            overlap >= 0.72
+            and (
+                _text_explicitly_stalled(normalized_left)
+                or _text_explicitly_stalled(normalized_right)
+            )
+        ):
+            return True
+        if new_signal_count > 2:
+            return False
+        if _progress_text_too_generic(normalized_right):
+            return True
+        return overlap >= 0.88 and new_signal_count <= 1
+
+    def _start_end_keyframes_too_static(
+        self,
+        *,
+        left_state: str,
+        right_state: str,
+        allowed_changes: str,
+    ) -> bool:
+        normalized_left = self._normalize_anchor_state_for_similarity(left_state)
+        normalized_right = self._normalize_anchor_state_for_similarity(right_state)
+        normalized_allowed = self._normalize_anchor_state_for_similarity(allowed_changes)
+        if (
+            _text_explicitly_stalled(normalized_left)
+            and _text_explicitly_stalled(normalized_right)
+            and (
+                not normalized_allowed
+                or _text_explicitly_stalled(normalized_allowed)
+                or _progress_text_too_generic(normalized_allowed)
+            )
+        ):
+            return True
+        overlap = _text_overlap_ratio(normalized_left, normalized_right)
+        if overlap < 0.7:
+            return False
+        new_signal_count = _text_new_signal_count(normalized_left, normalized_right)
+        if new_signal_count > 2:
+            return False
+        if (
+            _text_explicitly_stalled(normalized_left)
+            or _text_explicitly_stalled(normalized_right)
+        ):
+            return True
+        if not normalized_allowed or _progress_text_too_generic(normalized_allowed):
+            return overlap >= 0.76
+        return _text_overlap_ratio(normalized_left, normalized_allowed) >= 0.74
+
+    def _normalize_anchor_state_for_similarity(self, text: str) -> str:
+        normalized = str(text or "").strip()
+        normalized = re.sub(r"^\d+(?:\.\d+)?\s*[-~到]\s*\d+(?:\.\d+)?\s*秒[:：]\s*", "", normalized)
+        return normalized.strip()
+
     def _validate_scene_segment_contract_output(
         self,
         contracts: SceneSegmentContractBatchSchema,
         *,
         scene: ChapterSceneSchema,
         allow_nonstart_first_segment: bool = False,
+        creative_strict: bool = True,
+        warning_sink: list[str] | None = None,
     ) -> SceneSegmentContractBatchSchema:
         if not contracts.segments:
             raise ValueError(f"scene {scene.scene_id} 没有产出任何 segment。")
@@ -1497,8 +1207,6 @@ class NovelToVideoService(
                     f"segment {segment.segment_id} 的 duration_seconds 必须在 "
                     f"{self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒之间。"
                 )
-            if not segment.timed_beats:
-                raise ValueError(f"segment {segment.segment_id} 缺少 timed_beats。")
             narration, dialogue_lines, subtitle_lines = self._sanitize_segment_audio_tracks(
                 narration=segment.narration,
                 dialogue_lines=segment.dialogue_lines,
@@ -1534,6 +1242,12 @@ class NovelToVideoService(
                 segment = segment.model_copy(
                     update={"duration_seconds": fitted_duration}
                 )
+            self._validate_timed_beats_timeline(
+                segment_id=segment.segment_id,
+                timed_beats=segment.timed_beats,
+                duration_seconds=segment.duration_seconds,
+                require_full_coverage=True,
+            )
             if not segment.start_frame_characters:
                 raise ValueError(f"segment {segment.segment_id} 的 start_frame_characters 不能为空。")
             if not segment.end_frame_characters:
@@ -1620,6 +1334,36 @@ class NovelToVideoService(
                     mid_frame_mode=segment.mid_frame_mode,
                     end_frame_characters=segment.end_frame_characters,
                 )
+            if creative_strict:
+                self._validate_keyframe_semantic_distance(
+                    segment_id=segment.segment_id,
+                    summary=segment.summary,
+                    timed_beats=segment.timed_beats,
+                    start_frame_characters=segment.start_frame_characters,
+                    mid_frame_characters=segment.mid_frame_characters,
+                    end_frame_characters=segment.end_frame_characters,
+                    requires_mid_frame=effective_requires_mid_frame,
+                    mid_frame_mode=segment.mid_frame_mode,
+                    continuity_link=segment.continuity_link,
+                    shot_state=segment.shot_state,
+                )
+            else:
+                try:
+                    self._validate_keyframe_semantic_distance(
+                        segment_id=segment.segment_id,
+                        summary=segment.summary,
+                        timed_beats=segment.timed_beats,
+                        start_frame_characters=segment.start_frame_characters,
+                        mid_frame_characters=segment.mid_frame_characters,
+                        end_frame_characters=segment.end_frame_characters,
+                        requires_mid_frame=effective_requires_mid_frame,
+                        mid_frame_mode=segment.mid_frame_mode,
+                        continuity_link=segment.continuity_link,
+                        shot_state=segment.shot_state,
+                    )
+                except ValueError as exc:
+                    if warning_sink is not None:
+                        warning_sink.append(str(exc))
             self._validate_single_frame_focus_conflict(
                 segment_id=segment.segment_id,
                 field_name="shot_state.framing",
@@ -1663,19 +1407,45 @@ class NovelToVideoService(
                 frame_characters=segment.end_frame_characters,
                 frame_label="end_frame",
             )
+            self._validate_segment_action_capacity(
+                segment_id=segment.segment_id,
+                timed_beats=segment.timed_beats,
+                duration_seconds=segment.duration_seconds,
+                allow_split_retry=True,
+            )
             if not segment.continuity_link.opening_match.strip():
-                raise ValueError(f"segment {segment.segment_id} 缺少 continuity_link.opening_match。")
+                warning_message = f"segment {segment.segment_id} 缺少 continuity_link.opening_match。"
+                if creative_strict:
+                    raise ValueError(warning_message)
+                if warning_sink is not None:
+                    warning_sink.append(warning_message)
             opening_match = segment.continuity_link.opening_match.strip()
             if any(phrase in opening_match for phrase in GENERIC_OPENING_MATCH_PHRASES):
-                raise ValueError(
+                warning_message = (
                     f"segment {segment.segment_id} 的 continuity_link.opening_match 过于空泛，"
                     "必须写出可拍到的开场状态。"
                 )
-            if transition_mode == "start" and "承接上一段" in opening_match:
-                raise ValueError(
+                if creative_strict:
+                    raise ValueError(warning_message)
+                if warning_sink is not None:
+                    warning_sink.append(warning_message)
+            allow_scene_boundary_carry_over = (
+                index == 1
+                and bool(str(scene.scene_transition_contract.previous_scene_id or "").strip())
+            )
+            if (
+                transition_mode == "start"
+                and "承接上一段" in opening_match
+                and not allow_scene_boundary_carry_over
+            ):
+                warning_message = (
                     f"segment {segment.segment_id} 作为起始段时，"
                     "continuity_link.opening_match 不能写成上一段承接话术。"
                 )
+                if creative_strict:
+                    raise ValueError(warning_message)
+                if warning_sink is not None:
+                    warning_sink.append(warning_message)
             if not segment.continuity_link.allowed_changes.strip():
                 raise ValueError(f"segment {segment.segment_id} 缺少 continuity_link.allowed_changes。")
             if not segment.continuity_link.transition_reason.strip():
@@ -1691,10 +1461,14 @@ class NovelToVideoService(
                     previous_end_state,
                 )
                 if opening_overlap < 0.22:
-                    raise ValueError(
+                    warning_message = (
                         f"segment {segment.segment_id} 的 continuity_link.opening_match "
                         "没有明确承接上一段尾部状态。"
                     )
+                    if creative_strict:
+                        raise ValueError(warning_message)
+                    if warning_sink is not None:
+                        warning_sink.append(warning_message)
             normalized_segments.append(segment)
             previous_segment = segment
         return contracts.model_copy(update={"segments": normalized_segments})
@@ -1945,11 +1719,9 @@ class NovelToVideoService(
                 color_palette=item.color_palette,
                 portrait_prompt=self._build_character_sheet_prompt(
                     name=item.name,
-                    role=item.role,
                     gender=item.gender,
                     appearance=item.appearance,
                     outfit=item.outfit,
-                    source_prompt=item.portrait_prompt,
                 ),
             )
             for item in visual_bible.characters
@@ -2235,6 +2007,222 @@ class NovelToVideoService(
         attempt: int,
         last_error: Exception | None,
     ) -> PromptRequest:
+        task_name = str(request.metadata.get("task", "") or "").strip()
+        normalized_error = " ".join(str(last_error or "").split()).strip()
+        if task_name == "video-chapter-event-repair" and "关键事件" in normalized_error and "过于粗" in normalized_error:
+            offending_event_id = ""
+            match = re.search(r"关键事件\s+(ch\d{2}-ev\d{2})", normalized_error)
+            if match is not None:
+                offending_event_id = match.group(1).strip()
+            metadata = dict(request.metadata)
+            if offending_event_id:
+                metadata["offending_event_id"] = offending_event_id
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次修复输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            if offending_event_id:
+                retry_prompt += (
+                    f" 本次只优先修 `{offending_event_id}` 及其后续编号，"
+                    "不要回头大改前面已经合理的 event。"
+                )
+            retry_prompt += (
+                " 如果当前失败项不是章节首尾 event，就必须压到 1-2 个推进点；"
+                "如果压不住，就直接拆成两个连续 event，并把后续 event_id 顺延。"
+                " 中间 event 不要再把问句、回答、动作结果三连塞在一起。"
+                " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
+            )
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
+        if task_name == "video-chapter-event-split-repair" and "关键事件" in normalized_error and "过于粗" in normalized_error:
+            offending_event_id = ""
+            match = re.search(r"关键事件\s+(ch\d{2}-ev\d{2})", normalized_error)
+            if match is not None:
+                offending_event_id = match.group(1).strip()
+            metadata = dict(request.metadata)
+            if offending_event_id:
+                metadata["offending_event_id"] = offending_event_id
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次拆分输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            retry_prompt += (
+                " 这次任务不是重写整章，而是只把当前粗事件拆开。"
+                " replacement events 至少输出 2 条，通常 2-3 条即可。"
+                " 每条 replacement event 只保留更窄的一拍推进，不要再把问句、回答、动作结果或关系落点重新合并回同一条。"
+                " 不要输出 event_id，不要改写相邻 event，不要解释，不要输出 Markdown 代码块。"
+            )
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
+        if task_name == "video-scene-chunk-repair" and "chunk" in normalized_error and "动作容量过载" in normalized_error:
+            offending_chunk_id = ""
+            required_segment_count = 0
+            chunk_match = re.search(r"chunk\s+(\S+)\s+动作容量过载", normalized_error)
+            if chunk_match is not None:
+                offending_chunk_id = str(chunk_match.group(1) or "").strip()
+            required_match = re.search(r"expected_segment_count 至少应为\s+(\d+)", normalized_error)
+            if required_match is not None:
+                required_segment_count = int(required_match.group(1))
+            metadata = dict(request.metadata)
+            if offending_chunk_id:
+                metadata["offending_chunk_id"] = offending_chunk_id
+            if required_segment_count > 0:
+                metadata["required_segment_count"] = required_segment_count
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次修复输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            if offending_chunk_id:
+                retry_prompt += (
+                    f" 本次只优先修 `{offending_chunk_id}`，不要回头大改前面已经合理的 chunk。"
+                )
+            if required_segment_count > 0:
+                retry_prompt += (
+                    f" 当前失败项如果继续保留为单个 chunk，`expected_segment_count` 至少要改成 {required_segment_count}；"
+                    "如果你不想提高它，就必须把当前 chunk 拆成两个连续 chunk。"
+                )
+            retry_prompt += (
+                " 不要再把 4 个及以上推进点继续塞在同一个 chunk。"
+                " `must_cover` 与 `transition_goal` 只保留当前 chunk 自己负责的那一小段推进。"
+                " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
+            )
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
+        if task_name == "video-scene-segment-timeline-repair" and "timed_beats" in normalized_error:
+            offending_segment_id = ""
+            segment_match = re.search(
+                r"segment\s+(?P<segment_id>\S+)\s+的\s+timed_beats",
+                normalized_error,
+            )
+            if segment_match is not None:
+                offending_segment_id = str(segment_match.group("segment_id") or "").strip()
+            metadata = dict(request.metadata)
+            if offending_segment_id:
+                metadata["offending_segment_id"] = offending_segment_id
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次修复输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            if offending_segment_id:
+                retry_prompt += (
+                    f" 本次只优先修 `{offending_segment_id}` 的 timed_beats，"
+                    "不要回头大改已经合理的其他 segment。"
+                )
+            retry_prompt += (
+                " 末尾 beat 必须补到接近该段 duration_seconds 结束，"
+                "明确写出尾部可拍到的反应、停顿、走位收束或镜头停点。"
+                " 如果只是尾部少了 1-3 秒，不要新造剧情结果，优先在现有结果上补完整收束。"
+                " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
+            )
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
+        if task_name == "video-scene-segment-action-repair" and "动作容量过载" in normalized_error:
+            offending_segment_id = ""
+            required_segment_count = 0
+            segment_match = re.search(
+                r"segment\s+(?P<segment_id>\S+)\s+的\s+动作容量过载",
+                normalized_error,
+            )
+            if segment_match is not None:
+                offending_segment_id = str(segment_match.group("segment_id") or "").strip()
+            required_match = re.search(
+                r"当前 chunk 必须至少拆成\s+(?P<count>\d+)\s+个 segment",
+                normalized_error,
+            )
+            if required_match is not None:
+                required_segment_count = int(required_match.group("count"))
+            metadata = dict(request.metadata)
+            if offending_segment_id:
+                metadata["offending_segment_id"] = offending_segment_id
+            if required_segment_count > 0:
+                metadata["required_segment_count"] = required_segment_count
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次修复输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            if offending_segment_id:
+                retry_prompt += (
+                    f" 本次只优先修 `{offending_segment_id}`，"
+                    "不要回头大改已经合理的其他 segment。"
+                )
+            if required_segment_count > 0:
+                retry_prompt += (
+                    f" 当前 chunk 至少要拆成 {required_segment_count} 个 segment；"
+                    "不要继续把多个动作结果硬塞回单段。"
+                )
+            retry_prompt += (
+                " 你必须按动作结果、对白轮次、入画变化或关系推进点把过载片段拆开，"
+                "让每一段只承担更窄的一拍推进。"
+                " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
+            )
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
+        if task_name == "video-scene-segment-focus-repair" and "多人同帧时仍要求单人特写" in normalized_error:
+            parsed = self._parse_scene_segment_focus_conflict_failure(normalized_error)
+            offending_segment_id = str(parsed.get("segment_id", "") or "").strip()
+            field_name = str(parsed.get("field_name", "") or "").strip()
+            frame_label = str(parsed.get("frame_label", "") or "").strip()
+            frame_characters = list(parsed.get("frame_characters", []) or [])
+            frame_names = "、".join(frame_characters) or "未知角色"
+            focus_name = frame_characters[0] if frame_characters else "主角"
+            metadata = dict(request.metadata)
+            if offending_segment_id:
+                metadata["offending_segment_id"] = offending_segment_id
+            if field_name:
+                metadata["field_name"] = field_name
+            if frame_label:
+                metadata["frame_label"] = frame_label
+            retry_prompt = request.user_prompt
+            retry_prompt += (
+                f"\n\n上一次修复输出未通过结构化校验。这是第 {attempt} 次尝试。"
+                f" 失败原因：{normalized_error}。"
+            )
+            if offending_segment_id:
+                retry_prompt += (
+                    f" 本次只优先修 `{offending_segment_id}`，"
+                    "不要回头大改已经合理的其他 segment。"
+                )
+            retry_prompt += (
+                f" 当前冲突帧是 `{frame_label or 'unknown_frame'}`，角色组是 `{frame_names}`。"
+                f" 只要这一帧仍保持 `{frame_names}` 同框，就必须把 `shot_state.framing` 和 `shot_state.camera_motion` 一起改成共享镜头语言，"
+                f"例如“轻微前推，保持 {frame_names} 同框，只通过站位和表情差异突出 {focus_name} 情绪变化”。"
+                " 不要再保留任何“单人近景”“侧脸特写”“聚焦某人脸部”这类单人特写话术。"
+            )
+            if frame_label == "mid_frame":
+                retry_prompt += (
+                    " 如果你坚持把中段写成单人反应镜头，必须显式改成 `mid_frame_mode=insert_cut`，"
+                    "并把 `mid_frame_characters`、`timed_beats` 与 shared shot 的来回切换一起改对。"
+                )
+            else:
+                retry_prompt += (
+                    f" 当前报错不是 `mid_frame`，不要把 `{frame_label}` 主锚点偷偷改成单人特写来规避校验。"
+                )
+            retry_prompt += " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
+            return PromptRequest(
+                system_prompt=request.system_prompt,
+                user_prompt=retry_prompt,
+                metadata=metadata,
+            )
         return self._build_structured_retry_request(
             request=request,
             schema=schema,
@@ -2304,6 +2292,20 @@ class NovelToVideoService(
                 "按对白轮次、句意边界或动作结果落点重排，"
                 "不要再尝试把整段对白压成单段。"
             )
+        if isinstance(last_error, SegmentActionSplitRequiredError):
+            retry_note += (
+                f" 这次失败说明某个 segment 的动作容量约有 {last_error.action_node_count} 个推进点，"
+                f"但当前 {last_error.current_duration_seconds} 秒片段最多只允许 {last_error.max_action_nodes} 个。"
+                f" 本次必须把当前 chunk 至少拆成 {last_error.required_segment_count} 个 segment，"
+                "按动作结果、对白轮次、入画变化或关系推进点拆开，"
+                "不要把“等待 -> 会面 -> 开口”或“试探 -> 告白 -> 回应”继续硬塞在同一段里。"
+            )
+        if "动作容量过载" in normalized_error and "expected_segment_count 至少应为" in normalized_error:
+            retry_note += (
+                " 这次失败说明某个 chunk 自己就塞了太多推进点。"
+                "请在 chunk 层先拆开事件，或把 `expected_segment_count` 提高到足够覆盖这些推进点。"
+                "如果 `must_cover + transition_goal` 已经包含多轮动作结果，不要还写成 1 个 segment。"
+            )
         if (
             "缺少 timed_beats" in normalized_error
             or "timed_beats 不能为空" in normalized_error
@@ -2318,6 +2320,21 @@ class NovelToVideoService(
                 "即使是纯动作段也不能省略。"
                 "每条 timed_beats 都要写成“0-2秒：发生了什么”的具体秒数格式，"
                 "并覆盖该段的开场、推进和收束。"
+            )
+        if "尾部约" in normalized_error and "缺少明确动作或收束节拍" in normalized_error:
+            retry_note += (
+                " 这次失败说明 timed_beats 虽然存在，但最后几秒没有覆盖完整时长。"
+                "本次必须把最后一条 beat 或新增一条收束 beat 补到接近 duration_seconds 结束，"
+                "明确写出尾部的反应、停顿、走位收束或镜头停点。"
+                "不要再让片段在最后 1-3 秒处于没有合同约束的空白状态。"
+            )
+        if "关键帧语义距离过近" in normalized_error:
+            retry_note += (
+                " 这次失败说明首帧、中段帧、尾帧里至少有两帧在描述几乎相同的状态。"
+                "本次必须把关键帧写成真正不同的可见停点："
+                "start 负责开场建立状态，mid 负责中途推进或关系变化，end 负责尾部收束。"
+                "如果是同组角色的连续主镜头，就不要把三帧都写成同一站位、同一表情、同一动作的近义改写；"
+                "至少要明确其中一项变化：动作推进、站位变化、朝向变化、距离变化、表情变化或收束结果。"
             )
         if "mid_frame_characters 不能为空" in normalized_error or "只能使用 involved_characters 内角色" in normalized_error:
             retry_note += (
@@ -2400,6 +2417,21 @@ class NovelToVideoService(
                 "不要只写“继续推进到会面”“承接上一段尾部”这类抽象总结。"
             )
         if (
+            "scene_transition_contract" in normalized_error
+            or "首个 chunk 没有消费 scene_transition_contract" in normalized_error
+            or "首段 opening_match 没有承接 scene_transition_contract" in normalized_error
+            or "首段 timed_beats 没有消费 scene_transition_contract" in normalized_error
+        ):
+            retry_note += (
+                " 这次失败说明跨 scene 过渡合同没有被真正消费。"
+                "如果当前不是首个 scene，就必须先用 `scene_transition_contract` 建立上一场尾部到当前场开头的桥。"
+                "本次至少要做到三点："
+                "第一，scene 级合同里的 `previous_scene_id / transition_mode / next_scene_entry_match` 不能缺；"
+                "第二，首个 chunk 必须把 `bridge_action` 和 `visual_bridge` 写进自己的开场推进；"
+                "第三，首个 segment 的 `opening_match` 和前 1-2 条 `timed_beats` 必须先承接上一场尾部，再 reveal 当前场环境。"
+                "不要把新 scene 直接写成毫无来由的重新开场。"
+            )
+        if (
             "covered_event_ids" in normalized_error
             or "关键事件覆盖" in normalized_error
             or "章节关键事件" in normalized_error
@@ -2411,6 +2443,18 @@ class NovelToVideoService(
                 "本次必须严格对齐关键事件列表：每个 scene 都要填写 covered_event_ids，"
                 "所有 covered_event_ids 拼接后必须与关键事件顺序完全一致，"
                 "尤其不能漏掉章节后半段的关系落点、动作结果或结尾决定。"
+            )
+        if "关键事件" in normalized_error and "推进点" in normalized_error and "过于粗" in normalized_error:
+            retry_note += (
+                " 这次失败说明 chapter event planner 把多个推进阶段合并成了同一个关键事件。"
+                "本次必须把粗事件拆成更细的相邻 event："
+                "普通 event 最多只保留 1-2 个紧密绑定的推进点；如果当前章节已经拆成多个 event，章节首尾 event 最多允许 3 个。"
+                "如果一句里已经同时出现“等待 -> 会面 -> 开口”或“试探 -> 告白 -> 回应”，"
+                "就必须改写成多个连续 event_id，而不是继续塞进同一个 summary。"
+                "背景介绍、关系说明、回忆补叙如果只是解释上下文，也不要单独建成 must-cover event。"
+                "中间 event 尤其不能把一轮问句、一次回答和一个动作结果同时塞进去。"
+                "`source_evidence` 也只保留当前 event 对应的 1-2 个相邻正文短句，"
+                "不要把后续 event 的证据一起拼进来。"
             )
         if "重复表达同一事件" in normalized_error or "adjacent_segment_duplicate" in normalized_error:
             retry_note += (
@@ -2854,24 +2898,24 @@ class NovelToVideoService(
         if duration_seconds != candidate.duration_seconds:
             candidate = candidate.model_copy(update={"duration_seconds": duration_seconds})
 
-        if not candidate.timed_beats:
-            raise ValueError("timed_beats 不能为空。")
-        max_end_seconds = 0.0
-        parsed_any = False
-        for beat in candidate.timed_beats:
-            match = TIMED_BEAT_PATTERN.search(str(beat))
-            if match is None:
-                continue
-            parsed_any = True
-            start_seconds = float(match.group("start"))
-            end_seconds = float(match.group("end"))
-            if start_seconds >= end_seconds:
-                raise ValueError(f"timed_beats 存在无效时间范围：{beat}")
-            max_end_seconds = max(max_end_seconds, end_seconds)
-        if parsed_any and max_end_seconds > duration_seconds + 0.2:
-            raise ValueError(
-                f"timed_beats 最后结束时间 {max_end_seconds:g}s 超过当前片段时长 {duration_seconds}s。"
-            )
+        self._validate_timed_beats_timeline(
+            segment_id=candidate.segment_id,
+            timed_beats=candidate.timed_beats,
+            duration_seconds=duration_seconds,
+            require_full_coverage=True,
+        )
+        self._validate_keyframe_semantic_distance(
+            segment_id=candidate.segment_id,
+            summary=getattr(candidate, "summary", "") or target_segment.summary,
+            timed_beats=candidate.timed_beats,
+            start_frame_characters=candidate.start_frame_characters,
+            mid_frame_characters=candidate.mid_frame_characters,
+            end_frame_characters=candidate.end_frame_characters,
+            requires_mid_frame=candidate.requires_mid_frame,
+            mid_frame_mode=candidate.mid_frame_mode,
+            continuity_link=candidate.continuity_link,
+            shot_state=candidate.shot_state,
+        )
 
         transition_mode = candidate.continuity_link.transition_mode.strip().lower()
         if previous_segment is None and transition_mode == "continue":

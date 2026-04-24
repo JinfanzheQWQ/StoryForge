@@ -153,6 +153,7 @@ class VideoPlanningMixin:
         "花架",
         "花廊",
         "花园",
+        "花海",
         "站台",
         "车厢",
         "走廊",
@@ -178,6 +179,10 @@ class VideoPlanningMixin:
         "斜阳",
         "月光",
         "霓虹",
+        "湖",
+        "湖面",
+        "湖边",
+        "岸边",
         "雨",
         "雪",
         "雾",
@@ -185,12 +190,21 @@ class VideoPlanningMixin:
         "空气",
         "光线",
         "小径",
+        "石径",
+        "石板路",
+        "步道",
+        "栈道",
+        "入口",
+        "尽头",
         "铁轨",
         "钟楼",
         "喷泉",
         "教学楼",
         "课桌",
         "答题卡",
+        "画架",
+        "拱门",
+        "平台",
     ]
     SCENE_MASTER_PROP_KEYWORDS = [
         "长椅",
@@ -209,6 +223,7 @@ class VideoPlanningMixin:
         "控制台",
         "路牌",
         "石桥",
+        "画架",
         "花架",
         "藤蔓",
         "铁轨",
@@ -674,6 +689,53 @@ class VideoPlanningMixin:
             )
         return VideoSegmentPlanSchema.model_validate({"scenes": merged_scenes})
 
+    def _rebuild_plan_preserving_scenes(
+        self,
+        *,
+        source_plan: VideoSegmentPlanSchema,
+        replacement_segments: list[VideoSegmentSchema],
+    ) -> VideoSegmentPlanSchema:
+        grouped_segments: dict[tuple[int, str], list[VideoSegmentSchema]] = {}
+        for segment in replacement_segments:
+            grouped_segments.setdefault(
+                (segment.chapter_number, segment.scene_id),
+                [],
+            ).append(segment)
+
+        rebuilt_scenes: list[dict[str, object]] = []
+        inserted_keys: set[tuple[int, str]] = set()
+        for scene in source_plan.scenes:
+            scene_key = (scene.chapter_number, scene.scene_id)
+            scene_segments = grouped_segments.get(scene_key, [])
+            if not scene_segments:
+                continue
+            involved_characters = list(scene.involved_characters)
+            for segment in scene_segments:
+                for name in segment.involved_characters:
+                    if name not in involved_characters:
+                        involved_characters.append(name)
+            rebuilt_scenes.append(
+                scene.model_copy(
+                    update={
+                        "segments": scene_segments,
+                        "involved_characters": involved_characters,
+                    }
+                ).model_dump()
+            )
+            inserted_keys.add(scene_key)
+
+        if len(inserted_keys) != len(grouped_segments):
+            fallback_plan = VideoSegmentPlanSchema.model_validate(
+                {"segments": [item.model_dump() for item in replacement_segments]}
+            )
+            for scene in fallback_plan.scenes:
+                scene_key = (scene.chapter_number, scene.scene_id)
+                if scene_key in inserted_keys:
+                    continue
+                rebuilt_scenes.append(scene.model_dump())
+
+        return VideoSegmentPlanSchema.model_validate({"scenes": rebuilt_scenes})
+
     def _compact_story_memory_text(
         self,
         text: str,
@@ -821,8 +883,10 @@ class VideoPlanningMixin:
             scene_anchor=scene.scene_anchor,
             involved_characters=list(scene.involved_characters),
             covered_event_ids=list(scene.covered_event_ids),
+            covered_event_summaries=list(scene.covered_event_summaries),
             segments=list(scene.segments),
             scene_bible=enriched_scene_bible,
+            scene_transition_contract=scene.scene_transition_contract,
             scene_master_frame_path=(
                 scene.scene_master_frame_path.strip()
                 or f"{output_dir}/assets/frames/{scene.scene_id}_master.png"
@@ -830,6 +894,7 @@ class VideoPlanningMixin:
             scene_master_frame_url=scene.scene_master_frame_url,
             scene_master_frame_status=scene.scene_master_frame_status or "planned",
             scene_master_frame_error=scene.scene_master_frame_error,
+            scene_master_request_info=dict(scene.scene_master_request_info),
         )
         prepared_scene.scene_master_frame_prompt = (
             scene.scene_master_frame_prompt.strip()
@@ -859,15 +924,28 @@ class VideoPlanningMixin:
         weather = self._scene_bible_value(source_scene_bible, "weather").strip()
         lighting = self._scene_bible_value(source_scene_bible, "lighting").strip()
         dominant_palette = list(source_scene_bible.dominant_palette)
-        spatial_layout = self._scene_bible_value(source_scene_bible, "spatial_layout").strip()
-        if self._contains_scene_master_human_signal(spatial_layout, scene.involved_characters):
-            spatial_layout = ""
+        raw_spatial_layout = self._scene_bible_value(source_scene_bible, "spatial_layout").strip()
+        raw_character_blocking = self._scene_bible_value(source_scene_bible, "character_blocking").strip()
+        spatial_layout = self._derive_scene_master_spatial_contract(
+            raw_spatial_layout,
+            raw_character_blocking,
+            scene.scene_anchor,
+            *source_environment_texts,
+            involved_characters=scene.involved_characters,
+            max_clauses=3,
+        )
+        if not spatial_layout and not self._contains_scene_master_human_signal(
+            raw_spatial_layout,
+            scene.involved_characters,
+        ):
+            spatial_layout = raw_spatial_layout
 
         scene_anchor_tokens = [
             item
             for item in self._extract_anchor_list(scene.scene_anchor, max_items=4)
             if not self._contains_scene_master_human_signal(item, scene.involved_characters)
         ]
+        spatial_anchor_tokens = self._extract_anchor_list(spatial_layout, max_items=4)
         background_anchors = [
             item
             for item in self._scene_bible_list(source_scene_bible, "background_anchors")
@@ -916,11 +994,17 @@ class VideoPlanningMixin:
         background_anchors = self._merge_unique_strings(
             background_anchors,
             scene_anchor_tokens,
+            spatial_anchor_tokens,
             environment_clauses,
         )[:4]
         fixed_props = self._merge_unique_strings(
             fixed_props,
             inferred_fixed_props,
+            self._extract_scene_master_keyword_hits(
+                [spatial_layout],
+                self.SCENE_MASTER_PROP_KEYWORDS,
+                max_items=2,
+            ),
         )[:4]
         if not dominant_palette:
             dominant_palette = inferred_palette[:3]
@@ -1146,11 +1230,18 @@ class VideoPlanningMixin:
                         scene_anchor=segment.scene_anchor,
                         involved_characters=list(segment.involved_characters),
                         covered_event_ids=[],
+                        covered_event_summaries=[],
                         segments=[segment],
                         scene_bible=segment.scene_bible,
                     ),
                     output_dir,
                 )
+            )
+            scene_transition_source_segment_id = self._resolve_scene_transition_source_segment_id(
+                current_segment=segment,
+                current_scene=prepared_scene,
+                scene_map=scene_map,
+                previous_segment=previous_segment,
             )
             scene_master_frame_prompt = prepared_scene.scene_master_frame_prompt
             scene_master_frame_path = prepared_scene.scene_master_frame_path
@@ -1212,6 +1303,7 @@ class VideoPlanningMixin:
                     requires_mid_frame=requires_mid_frame,
                     reuse_previous_end_frame=bool(continuity_source_segment_id),
                     continuity_source_segment_id=continuity_source_segment_id,
+                    scene_transition_source_segment_id=scene_transition_source_segment_id,
                     scene_master_frame_status=scene_master_frame_status,
                     scene_master_frame_url=scene_master_frame_url,
                     scene_master_frame_error=scene_master_frame_error,
@@ -1223,16 +1315,21 @@ class VideoPlanningMixin:
     def _build_seedance_manifest(
         self,
         story_title: str,
+        scenes: list[VideoScene],
         segments: list[VideoSegment],
         scene_images: list[SceneImageTask],
         output_dir: str,
     ) -> SeedanceManifest:
         scene_map = {item.segment_id: item for item in scene_images}
+        scene_by_id = {item.scene_id: item for item in scenes}
         clips = [
             SeedanceClipTask(
                 segment_id=item.segment_id,
                 title=item.title,
-                prompt=self._build_seedance_clip_prompt(item),
+                prompt=self._build_seedance_clip_prompt(
+                    item,
+                    scene=scene_by_id.get(item.scene_id),
+                ),
                 narration=item.narration,
                 dialogue_lines=item.dialogue_lines,
                 subtitle_lines=item.subtitle_lines,
@@ -1273,7 +1370,10 @@ class VideoPlanningMixin:
                 normalized_segments.append(self._sanitize_seedance_ready_segment(segment))
                 continue
             normalized_segments.extend(self._expand_segment_for_seedance(segment))
-        return VideoSegmentPlanSchema(segments=normalized_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=normalized_segments,
+        )
 
     def _segment_already_normalized_for_seedance(
         self,
@@ -1615,7 +1715,7 @@ class VideoPlanningMixin:
         segment: VideoSegment | VideoSegmentSchema,
         focus_summary: str = "",
     ) -> str:
-        focus = focus_summary or segment.summary
+        focus = self._default_mid_frame_focus_text(segment, focus_summary)
         characters = "、".join(
             self._normalize_frame_character_list(
                 segment.mid_frame_characters,
@@ -1636,6 +1736,28 @@ class VideoPlanningMixin:
             "只描述这一拍真正可见的角色、动作停点和空间关系。"
             "环境、光线与镜头方向继续沿用同一 scene 的基线。"
         )
+
+    def _default_mid_frame_focus_text(
+        self,
+        segment: VideoSegment | VideoSegmentSchema,
+        fallback_text: str = "",
+    ) -> str:
+        beat_descriptions = self._extract_beat_descriptions(segment.timed_beats)
+        if beat_descriptions:
+            middle_index = min(len(beat_descriptions) - 1, len(beat_descriptions) // 2)
+            middle_focus = self._strip_internal_segment_markers(beat_descriptions[middle_index])
+            if middle_focus:
+                return middle_focus
+        for candidate in (
+            fallback_text,
+            segment.summary,
+            segment.start_frame_prompt,
+            segment.end_frame_prompt,
+        ):
+            normalized = self._strip_internal_segment_markers(str(candidate or "").strip())
+            if normalized:
+                return normalized
+        return ""
 
     def _normalize_frame_character_list(
         self,
@@ -1691,6 +1813,39 @@ class VideoPlanningMixin:
         if not self._should_reuse_previous_end_frame(current_segment, previous_segment):
             return ""
         return previous_segment.segment_id
+
+    def _resolve_scene_transition_source_segment_id(
+        self,
+        *,
+        current_segment: VideoSegment,
+        current_scene: VideoScene,
+        scene_map: dict[str, VideoScene],
+        previous_segment: VideoSegment | None,
+    ) -> str:
+        if not self._is_scene_first_segment(current_segment, current_scene):
+            return ""
+        contract = current_scene.scene_transition_contract
+        previous_scene_id = str(contract.previous_scene_id or "").strip()
+        transition_mode = str(contract.transition_mode or "").strip().lower()
+        if not previous_scene_id or transition_mode == "hard_cut":
+            return ""
+        previous_scene = scene_map.get(previous_scene_id)
+        if previous_scene is not None and previous_scene.segments:
+            return str(previous_scene.segments[-1].segment_id or "").strip()
+        if previous_segment is not None and previous_segment.scene_id.strip() == previous_scene_id:
+            return previous_segment.segment_id.strip()
+        return ""
+
+    def _is_scene_first_segment(
+        self,
+        current_segment: VideoSegment,
+        current_scene: VideoScene | None,
+    ) -> bool:
+        if current_scene is None or current_segment.scene_id.strip() != current_scene.scene_id.strip():
+            return False
+        if not current_scene.segments:
+            return True
+        return current_segment.segment_id.strip() == current_scene.segments[0].segment_id.strip()
 
     def _should_reuse_previous_end_frame(
         self,

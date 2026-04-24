@@ -77,12 +77,12 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["duration"], 5)
         self.assertFalse(payload["watermark"])
         self.assertTrue(payload["generate_audio"])
-        self.assertIn("实际提交图片绑定", payload["content"][0]["text"])
-        self.assertIn("图片1 对应起步画面", payload["content"][0]["text"])
-        self.assertIn("图片2 对应中段状态", payload["content"][0]["text"])
-        self.assertIn("图片3 对应收束画面", payload["content"][0]["text"])
+        self.assertIn("提交素材绑定", payload["content"][0]["text"])
+        self.assertIn("图片1：首帧", payload["content"][0]["text"])
+        self.assertIn("图片2：中段", payload["content"][0]["text"])
+        self.assertIn("图片3：尾帧", payload["content"][0]["text"])
         self.assertIn("严格按 图片1 -> 图片2 -> 图片3 的顺序推进画面", payload["content"][0]["text"])
-        self.assertIn("禁止瞬间换人或瞬间换构图", payload["content"][0]["text"])
+        self.assertIn("必须拍出可见的切入、入画、靠近、让位或镜头重构过程", payload["content"][0]["text"])
         self.assertEqual(
             [item.get("role", "text") for item in payload["content"]],
             ["text", "reference_image", "reference_image", "reference_image"],
@@ -127,7 +127,7 @@ class SeedanceClientTestCase(unittest.TestCase):
         )
         self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/start.png")
         self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
-        self.assertIn("图片2 对应中段状态", payload["content"][0]["text"])
+        self.assertIn("图片2：中段", payload["content"][0]["text"])
 
     def test_submit_clip_retries_with_simpler_payload_after_http_400(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -189,7 +189,7 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(task_id, "task-seedance-1")
         self.assertEqual(len(fake_client.calls), 2)
         self.assertEqual(clip.submit_variant, "start_mid_only")
-        self.assertIn("实际提交图片绑定", clip.submitted_prompt)
+        self.assertIn("提交素材绑定", clip.submitted_prompt)
         self.assertTrue(clip.submitted_reference_bindings)
         self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "start")
         self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "mid")
@@ -208,7 +208,7 @@ class SeedanceClientTestCase(unittest.TestCase):
             [item.get("role", "text") for item in fake_client.calls[1]["payload"]["content"]],
             ["text", "reference_image", "reference_image"],
         )
-        self.assertIn("图片2 对应中段状态", fake_client.calls[0]["payload"]["content"][0]["text"])
+        self.assertIn("图片2：中段", fake_client.calls[0]["payload"]["content"][0]["text"])
 
     def test_submit_clip_raises_detailed_error_after_all_payload_variants_fail(self) -> None:
         client = SeedanceClient(SeedanceConfig())

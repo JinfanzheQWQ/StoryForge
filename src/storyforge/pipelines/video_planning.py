@@ -121,6 +121,7 @@ def build_video_scene_structure_artifacts(
         novel_package=novel_package,
         plan=scene_plan,
     )
+    story_memory = service._flush_planner_warnings_to_story_memory(story_memory)
     if novel_package.outline.chapters:
         story_memory.generation_notes.last_planned_chapter = novel_package.outline.chapters[-1].number
     story_memory.generation_notes.last_successful_stage = "video-scene-structure"
@@ -1246,6 +1247,9 @@ def _write_segment_contract_checkpoint(
         novel_package=novel_package,
         plan=merged_plan,
     )
+    checkpoint_story_memory = service._flush_planner_warnings_to_story_memory(
+        checkpoint_story_memory
+    )
 
     character_profiles = service._build_character_profiles(visual_bible)
     profile_map = {item.name: item for item in character_profiles}
@@ -1262,6 +1266,7 @@ def _write_segment_contract_checkpoint(
     )
     manifest = service._build_seedance_manifest(
         novel_package.outline.title,
+        scenes,
         segments,
         scene_images,
         str(paths.output_dir),
@@ -1516,8 +1521,10 @@ def _build_runtime_scene_skeletons(
             scene_anchor=scene.scene_anchor,
             involved_characters=list(scene.involved_characters),
             covered_event_ids=list(scene.covered_event_ids),
+            covered_event_summaries=list(scene.covered_event_summaries),
             segments=[],
             scene_bible=scene.scene_bible.model_copy(deep=True),
+            scene_transition_contract=scene.scene_transition_contract.model_copy(deep=True),
         )
         for scene in scenes
     ]
@@ -1578,7 +1585,9 @@ def _build_chapter_scene_structure_from_plan(
                 "scene_anchor": scene.scene_anchor,
                 "involved_characters": list(scene.involved_characters),
                 "covered_event_ids": list(scene.covered_event_ids),
+                "covered_event_summaries": list(scene.covered_event_summaries),
                 "scene_bible": scene.scene_bible.model_dump(),
+                "scene_transition_contract": scene.scene_transition_contract.model_dump(),
             }
         )
         for scene in plan.scenes

@@ -64,6 +64,48 @@ class ContinuityLinkSchema(BaseModel):
     transition_reason: str = Field(default="", description="为什么是承接、切断或新起一段")
 
 
+class SceneTransitionContractSchema(BaseModel):
+    previous_scene_id: str = Field(default="", description="上一个 scene 的 ID；首个 scene 留空")
+    transition_mode: str = Field(
+        default="",
+        description="scene 间过渡方式，可取 direct_continue / adjacent_move / motivated_cut / hard_cut",
+    )
+    previous_scene_exit_state: str = Field(
+        default="",
+        description="上一场尾部可拍到的退出状态",
+    )
+    next_scene_entry_match: str = Field(
+        default="",
+        description="当前场第一段开头必须先建立的开场状态",
+    )
+    bridge_action: str = Field(
+        default="",
+        description="上一场尾部过渡到当前场开头的连接动作或连接结果",
+    )
+    carry_over_elements: list[str] = Field(
+        default_factory=list,
+        description="需要跨 scene 保持的角色、道具、方向或关系元素",
+    )
+    screen_direction_policy: str = Field(
+        default="",
+        description="跨 scene 的朝向、轴线或运动方向承接要求",
+    )
+    visual_bridge: str = Field(
+        default="",
+        description="当前 scene 新环境如何被 reveal",
+    )
+    audio_bridge: str = Field(
+        default="none",
+        description="声音桥接方式，可取 none / j_cut / l_cut / ambient_bridge",
+    )
+    transition_focus_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=3,
+        description="建议在当前 scene 首段前几秒完成过渡建立，通常 0-3 秒",
+    )
+
+
 class ChapterCoverageEventSchema(BaseModel):
     event_id: str = Field(description="章节关键事件 ID，例如 ch01-ev01")
     summary: str = Field(description="必须被后续 scene 覆盖的关键事件摘要")
@@ -80,6 +122,24 @@ class ChapterCoverageEventSchema(BaseModel):
 class ChapterCoveragePlanSchema(BaseModel):
     chapter_number: int = Field(default=0, description="所属章节")
     events: list[ChapterCoverageEventSchema] = Field(description="当前章节必须覆盖的关键事件列表")
+
+
+class ChapterCoverageEventSplitItemSchema(BaseModel):
+    summary: str = Field(description="用于替换单个粗事件的更细事件摘要")
+    source_evidence: list[str] = Field(
+        default_factory=list,
+        description="直接摘自当前章节正文的短词或短句，用于验证该替换事件确实存在",
+    )
+    involved_characters: list[str] = Field(
+        default_factory=list,
+        description="该替换事件直接涉及的角色集合",
+    )
+
+
+class ChapterCoverageEventSplitPlanSchema(BaseModel):
+    events: list[ChapterCoverageEventSplitItemSchema] = Field(
+        description="用于替换单个过粗关键事件的更细事件列表",
+    )
 
 
 class ChapterSceneSchema(BaseModel):
@@ -99,9 +159,17 @@ class ChapterSceneSchema(BaseModel):
         default_factory=list,
         description="该 scene 覆盖的章节关键事件 ID，必须按正文顺序对应连续事件块",
     )
+    covered_event_summaries: list[str] = Field(
+        default_factory=list,
+        description="该 scene 绑定的章节关键事件摘要，仅用于后续 chunk/segment 规划约束边界",
+    )
     scene_bible: SceneBibleSchema = Field(
         default_factory=SceneBibleSchema,
         description="该场景共享的轻量场景圣经",
+    )
+    scene_transition_contract: SceneTransitionContractSchema = Field(
+        default_factory=SceneTransitionContractSchema,
+        description="当前 scene 相对上一 scene 的过渡合同；首个 scene 可为空",
     )
 
 
@@ -400,6 +468,10 @@ class VideoSceneSchema(BaseModel):
         default_factory=SceneBibleSchema,
         description="场景级圣经，用于约束同一 scene 下多个片段的视觉与空间连续性",
     )
+    scene_transition_contract: SceneTransitionContractSchema = Field(
+        default_factory=SceneTransitionContractSchema,
+        description="scene 间过渡合同，用于约束 scene 首段如何承接上一场",
+    )
     scene_master_frame_prompt: str = Field(
         default="",
         description="场景母图 prompt，用于先生成同一 scene 的环境与空间基准图",
@@ -431,6 +503,10 @@ class VideoSceneSchema(BaseModel):
     covered_event_ids: list[str] = Field(
         default_factory=list,
         description="该 scene 覆盖的章节关键事件 ID，用于上游场景结构校验与排查",
+    )
+    covered_event_summaries: list[str] = Field(
+        default_factory=list,
+        description="该 scene 绑定的章节关键事件摘要，用于约束后续 chunk/segment 规划不要越界",
     )
     segments: list[VideoSegmentSchema] = Field(description="该场景下的片段列表")
 
@@ -491,6 +567,9 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             default_summary=summary,
             scene_anchor_default=scene_anchor,
         )
+        scene_transition_contract = _normalize_scene_transition_contract(
+            scene_payload.get("scene_transition_contract"),
+        )
         involved_characters = _normalize_name_list(scene_payload.get("involved_characters", []))
         scene_master_frame_prompt = str(scene_payload.get("scene_master_frame_prompt") or "").strip()
         scene_master_frame_path = str(scene_payload.get("scene_master_frame_path") or "").strip()
@@ -501,6 +580,11 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
         scene_master_frame_error = str(scene_payload.get("scene_master_frame_error") or "").strip()
         scene_master_request_info = dict(scene_payload.get("scene_master_request_info", {}) or {})
         covered_event_ids = _normalize_name_list(scene_payload.get("covered_event_ids", []))
+        covered_event_summaries = [
+            str(item).strip()
+            for item in scene_payload.get("covered_event_summaries", [])
+            if str(item).strip()
+        ]
 
         normalized_segments: list[dict[str, object]] = []
         for segment_index, raw_segment in enumerate(segments, start=1):
@@ -537,6 +621,7 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 "summary": summary,
                 "scene_anchor": scene_anchor,
                 "scene_bible": scene_bible,
+                "scene_transition_contract": scene_transition_contract,
                 "scene_master_frame_prompt": scene_master_frame_prompt,
                 "scene_master_frame_path": scene_master_frame_path,
                 "scene_master_frame_url": scene_master_frame_url,
@@ -545,6 +630,7 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 "scene_master_request_info": scene_master_request_info,
                 "involved_characters": involved_characters,
                 "covered_event_ids": covered_event_ids,
+                "covered_event_summaries": covered_event_summaries,
                 "segments": normalized_segments,
             }
         )
@@ -576,10 +662,18 @@ def _normalize_scene_structure_payloads(raw_scenes: list[object]) -> list[dict[s
                 "scene_anchor": scene_anchor,
                 "involved_characters": _normalize_name_list(payload.get("involved_characters", [])),
                 "covered_event_ids": _normalize_name_list(payload.get("covered_event_ids", [])),
+                "covered_event_summaries": [
+                    str(item).strip()
+                    for item in payload.get("covered_event_summaries", [])
+                    if str(item).strip()
+                ],
                 "scene_bible": _normalize_scene_bible(
                     payload.get("scene_bible"),
                     default_summary=summary or title or f"场景 {index}",
                     scene_anchor_default=scene_anchor,
+                ),
+                "scene_transition_contract": _normalize_scene_transition_contract(
+                    payload.get("scene_transition_contract"),
                 ),
             }
         )
@@ -692,6 +786,9 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
                 "summary": scene_summary or scene_title or f"场景 {index}",
                 "scene_anchor": scene_anchor,
                 "scene_bible": scene_bible,
+                "scene_transition_contract": _normalize_scene_transition_contract(
+                    payload.get("scene_transition_contract"),
+                ),
                 "scene_master_frame_prompt": str(payload.get("scene_master_frame_prompt") or "").strip(),
                 "scene_master_frame_path": str(payload.get("scene_master_frame_path") or "").strip(),
                 "scene_master_frame_url": str(payload.get("scene_master_frame_url") or "").strip(),
@@ -701,11 +798,25 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
                 "scene_master_frame_error": str(payload.get("scene_master_frame_error") or "").strip(),
                 "scene_master_request_info": dict(payload.get("scene_master_request_info", {}) or {}),
                 "involved_characters": [],
+                "covered_event_ids": _normalize_name_list(payload.get("covered_event_ids", [])),
+                "covered_event_summaries": [
+                    str(item).strip()
+                    for item in payload.get("covered_event_summaries", [])
+                    if str(item).strip()
+                ],
                 "segments": [],
             },
         )
         if _scene_bible_has_signal(scene_bible) and not _scene_bible_has_signal(group.get("scene_bible", {})):
             group["scene_bible"] = scene_bible
+        current_transition_contract = _coerce_mapping(group.get("scene_transition_contract")) or {}
+        incoming_transition_contract = _normalize_scene_transition_contract(
+            payload.get("scene_transition_contract")
+        )
+        if incoming_transition_contract.get("previous_scene_id") and not current_transition_contract.get(
+            "previous_scene_id"
+        ):
+            group["scene_transition_contract"] = incoming_transition_contract
         for key in (
             "scene_master_frame_prompt",
             "scene_master_frame_path",
@@ -724,6 +835,14 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
             incoming_value = str(payload.get(key, "") or "").strip()
             if incoming_value and not current_value:
                 group[key] = incoming_value
+        if not group.get("covered_event_ids"):
+            group["covered_event_ids"] = _normalize_name_list(payload.get("covered_event_ids", []))
+        if not group.get("covered_event_summaries"):
+            group["covered_event_summaries"] = [
+                str(item).strip()
+                for item in payload.get("covered_event_summaries", [])
+                if str(item).strip()
+            ]
         group["segments"].append(payload)
 
     normalized = list(grouped.values())
@@ -852,6 +971,21 @@ def _normalize_continuity_link(raw_continuity_link: object) -> dict[str, object]
     return normalized
 
 
+def _normalize_scene_transition_contract(raw_contract: object) -> dict[str, object]:
+    payload = _coerce_mapping(raw_contract) or {}
+    normalized = SceneTransitionContractSchema.model_validate(payload).model_dump()
+    normalized["transition_mode"] = _normalize_scene_transition_mode(
+        normalized.get("transition_mode", "")
+    )
+    normalized["audio_bridge"] = _normalize_scene_audio_bridge(
+        normalized.get("audio_bridge", "none")
+    )
+    normalized["carry_over_elements"] = _normalize_name_list(
+        normalized.get("carry_over_elements", [])
+    )
+    return normalized
+
+
 def _scene_bible_has_signal(raw_scene_bible: object) -> bool:
     payload = _coerce_mapping(raw_scene_bible)
     if payload is None:
@@ -881,3 +1015,17 @@ def _normalize_transition_mode(raw_value: object) -> str:
     if value in {"start", "continue", "cut"}:
         return value
     return "start"
+
+
+def _normalize_scene_transition_mode(raw_value: object) -> str:
+    value = str(raw_value or "").strip().lower()
+    if value in {"direct_continue", "adjacent_move", "motivated_cut", "hard_cut"}:
+        return value
+    return ""
+
+
+def _normalize_scene_audio_bridge(raw_value: object) -> str:
+    value = str(raw_value or "").strip().lower()
+    if value in {"none", "j_cut", "l_cut", "ambient_bridge"}:
+        return value
+    return "none"

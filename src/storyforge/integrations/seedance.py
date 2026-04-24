@@ -491,15 +491,15 @@ class SeedanceClient:
         if not reference_bindings:
             return base_prompt
 
-        lines: list[str] = [base_prompt, "", "实际提交图片绑定："]
+        lines: list[str] = [base_prompt, "", "提交素材绑定："]
         for index, (kind, _) in enumerate(reference_bindings, start=1):
             label = f"图片{index}"
             if kind == "start":
-                lines.append(f"- {label} 对应起步画面。")
+                lines.append(f"- {label}：首帧。")
             elif kind == "mid":
-                lines.append(f"- {label} 对应中段状态。")
+                lines.append(f"- {label}：中段。")
             elif kind == "end":
-                lines.append(f"- {label} 对应收束画面。")
+                lines.append(f"- {label}：尾帧。")
         timeline_indexes = [
             index
             for index, (kind, _) in enumerate(reference_bindings, start=1)
@@ -510,20 +510,20 @@ class SeedanceClient:
             middle_labels = " -> ".join(f"图片{index}" for index in timeline_indexes[1:-1])
             final_label = f"图片{timeline_indexes[-1]}"
             lines.append(
-                f"- 严格按 {first_label} -> {middle_labels} -> {final_label} 的顺序推进画面，不要跳帧，不要只在结尾突然跳到收束图。"
+                f"- 严格按 {first_label} -> {middle_labels} -> {final_label} 的顺序推进画面，不要跳帧。"
             )
         elif len(timeline_indexes) == 2:
             first_label = f"图片{timeline_indexes[0]}"
             final_label = f"图片{timeline_indexes[1]}"
             lines.append(
-                f"- 严格按 {first_label} -> {final_label} 的顺序推进画面，不要长时间停在开场图后于片尾突然跳到收束图。"
+                f"- 严格按 {first_label} -> {final_label} 的顺序推进画面，不要片尾突然跳到收束图。"
             )
         elif len(timeline_indexes) == 1:
             lines.append(
                 f"- 图片{timeline_indexes[0]} 是唯一时间锚点，整段都围绕它建立稳定构图和连续微动作。"
             )
-        lines.append("- 如果相邻关键图的人数、站位或景别不同，必须拍出可见的切入、入画、靠近、让位或镜头重构过程，禁止瞬间换人或瞬间换构图。")
-        lines.append("- 除非文本明确要求插入镜头，否则不要丢失既定角色，不要替换服装，不要改变已给定的空间关系与镜头方向。")
+        lines.append("- 相邻关键图若人数、站位或景别不同，必须拍出可见的切入、入画、靠近、让位或镜头重构过程。")
+        lines.append("- 除非文本明确要求插入镜头，否则不要丢角色、不要换装、不要改空间关系与镜头方向。")
         return "\n".join(line for line in lines if line is not None)
 
     def _describe_reference_bindings(

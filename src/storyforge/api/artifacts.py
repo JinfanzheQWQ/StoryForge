@@ -6,6 +6,7 @@ from urllib.parse import quote
 
 from storyforge.api.schemas import (
     ArtifactItem,
+    CharacterArtifactItem,
     ContinuityIssueDetailResponse,
     ContinuityIssueGroupResponse,
     ContinuityIssueSummaryResponse,
@@ -130,10 +131,9 @@ def build_task_artifacts(
         for path in _sorted_document_paths(output_dir.iterdir())
         if path.is_file()
     ]
-    character_images = _collect_artifacts(
-        output_dir / "assets" / "characters",
-        resolved_output_root,
-        allowed_suffixes=IMAGE_SUFFIXES,
+    character_images = _collect_character_artifacts(
+        output_dir=output_dir,
+        output_root=resolved_output_root,
     )
     scene_frames = _collect_artifacts(
         output_dir / "assets" / "frames",
@@ -194,6 +194,67 @@ def _collect_artifacts(
             continue
         items.append(_to_artifact_item(path, output_root))
     return items
+
+
+def _collect_character_artifacts(
+    *,
+    output_dir: Path,
+    output_root: Path,
+) -> list[CharacterArtifactItem]:
+    artifacts = _collect_artifacts(
+        output_dir / "assets" / "characters",
+        output_root,
+        allowed_suffixes=IMAGE_SUFFIXES,
+    )
+    manifest_map = _load_character_manifest_map(output_dir)
+    character_items: list[CharacterArtifactItem] = []
+    for artifact in artifacts:
+        manifest_item = manifest_map.get(artifact.path, {})
+        character_items.append(
+            CharacterArtifactItem(
+                **artifact.model_dump(),
+                character_name=str(manifest_item.get("character_name", "") or ""),
+                prompt=str(manifest_item.get("prompt", "") or ""),
+                consistency_notes=str(manifest_item.get("consistency_notes", "") or ""),
+                provider=str(manifest_item.get("provider", "") or ""),
+                status=str(manifest_item.get("status", "") or ""),
+                image_kind=str(manifest_item.get("image_kind", "") or ""),
+                error=str(manifest_item.get("error", "") or ""),
+            )
+        )
+    return character_items
+
+
+def _load_character_manifest_map(output_dir: Path) -> dict[str, dict[str, object]]:
+    manifest_path = output_dir / "character_image_manifest.json"
+    if not manifest_path.exists():
+        return {}
+    try:
+        payload = read_json(manifest_path)
+    except Exception:
+        return {}
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        raw_items = payload.get("items") or payload.get("character_images") or payload.get("characters") or []
+        items = raw_items if isinstance(raw_items, list) else []
+    else:
+        items = []
+
+    manifest_map: dict[str, dict[str, object]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        output_path = str(item.get("output_path", "") or "").strip()
+        if not output_path:
+            continue
+        resolved_output_path = Path(output_path)
+        if not resolved_output_path.is_absolute():
+            resolved_output_path = (output_dir / resolved_output_path).resolve()
+        else:
+            resolved_output_path = resolved_output_path.resolve()
+        manifest_map[str(resolved_output_path)] = item
+    return manifest_map
 
 
 def _sorted_paths(paths: Iterable[Path]) -> list[Path]:

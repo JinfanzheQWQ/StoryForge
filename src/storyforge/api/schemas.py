@@ -150,6 +150,16 @@ class ArtifactItem(BaseModel):
     kind: str
 
 
+class CharacterArtifactItem(ArtifactItem):
+    character_name: str = ""
+    prompt: str = ""
+    consistency_notes: str = ""
+    provider: str = ""
+    status: str = ""
+    image_kind: str = ""
+    error: str = ""
+
+
 class PromptReferenceBindingResponse(BaseModel):
     label: str
     kind: str
@@ -251,7 +261,7 @@ class TaskArtifactsResponse(BaseModel):
     story_title: str | None = None
     output_dir: str | None = None
     documents: list[ArtifactItem] = Field(default_factory=list)
-    character_images: list[ArtifactItem] = Field(default_factory=list)
+    character_images: list[CharacterArtifactItem] = Field(default_factory=list)
     scene_frames: list[ArtifactItem] = Field(default_factory=list)
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)
     full_story: ArtifactItem | None = None

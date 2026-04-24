@@ -133,6 +133,10 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 ### 视频域
 
 - [`../src/storyforge/domains/video/service.py`](../src/storyforge/domains/video/service.py)
+- [`../src/storyforge/domains/video/chapter_orchestration.py`](../src/storyforge/domains/video/chapter_orchestration.py)
+- [`../src/storyforge/domains/video/chunk_orchestration.py`](../src/storyforge/domains/video/chunk_orchestration.py)
+- [`../src/storyforge/domains/video/structure_validation.py`](../src/storyforge/domains/video/structure_validation.py)
+- [`../src/storyforge/domains/video/text_rules.py`](../src/storyforge/domains/video/text_rules.py)
 - [`../src/storyforge/domains/video/prompting.py`](../src/storyforge/domains/video/prompting.py)
 - [`../src/storyforge/domains/video/repair.py`](../src/storyforge/domains/video/repair.py)
 - [`../src/storyforge/domains/video/planning.py`](../src/storyforge/domains/video/planning.py)
@@ -143,6 +147,11 @@ DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适�
 
 维护约定：
 
+- `service.py` 保留公开入口、总编排和共享 retry 基建；不要再把新的 `scene/chunk/transition` 结构校验或 `scene chunk / segment contract` repair 编排继续堆回去
+- `chapter_orchestration.py` 负责 `chapter event planner`、`chapter scene planner` 以及 `chapter -> scene` 展开编排
+- `chunk_orchestration.py` 负责 `scene chunk planner`、`segment contract planner` 及其定向 repair orchestration
+- `structure_validation.py` 负责 `scene/chunk/transition` 结构校验、软放行与重复/落点/边界判定
+- `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则；不要再在 `service.py` 或新 mixin 里复制一套近似实现
 - prompt 构造放 `prompting.py`
 - LLM 输出修补放 `repair.py`
 - 默认推导、规划产物路径/读取与任务装配放 `planning.py`

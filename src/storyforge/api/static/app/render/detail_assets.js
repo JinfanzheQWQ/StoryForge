@@ -279,6 +279,24 @@ function renderAssetSectionIntro(title, summary, chipsMarkup = "") {
   `;
 }
 
+function renderCharacterPromptPanel(item) {
+  const sections = [
+    renderPromptSection("角色图 Prompt", item.prompt),
+    renderPromptSection("一致性备注", item.consistency_notes, "character_image_manifest.json"),
+  ].filter(Boolean);
+  if (!sections.length) {
+    return "";
+  }
+  return `
+    <details class="prompt-panel">
+      <summary>查看角色图 Prompt / 一致性备注</summary>
+      <div class="prompt-panel-body">
+        ${sections.join("")}
+      </div>
+    </details>
+  `;
+}
+
 function renderMediaCard(item, galleryId) {
   const index = findGalleryIndex(galleryId, item);
   const isVideo = item.kind === "video";
@@ -286,6 +304,15 @@ function renderMediaCard(item, galleryId) {
     ? `<video controls preload="metadata" src="${item.url}"></video>`
     : `<img src="${item.url}" alt="${escapeAttr(item.name)}" loading="lazy" />`;
   const note = isVideo ? "可在预览里继续切换其他视频内容。" : "可在预览里继续切换其他图片内容。";
+  const title = String(item.character_name || item.name || "").trim() || item.name;
+  const metaChips = [
+    item.provider ? chip(String(item.provider).trim()) : "",
+    item.status ? chip(`状态 ${statusLabel(String(item.status).trim())}`) : "",
+  ].filter(Boolean).join("");
+  const characterPromptPanel = renderCharacterPromptPanel(item);
+  const errorNote = String(item.status || "").trim() === "failed"
+    ? String(item.error || "").trim()
+    : "";
 
   return `
     <article class="media-card">
@@ -298,9 +325,12 @@ function renderMediaCard(item, galleryId) {
         ${preview}
       </button>
       <div class="asset-meta">
-        <a href="${item.url}" target="_blank" rel="noreferrer">${escapeHtml(item.name)}</a>
+        <a href="${item.url}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>
       </div>
+      ${metaChips ? `<div class="detail-chip-row">${metaChips}</div>` : ""}
       <p class="asset-note">${note}</p>
+      ${errorNote ? `<p class="asset-note">${escapeHtml(errorNote)}</p>` : ""}
+      ${characterPromptPanel}
     </article>
   `;
 }

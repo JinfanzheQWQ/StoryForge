@@ -165,8 +165,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 其中：
 
-- `scene_plan.json` 这时只保存 `chapter -> scene` skeleton、`scene_bible` 和 `scene_master_frame` 相关字段
-- 每个 scene 还会带 `covered_event_ids`，用于显式标记它覆盖了当前章节的哪些 must-cover 关键事件
+- `scene_plan.json` 这时只保存 `chapter -> scene` skeleton、`scene_transition_contract`、`scene_bible` 和 `scene_master_frame` 相关字段
+- 每个 scene 还会带 `covered_event_ids` 与紧凑版 `covered_event_summaries`，用于显式标记它覆盖了当前章节的哪些 must-cover 关键事件，以及后续 chunk planner 应聚焦的事件摘要
 - 还不会生成正式 `segment contracts`、`segment_plan.json`、`scene_image_manifest.json` 或 `seedance_manifest.json`
 
 请求示例：
@@ -206,7 +206,11 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 其中：
 
 - 最终版 `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
+- stage2 把 scene skeleton 重建成最终 `scene_plan.json` 时，会保留 scene 级 `scene_transition_contract` 与 `covered_event_summaries`
+- 每个 scene 的首个 chunk / 首个 segment 都会消费 `scene_transition_contract`，把跨 scene 承接落到 `opening_match / timed_beats`
+- `Scene Chunk Planner` 的 prompt 与结构化校验都会读取当前 scene 绑定的 `covered_event_summaries`，提前拦截把后续 scene 关键推进写进当前 scene 的越界 chunk
 - `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
+- `continuity_report.json` 的 `V1` 现在还会直接输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
 - `scene_structure_source.json` 是恢复专用的原始 scene skeleton 快照
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 记录进度、失败位置和恢复状态；每完成一个 chunk 就会回写一次 checkpoint
 
@@ -511,6 +515,16 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `continuity_scene_groups`
 - `continuity_segment_groups`
 
+其中 `character_images` 现在除了基础的 `name / path / url / kind` 外，还会额外返回来自 `character_image_manifest.json` 的：
+
+- `character_name`
+- `prompt`
+- `consistency_notes`
+- `provider`
+- `status`
+- `image_kind`
+- `error`
+
 其中 `planned_segments` 会优先来自 `scene_plan.json`，并回落到 `segment_plan.json`。接口会带上每个 segment 当前对应的：
 
 - `scene_id`
@@ -546,6 +560,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的起步 / 中段 / 收束画面
 - `scene_master_frame_request / start_frame_request / mid_frame_request / end_frame_request / video_request` 会返回真实提交时的 `provider / endpoint / variant / payload / reference_bindings`
 - 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
+- 如果某段是非首个 scene 的首段，且上一场尾帧已经可用，`start_frame_request.reference_bindings` 里还会多一张 `temporal` 参考图，对应上一场最后一段尾帧
 - 对旧 run，如果历史上还没有落这些 request 字段，接口会基于当前 manifest 和产物文件回推出一份 `derived_from_manifest` 请求视图
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。

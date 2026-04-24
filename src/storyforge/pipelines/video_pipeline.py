@@ -1168,6 +1168,7 @@ def _rebuild_segment_execution_contracts(
     )
     rebuilt_manifest = service._build_seedance_manifest(
         project_package.title,
+        project_package.scenes,
         project_package.segments,
         rebuilt_scene_images,
         str(output_dir),

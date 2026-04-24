@@ -8,12 +8,79 @@ from storyforge.domains.video.schemas import (
     ContinuityLinkSchema,
     SceneBibleSchema,
     ShotStateSchema,
+    VideoSceneSchema,
     VideoSegmentPlanSchema,
     VideoSegmentSchema,
 )
 
 
 class VideoRepairMixin:
+    def _rebuild_plan_preserving_scenes(
+        self,
+        *,
+        source_plan: VideoSegmentPlanSchema,
+        replacement_segments: list[VideoSegmentSchema],
+        scene_bible_overrides: dict[tuple[int, str], SceneBibleSchema] | None = None,
+    ) -> VideoSegmentPlanSchema:
+        grouped_segments: dict[tuple[int, str], list[VideoSegmentSchema]] = {}
+        for segment in replacement_segments:
+            grouped_segments.setdefault(
+                (segment.chapter_number, segment.scene_id),
+                [],
+            ).append(segment)
+
+        rebuilt_scenes: list[VideoSceneSchema] = []
+        inserted_keys: set[tuple[int, str]] = set()
+        for scene in source_plan.scenes:
+            scene_key = (scene.chapter_number, scene.scene_id)
+            scene_segments = grouped_segments.get(scene_key, [])
+            if not scene_segments:
+                continue
+            scene_bible = (
+                scene_bible_overrides.get(scene_key, scene.scene_bible)
+                if scene_bible_overrides is not None
+                else scene.scene_bible
+            )
+            involved_characters = list(scene.involved_characters)
+            for segment in scene_segments:
+                for name in segment.involved_characters:
+                    if name not in involved_characters:
+                        involved_characters.append(name)
+            rebuilt_scenes.append(
+                scene.model_copy(
+                    update={
+                        "segments": scene_segments,
+                        "scene_bible": scene_bible,
+                        "involved_characters": involved_characters,
+                    }
+                )
+            )
+            inserted_keys.add(scene_key)
+
+        if len(inserted_keys) != len(grouped_segments):
+            fallback_plan = VideoSegmentPlanSchema.model_validate(
+                {"segments": [item.model_dump() for item in replacement_segments]}
+            )
+            for scene in fallback_plan.scenes:
+                scene_key = (scene.chapter_number, scene.scene_id)
+                if scene_key in inserted_keys:
+                    continue
+                rebuilt_scenes.append(
+                    scene.model_copy(
+                        update={
+                            "scene_bible": (
+                                scene_bible_overrides.get(scene_key, scene.scene_bible)
+                                if scene_bible_overrides is not None
+                                else scene.scene_bible
+                            )
+                        }
+                    )
+                )
+
+        return VideoSegmentPlanSchema.model_validate(
+            {"scenes": [item.model_dump() for item in rebuilt_scenes]}
+        )
+
     def _repair_character_visual_bible(
         self,
         visual_bible: CharacterVisualBibleSchema,
@@ -120,7 +187,10 @@ class VideoRepairMixin:
             for item in plan.segments
             if item.chapter_number in valid_chapters
         ]
-        return VideoSegmentPlanSchema(segments=repaired_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=repaired_segments,
+        )
 
     def _repair_scene_bibles(
         self,
@@ -162,7 +232,11 @@ class VideoRepairMixin:
                 segment.model_copy(update={"scene_bible": repaired_scene_bible})
             )
 
-        return VideoSegmentPlanSchema(segments=repaired_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=repaired_segments,
+            scene_bible_overrides=repaired_by_scene,
+        )
 
     def _repair_shot_states(
         self,
@@ -181,7 +255,10 @@ class VideoRepairMixin:
                     }
                 )
             )
-        return VideoSegmentPlanSchema(segments=repaired_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=repaired_segments,
+        )
 
     def _repair_continuity_links(
         self,
@@ -207,7 +284,10 @@ class VideoRepairMixin:
             )
             repaired_segments.append(repaired_segment)
             previous_segment = repaired_segment
-        return VideoSegmentPlanSchema(segments=repaired_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=repaired_segments,
+        )
 
     def _repair_scene_bible(
         self,
@@ -616,7 +696,10 @@ class VideoRepairMixin:
                 )
             )
 
-        return VideoSegmentPlanSchema(segments=normalized_segments)
+        return self._rebuild_plan_preserving_scenes(
+            source_plan=plan,
+            replacement_segments=normalized_segments,
+        )
 
     def _resolve_character_alias(
         self,

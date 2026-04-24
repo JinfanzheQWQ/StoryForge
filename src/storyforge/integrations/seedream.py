@@ -314,8 +314,12 @@ class SeedreamClient:
                 }
                 self._materialize_reused_start_frame(task, scene_map, client, start_frame_url)
             else:
+                start_temporal_anchor_urls = self._resolve_start_temporal_anchor_urls(
+                    task,
+                    scene_map,
+                )
                 start_reference_urls, start_reference_bindings = self._build_frame_reference_bundle(
-                    temporal_anchor_urls=[],
+                    temporal_anchor_urls=start_temporal_anchor_urls,
                     scene_master_reference_urls=scene_master_reference_urls,
                     frame_character_names=task.start_frame_characters,
                     character_images=character_images,
@@ -779,6 +783,20 @@ class SeedreamClient:
         if previous_task is None:
             return ""
         return previous_task.end_frame_url
+
+    def _resolve_start_temporal_anchor_urls(
+        self,
+        task: SceneImageTask,
+        scene_map: dict[str, SceneImageTask],
+    ) -> list[str]:
+        source_segment_id = str(task.scene_transition_source_segment_id or "").strip()
+        if not source_segment_id:
+            return []
+        previous_task = scene_map.get(source_segment_id)
+        if previous_task is None:
+            return []
+        temporal_url = str(previous_task.end_frame_url or "").strip()
+        return [temporal_url] if temporal_url else []
 
     def _materialize_reused_start_frame(
         self,

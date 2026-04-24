@@ -47,6 +47,7 @@ ACTION_REGENERATE_VIDEO = "regenerate_video"
 SCENE_BASELINE_MIN_BACKGROUND_ANCHORS = 2
 SCENE_BASELINE_MIN_FIXED_PROPS = 1
 SCENE_BASELINE_MIN_DOMINANT_PALETTE = 1
+TIMED_BEAT_COVERAGE_TOLERANCE_SECONDS = 0.75
 ACTION_LABELS = {
     ACTION_REGENERATE_SCENE_MASTER: "重生成场景母图",
     ACTION_REGENERATE_SCENE_IMAGES: "重生成片段场景图",
@@ -250,11 +251,20 @@ def _build_v1_rule_review(output_dir: Path, project_package) -> ContinuityRuleRe
     scene_issues: list[ContinuityIssue] = []
     segment_issues: list[ContinuityIssue] = []
 
+    previous_scene = None
     for scene in project_package.scenes:
         related_tasks = [
             task for task in project_package.scene_images if task.scene_id == scene.scene_id
         ]
-        scene_issues.extend(_build_scene_issues(output_dir, scene, related_tasks))
+        scene_issues.extend(
+            _build_scene_issues(
+                output_dir,
+                scene,
+                related_tasks,
+                previous_scene=previous_scene,
+            )
+        )
+        previous_scene = scene
 
     adjacent_previous_segment = None
     for segment in project_package.segments:
@@ -412,6 +422,14 @@ def _resolve_v2_effective_mode(project_package, v1_summary: ContinuitySummary, r
 
 
 def _build_v2_review_request(project_package, v1_rules: ContinuityRuleReview, trigger_note: str) -> PromptRequest:
+    scene_tasks_by_segment_id = {
+        task.segment_id: task
+        for task in project_package.scene_images
+    }
+    clip_tasks_by_segment_id = {
+        clip.segment_id: clip
+        for clip in project_package.seedance_manifest.clips
+    }
     context = {
         "project_title": project_package.title,
         "trigger_note": trigger_note,
@@ -463,17 +481,14 @@ def _build_v2_review_request(project_package, v1_rules: ContinuityRuleReview, tr
                 "summary": _truncate(segment.summary, 220),
                 "duration_seconds": segment.duration_seconds,
                 "requires_mid_frame": segment.requires_mid_frame,
+                "mid_frame_mode": getattr(segment, "mid_frame_mode", "continuous"),
+                "reuse_previous_end_frame": bool(getattr(segment, "reuse_previous_end_frame", False)),
                 "involved_characters": list(segment.involved_characters),
-                "start_frame_characters": list(segment.start_frame_characters),
-                "mid_frame_characters": list(segment.mid_frame_characters),
-                "end_frame_characters": list(segment.end_frame_characters),
+                "frame_contract": _build_segment_frame_contract_context(segment),
                 "timed_beats": list(segment.timed_beats[:6]),
                 "narration_preview": _truncate(segment.narration, 120),
                 "dialogue_preview": [_truncate(item, 80) for item in segment.dialogue_lines[:3]],
                 "subtitle_preview": [_truncate(item, 80) for item in segment.subtitle_lines[:3]],
-                "start_frame_prompt": _truncate(segment.start_frame_prompt, 220),
-                "mid_frame_prompt": _truncate(segment.mid_frame_prompt, 220),
-                "end_frame_prompt": _truncate(segment.end_frame_prompt, 220),
                 "shot_state": {
                     "framing": segment.shot_state.framing,
                     "camera_motion": segment.shot_state.camera_motion,
@@ -492,6 +507,10 @@ def _build_v2_review_request(project_package, v1_rules: ContinuityRuleReview, tr
                     "allowed_changes": segment.continuity_link.allowed_changes,
                     "transition_reason": segment.continuity_link.transition_reason,
                 },
+                "runtime_status": _build_segment_runtime_status_context(
+                    scene_tasks_by_segment_id.get(segment.segment_id),
+                    clip_tasks_by_segment_id.get(segment.segment_id),
+                ),
             }
             for segment in project_package.segments
         ],
@@ -589,6 +608,95 @@ def _segment_has_spoken_content(segment) -> bool:
     return any(str(item or "").strip() for item in [*segment.dialogue_lines, *segment.subtitle_lines])
 
 
+def _build_segment_frame_contract_context(segment) -> dict[str, Any]:
+    frame_contract = {
+        "start": {
+            "characters": list(segment.start_frame_characters),
+            "state": _truncate(_build_start_frame_state_summary(segment), 160),
+        },
+        "end": {
+            "characters": list(segment.end_frame_characters),
+            "state": _truncate(_build_end_frame_state_summary(segment), 160),
+        },
+    }
+    if segment.requires_mid_frame:
+        frame_contract["mid"] = {
+            "characters": list(segment.mid_frame_characters),
+            "mode": getattr(segment, "mid_frame_mode", "continuous"),
+            "state": _truncate(_build_mid_frame_state_summary(segment), 160),
+        }
+    return frame_contract
+
+
+def _build_start_frame_state_summary(segment) -> str:
+    candidates = (
+        str(segment.continuity_link.opening_match or "").strip(),
+        _first_timed_beat(segment.timed_beats),
+        str(segment.shot_state.blocking or "").strip(),
+        str(segment.summary or "").strip(),
+    )
+    return _first_nonempty(*candidates)
+
+
+def _build_mid_frame_state_summary(segment) -> str:
+    candidates = (
+        _middle_timed_beat(segment.timed_beats),
+        str(segment.shot_state.blocking or "").strip(),
+        str(segment.shot_state.action_progression or "").strip(),
+        str(segment.summary or "").strip(),
+    )
+    return _first_nonempty(*candidates)
+
+
+def _build_end_frame_state_summary(segment) -> str:
+    candidates = (
+        str(segment.shot_state.end_state_lock or "").strip(),
+        _last_timed_beat(segment.timed_beats),
+        str(segment.shot_state.action_progression or "").strip(),
+        str(segment.summary or "").strip(),
+    )
+    return _first_nonempty(*candidates)
+
+
+def _build_segment_runtime_status_context(scene_task, clip_task) -> dict[str, Any]:
+    return {
+        "scene_images": {
+            "status": str(getattr(scene_task, "status", "") or ""),
+            "scene_master_frame_status": str(getattr(scene_task, "scene_master_frame_status", "") or ""),
+            "has_start_frame": bool(getattr(scene_task, "start_frame_url", "") or getattr(scene_task, "start_frame_path", "")),
+            "has_mid_frame": bool(getattr(scene_task, "mid_frame_url", "") or getattr(scene_task, "mid_frame_path", "")),
+            "has_end_frame": bool(getattr(scene_task, "end_frame_url", "") or getattr(scene_task, "end_frame_path", "")),
+        },
+        "video": {
+            "submit_status": str(getattr(clip_task, "submit_status", "") or ""),
+            "remote_status": str(getattr(clip_task, "remote_status", "") or ""),
+            "has_video_url": bool(getattr(clip_task, "video_url", "") or getattr(clip_task, "downloaded_path", "")),
+        },
+    }
+
+
+def _first_timed_beat(timed_beats: list[str]) -> str:
+    return str(timed_beats[0] or "").strip() if timed_beats else ""
+
+
+def _middle_timed_beat(timed_beats: list[str]) -> str:
+    if not timed_beats:
+        return ""
+    return str(timed_beats[len(timed_beats) // 2] or "").strip()
+
+
+def _last_timed_beat(timed_beats: list[str]) -> str:
+    return str(timed_beats[-1] or "").strip() if timed_beats else ""
+
+
+def _first_nonempty(*values: str) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def _truncate(value: str, max_length: int) -> str:
     text = str(value or "").strip()
     if len(text) <= max_length:
@@ -618,6 +726,8 @@ def _build_scene_issues(
     output_dir: Path,
     scene,
     related_tasks: list[SceneImageTask],
+    *,
+    previous_scene=None,
 ) -> list[ContinuityIssue]:
     issues: list[ContinuityIssue] = []
     missing_scene_bible_keys = _missing_required_fields(scene.scene_bible, SCENE_BIBLE_REQUIRED_KEYS)
@@ -723,6 +833,197 @@ def _build_scene_issues(
                 )
             )
             break
+    issues.extend(_build_scene_boundary_issues(scene, previous_scene))
+    return issues
+
+
+def _build_scene_boundary_issues(
+    scene,
+    previous_scene,
+) -> list[ContinuityIssue]:
+    if previous_scene is None:
+        return []
+
+    contract = getattr(scene, "scene_transition_contract", None)
+    if contract is None:
+        return [
+            _issue(
+                scope="scene",
+                severity="high",
+                code="scene_transition_contract_missing",
+                message="当前 scene 缺少跨场承接合同，scene 边界容易直接跳开。",
+                scene_id=scene.scene_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+            )
+        ]
+
+    issues: list[ContinuityIssue] = []
+    previous_scene_id = str(contract.previous_scene_id or "").strip()
+    transition_mode = str(contract.transition_mode or "").strip().lower()
+    if not previous_scene_id:
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="high",
+                code="scene_transition_contract_missing",
+                message="当前 scene 缺少跨场承接合同，scene 边界容易直接跳开。",
+                scene_id=scene.scene_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+            )
+        )
+        return issues
+
+    if previous_scene_id != str(previous_scene.scene_id or "").strip():
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_transition_previous_scene_mismatch",
+                message=(
+                    f"当前 scene 声称承接 {previous_scene_id}，"
+                    f"但按顺序它前一场实际是 {previous_scene.scene_id}。"
+                ),
+                scene_id=scene.scene_id,
+                details={
+                    "contract_previous_scene_id": previous_scene_id,
+                    "actual_previous_scene_id": previous_scene.scene_id,
+                },
+            )
+        )
+
+    actual_previous_exit = _scene_last_visible_state(previous_scene)
+    contract_previous_exit = str(contract.previous_scene_exit_state or "").strip()
+    if (
+        transition_mode != "hard_cut"
+        and contract_previous_exit
+        and actual_previous_exit
+    ):
+        exit_overlap = _text_overlap_ratio(contract_previous_exit, actual_previous_exit)
+        if exit_overlap < 0.22:
+            issues.append(
+                _issue(
+                    scope="scene",
+                    severity="medium",
+                    code="scene_transition_exit_state_drift",
+                    message="scene_transition_contract 记录的上一场退出状态，与上一场真实尾部状态偏差过大。",
+                    scene_id=scene.scene_id,
+                    recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                    details={
+                        "contract_previous_scene_exit_state": contract_previous_exit,
+                        "actual_previous_scene_exit_state": actual_previous_exit,
+                        "overlap_ratio": round(exit_overlap, 3),
+                    },
+                )
+            )
+
+    next_scene_entry_match = str(contract.next_scene_entry_match or "").strip()
+    entry_overlap = max(
+        _text_overlap_ratio(next_scene_entry_match, contract_previous_exit),
+        _text_overlap_ratio(next_scene_entry_match, actual_previous_exit),
+    )
+    if transition_mode != "hard_cut" and (
+        not next_scene_entry_match
+        or _continuity_text_too_generic(next_scene_entry_match)
+        or entry_overlap < 0.22
+    ):
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_transition_entry_weak",
+                message="scene_transition_contract 的 next_scene_entry_match 没有清楚承接上一场尾部状态。",
+                scene_id=scene.scene_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                details={
+                    "next_scene_entry_match": next_scene_entry_match,
+                    "previous_scene_exit_state": actual_previous_exit,
+                    "overlap_ratio": round(entry_overlap, 3),
+                },
+            )
+        )
+
+    bridge_action = str(contract.bridge_action or "").strip()
+    visual_bridge = str(contract.visual_bridge or "").strip()
+    if transition_mode != "hard_cut" and (
+        not bridge_action
+        or _continuity_text_too_generic(bridge_action)
+        or not visual_bridge
+        or _continuity_text_too_generic(visual_bridge)
+    ):
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_transition_bridge_weak",
+                message="scene_transition_contract 的过桥动作或视觉 reveal 描述过弱，scene 切换可能显得生硬。",
+                scene_id=scene.scene_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                details={
+                    "bridge_action": bridge_action,
+                    "visual_bridge": visual_bridge,
+                },
+            )
+        )
+
+    first_segment = scene.segments[0] if getattr(scene, "segments", None) else None
+    if first_segment is None or transition_mode == "hard_cut":
+        return issues
+
+    opening_match = str(first_segment.continuity_link.opening_match or "").strip()
+    opening_overlap = max(
+        _text_overlap_ratio(opening_match, next_scene_entry_match),
+        _text_overlap_ratio(opening_match, actual_previous_exit),
+    )
+    if (
+        not opening_match
+        or _continuity_text_too_generic(opening_match)
+        or opening_overlap < 0.22
+    ):
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_transition_opening_not_consumed",
+                message="当前 scene 的首段 opening_match 没有真正消费 scene_transition_contract 的 entry 状态。",
+                scene_id=scene.scene_id,
+                segment_id=first_segment.segment_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                details={
+                    "opening_match": opening_match,
+                    "next_scene_entry_match": next_scene_entry_match,
+                    "previous_scene_exit_state": actual_previous_exit,
+                    "overlap_ratio": round(opening_overlap, 3),
+                },
+            )
+        )
+
+    first_beats_text = " ".join(str(item or "").strip() for item in first_segment.timed_beats[:2] if str(item or "").strip())
+    bridge_overlap = max(
+        _text_overlap_ratio(first_beats_text, bridge_action),
+        _text_overlap_ratio(first_beats_text, visual_bridge),
+    )
+    if bridge_action and (
+        not first_beats_text
+        or bridge_overlap < 0.16
+    ):
+        issues.append(
+            _issue(
+                scope="scene",
+                severity="medium",
+                code="scene_transition_bridge_not_consumed",
+                message="当前 scene 的首段前两拍没有真正把 bridge_action / visual_bridge 拍出来。",
+                scene_id=scene.scene_id,
+                segment_id=first_segment.segment_id,
+                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
+                details={
+                    "first_timed_beats": first_segment.timed_beats[:2],
+                    "bridge_action": bridge_action,
+                    "visual_bridge": visual_bridge,
+                    "overlap_ratio": round(bridge_overlap, 3),
+                },
+            )
+        )
+
     return issues
 
 
@@ -733,7 +1034,6 @@ def _collect_scene_baseline_gaps(scene) -> list[str]:
     dominant_palette = _normalized_string_list(scene.scene_bible.dominant_palette)
     spatial_layout = str(scene.scene_bible.spatial_layout or "").strip()
     lighting = str(scene.scene_bible.lighting or "").strip()
-    scene_master_prompt = str(scene.scene_master_frame_prompt or "").strip()
 
     if len(background_anchors) < SCENE_BASELINE_MIN_BACKGROUND_ANCHORS:
         gaps.append("背景锚点不足")
@@ -745,8 +1045,6 @@ def _collect_scene_baseline_gaps(scene) -> list[str]:
         gaps.append("空间布局不足")
     if not lighting:
         gaps.append("光线信息不足")
-    if len(scene_master_prompt) < 80:
-        gaps.append("场景母图 prompt 过短")
 
     return gaps
 
@@ -1202,6 +1500,30 @@ def _build_timing_issues(segment) -> list[ContinuityIssue]:
                 },
             )
         )
+    if (
+        parsed_any
+        and duration_seconds > 0
+        and max_end_seconds < duration_seconds - TIMED_BEAT_COVERAGE_TOLERANCE_SECONDS
+    ):
+        uncovered_seconds = round(duration_seconds - max_end_seconds, 2)
+        issues.append(
+            _issue(
+                scope="segment",
+                severity="medium",
+                code="timed_beats_under_duration",
+                message=(
+                    f"timed_beats 最后结束时间 {max_end_seconds:g}s 早于当前片段时长 {duration_seconds}s，"
+                    f"尾部约 {uncovered_seconds:g}s 缺少明确动作或收束节拍。"
+                ),
+                scene_id=segment.scene_id,
+                segment_id=segment.segment_id,
+                details={
+                    "max_end_seconds": max_end_seconds,
+                    "duration_seconds": duration_seconds,
+                    "uncovered_seconds": uncovered_seconds,
+                },
+            )
+        )
     return issues
 
 
@@ -1299,6 +1621,20 @@ def _scene_generation_started(
         if task.status in {"running", "completed", "failed"}:
             return True
     return False
+
+
+def _scene_last_visible_state(scene) -> str:
+    segments = list(getattr(scene, "segments", []) or [])
+    if not segments:
+        return str(getattr(scene, "summary", "") or "").strip()
+    tail = segments[-1]
+    return str(
+        getattr(tail.shot_state, "end_state_lock", "")
+        or getattr(tail.shot_state, "action_progression", "")
+        or getattr(tail, "summary", "")
+        or getattr(scene, "summary", "")
+        or ""
+    ).strip()
 
 
 def _spoken_lines(segment) -> list[str]:

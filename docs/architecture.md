@@ -148,13 +148,13 @@ chapter -> scene -> chunk -> segment
 当前视频规划链路：
 
 1. `Chapter Event Planner`
-   先从当前章节正文抽取 must-cover 关键事件
+   先从当前章节正文抽取 must-cover 关键事件；如果单个 event 已经合并了过多推进阶段，会在这一层直接失败重试并要求拆细
 2. `Chapter Scene Planner`
-   再生成当前章节的 `scene skeleton`，并为每个 scene 回填 `covered_event_ids`
+   再生成当前章节的 `scene skeleton`，并为每个 scene 回填 `covered_event_ids`、紧凑版 `covered_event_summaries` 与 `scene_transition_contract`；prompt 会显式要求不要把过多相邻关键事件一口吞进同一个 scene
 3. `Scene Chunk Planner`
-   只生成当前 `scene` 的连续 chunks
+   只生成当前 `scene` 的连续 chunks，并要求首个 chunk 消费跨 scene 过渡合同；prompt 与结构化校验都会同时读取当前 scene 绑定的 `covered_event_ids + covered_event_summaries`，提前拦截把后续 scene 关键推进偷写进本 scene 的越界 chunk；同时会校验 `must_cover / transition_goal` 与 `expected_segment_count` 是否匹配，提前拦截动作容量明显过载的 chunk；如果常规重试后仍卡在动作容量过载，会自动进入一次 `video-scene-chunk-repair`，只定向修当前失败 chunk
 4. `Scene Segment Planner`
-   只生成当前 chunk 的 `segment contracts`
+   只生成当前 chunk 的 `segment contracts`，并要求首个 segment 把 scene 级 entry state 落到 `opening_match / timed_beats`；同时会按 `timed_beats` 校验时长预算、动作容量和关键帧距离，必要时在当前 chunk 内直接触发结构化重试拆段；如果常规重试后仍卡在某个 segment 的尾部 beat 覆盖不完整，会自动进入一次 `video-scene-segment-timeline-repair`；如果仍卡在某个 segment 的动作容量过载，会自动进入一次 `video-scene-segment-action-repair`
 5. `本地 Prompt 组装`
    本地补齐图片 / 视频阶段需要的 prompt 字段
 
@@ -169,15 +169,20 @@ chapter -> scene -> chunk -> segment
 scene skeleton 的额外硬约束：
 
 - 每个 scene 必须输出 `covered_event_ids`
+- 每个 scene 会额外保留紧凑版 `covered_event_summaries`，供后续 chunk planner / repair / 边界校验复用
+- 非首个 scene 必须输出合法的 `scene_transition_contract`
 - 所有 scene 的 `covered_event_ids` 拼接后，必须与章节关键事件顺序完全一致
 - 单个 scene 只能覆盖连续事件块
 - 最后一个 scene 必须覆盖章节最后一个关键事件
 - 如果 scene 漏掉章节后半段事件，结构化阶段会直接失败重试
+- stage2 将 scene skeleton 重建成最终 `scene_plan.json` 时，必须保留 `scene_transition_contract` 与 `covered_event_summaries`，不能在归一化或 subsegment 重编阶段把 scene 级边界信息丢掉
 
 ## 场景一致性与连续性合同
 
 视频规划的核心合同由三层构成：
 
+- `scene_transition_contract`
+  锁定当前 scene 如何从上一场进入，包括 entry match、bridge action 和 reveal 方式
 - `scene_bible`
   锁定地点、时间、天气、光线、背景锚点、固定道具和空间布局
 - `shot_state`
@@ -205,6 +210,12 @@ scene_master_frame
   -> Seedance 视频片段
 ```
 
+补充说明：
+
+- 同 scene 连续段如果命中复用条件，首帧可以直接复用上一段尾帧
+- 非首个 scene 的首段不会跨 scene 直接复用上一场尾帧，但会把上一场最后一段尾帧作为额外 temporal anchor 带入首帧生图
+- `hard_cut` 的 scene transition 不使用上一场尾帧 temporal anchor
+
 帧级角色规则：
 
 - `involved_characters` 表示该段剧情相关角色
@@ -225,6 +236,12 @@ scene_master_frame
 连续性报告文件：
 
 - `continuity_report.json`
+
+当前 `V1` 规则层除了 scene 内部连续性，也会检查 scene boundary：
+
+- `scene_transition_contract` 记录的上一场退出状态，是否和上一场真实尾部漂移
+- `next_scene_entry_match / bridge_action / visual_bridge` 是否过弱
+- 当前 scene 首段的 `opening_match` 与前 1-2 拍是否真正消费了 scene 级过桥合同
 
 当前可执行的修复任务：
 
@@ -261,7 +278,10 @@ scene_master_frame
 Seedance 当前默认使用多模态参考图提交：
 
 - 首帧 / 中段 / 尾帧会作为有顺序的 `reference_image`
-- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定时间顺序
+- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定时间顺序，并收敛成“参考图 + 分阶段画面推进 + 音频字幕约束”的短版结构；其中 `画面推进` 会优先消费 `timed_beats` 的秒数与动作描述
+- 如果当前段存在真实旁白或对白，`画面推进` 阶段行也会直接带入口播内容，而不只依赖单独的对白清单
+- 与此同时，上游 `scene segment planner / segment continuity repair` 的 prompt 也会强制口播型片段把台词落进 `timed_beats`，这样下游视频 prompt 不需要再猜哪一拍发生了哪句口播
+- 如果该段是非首个 scene 的首段，prompt 还会额外压入 `scene_transition_contract` 的 entry / bridge / audio bridge 短指令
 - 如果完整多图组合被接口拒绝，才会逐步降级到更少参考图的合法组合
 - 如果某段没有对白、旁白和字幕，Seedance prompt 会显式声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，避免把静音动作段误提交成有字幕或有说话声的片段
 - 本地自动生成的 `sound_effects` 只允许来自环境基线；手机、书包、花束等瞬时随身道具不会再因为 `scene_bible.fixed_props` 被误写成环境拟音

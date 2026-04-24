@@ -156,6 +156,43 @@ class ContinuityLink:
 
 
 @dataclass(slots=True)
+class SceneTransitionContract:
+    previous_scene_id: str = ""
+    transition_mode: str = ""
+    previous_scene_exit_state: str = ""
+    next_scene_entry_match: str = ""
+    bridge_action: str = ""
+    carry_over_elements: list[str] = field(default_factory=list)
+    screen_direction_policy: str = ""
+    visual_bridge: str = ""
+    audio_bridge: str = "none"
+    transition_focus_seconds: int = 0
+
+    @classmethod
+    def from_dict(cls, raw: object | None) -> "SceneTransitionContract":
+        if raw is None:
+            payload: dict[str, Any] = {}
+        elif isinstance(raw, dict):
+            payload = raw
+        elif hasattr(raw, "model_dump"):
+            payload = dict(raw.model_dump())
+        else:
+            payload = {}
+        return cls(
+            previous_scene_id=str(payload.get("previous_scene_id", "") or ""),
+            transition_mode=str(payload.get("transition_mode", "") or ""),
+            previous_scene_exit_state=str(payload.get("previous_scene_exit_state", "") or ""),
+            next_scene_entry_match=str(payload.get("next_scene_entry_match", "") or ""),
+            bridge_action=str(payload.get("bridge_action", "") or ""),
+            carry_over_elements=list(payload.get("carry_over_elements", [])),
+            screen_direction_policy=str(payload.get("screen_direction_policy", "") or ""),
+            visual_bridge=str(payload.get("visual_bridge", "") or ""),
+            audio_bridge=str(payload.get("audio_bridge", "none") or "none"),
+            transition_focus_seconds=int(payload.get("transition_focus_seconds", 0) or 0),
+        )
+
+
+@dataclass(slots=True)
 class VideoSegment:
     segment_id: str
     chapter_number: int
@@ -243,8 +280,10 @@ class VideoScene:
     scene_anchor: str
     involved_characters: list[str]
     covered_event_ids: list[str] = field(default_factory=list)
+    covered_event_summaries: list[str] = field(default_factory=list)
     segments: list[VideoSegment] = field(default_factory=list)
     scene_bible: SceneBible = field(default_factory=SceneBible)
+    scene_transition_contract: SceneTransitionContract = field(default_factory=SceneTransitionContract)
     scene_master_frame_prompt: str = ""
     scene_master_frame_path: str = ""
     scene_master_frame_url: str = ""
@@ -260,6 +299,9 @@ class VideoScene:
         scene_anchor = str(raw.get("scene_anchor", "") or "")
         chapter_number = int(raw.get("chapter_number", 0) or 0)
         scene_bible = SceneBible.from_dict(raw.get("scene_bible"))
+        scene_transition_contract = SceneTransitionContract.from_dict(
+            raw.get("scene_transition_contract")
+        )
 
         segments: list[VideoSegment] = []
         for index, item in enumerate(raw.get("segments", []), start=1):
@@ -289,6 +331,11 @@ class VideoScene:
             for item in raw.get("covered_event_ids", [])
             if str(item).strip()
         ]
+        covered_event_summaries = [
+            str(item).strip()
+            for item in raw.get("covered_event_summaries", [])
+            if str(item).strip()
+        ]
 
         return cls(
             scene_id=scene_id,
@@ -298,8 +345,10 @@ class VideoScene:
             scene_anchor=scene_anchor,
             involved_characters=involved_characters,
             covered_event_ids=covered_event_ids,
+            covered_event_summaries=covered_event_summaries,
             segments=segments,
             scene_bible=scene_bible,
+            scene_transition_contract=scene_transition_contract,
             scene_master_frame_prompt=str(raw.get("scene_master_frame_prompt", "") or ""),
             scene_master_frame_path=str(raw.get("scene_master_frame_path", "") or ""),
             scene_master_frame_url=str(raw.get("scene_master_frame_url", "") or ""),
@@ -331,6 +380,7 @@ class SceneImageTask:
     requires_mid_frame: bool = False
     reuse_previous_end_frame: bool = False
     continuity_source_segment_id: str = ""
+    scene_transition_source_segment_id: str = ""
     status: str = "planned"
     scene_master_frame_status: str = "planned"
     scene_master_frame_url: str = ""
@@ -366,6 +416,7 @@ class SceneImageTask:
             requires_mid_frame=raw.get("requires_mid_frame", False),
             reuse_previous_end_frame=raw.get("reuse_previous_end_frame", False),
             continuity_source_segment_id=raw.get("continuity_source_segment_id", ""),
+            scene_transition_source_segment_id=raw.get("scene_transition_source_segment_id", ""),
             status=raw.get("status", "planned"),
             scene_master_frame_status=raw.get("scene_master_frame_status", "planned"),
             scene_master_frame_url=raw.get("scene_master_frame_url", ""),

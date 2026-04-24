@@ -126,6 +126,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 4. 检查 `chapter -> scene` 拆分后，再生成分段合同
    - 分段合同运行中会显示 `章 + scene` 进度；如果中途失败，直接点“从失败位置继续”即可
 5. 生成角色图
+   - “图像资产 -> 角色定妆图”卡片可以直接展开查看该角色的生成 prompt 和一致性备注，不用再手动打开 `character_image_manifest.json`
 6. 在项目详情页时间线里按 segment 逐段生成场景图
 7. 在同一条时间线里按 segment 逐段生成视频
    - 每个 scene 和 segment 卡片都可以展开查看当前图片 / 视频 prompt
@@ -196,7 +197,8 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 
 - 这一步会生成 `novel_package.json`、`novel_audit.json`、`story_memory.json`、`character_visual_bible.json` 与第一版 `scene_plan.json`
 - 这一版 `scene_plan.json` 只保存 `chapter -> scene` 结构、`scene_bible` 和 scene 母图相关字段，还不包含正式 `segment contracts`
-- `project.scene_structure` 现在会先从当前章节正文抽取 must-cover 关键事件，再生成 scene skeleton；第一版 `scene_plan.json` 里的每个 scene 都会带 `covered_event_ids`
+- `project.scene_structure` 现在会先从当前章节正文抽取 must-cover 关键事件，再生成 scene skeleton；第一版 `scene_plan.json` 里的每个 scene 都会带 `covered_event_ids` 与紧凑版 `covered_event_summaries`
+- 从第二个 scene 开始，第一版 `scene_plan.json` 里的每个 scene 还会带 `scene_transition_contract`，用于描述它如何从上一场进入当前场
 - 同一份 `story_source` 已经有 queued / running / completed 的 `project.scene_structure` 任务时，后端会直接复用已有任务
 - `Cast Analyzer` 要求每个角色槽位都带可在正文中定位的 `source_evidence`
 - `source_evidence` 仍然必须来自正文，但对带修饰语的人名或稳定称呼会做容错匹配
@@ -231,10 +233,28 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
   - 最后本地富化并统一重编成正式 `scene_plan.json / segment_plan.json`
 - planner 现在不会把整份 `story_memory` 和整章长摘录原样喂给每个 scene / chunk
 - 当前实际传给 LLM 的是“当前章批次视图 + 最近已规划章节摘要 + 焦点角色摘要 + 当前 scene / chunk 聚焦摘录”
+- chapter event 规划现在会先拦截“事件过粗”的情况：如果一个关键事件 summary 已经同时包含多轮动作、对白或关系结果，这一步会直接失败重试，并要求拆成更细的相邻 event
+- 多 event 章节的 chapter 首尾 event 现在允许最多 3 个紧密绑定推进点，用来容纳常见的开场建立和结尾收束；中间 event 与单 event 章节仍按 2 个推进点收口
+- 背景介绍、关系说明、回忆补叙如果只是解释上下文，不会被当成 must-cover event；中间 event 也要求更窄，不允许把问句、回答、动作结果三连塞进一条
+- chapter event 的 `source_evidence` 现在也要求只截当前 event 对应的 1-2 个相邻正文片段；系统不会再把同一 event 里的证据碎片重复算成多个推进点
+- 如果首次 chapter event 抽取仍出现“过粗 event”，系统现在会自动触发一次 `video-chapter-event-repair`，把失败的 event plan 连同失败原因交给 LLM 做定向修复，而不是只重跑同一个全量抽取 prompt
+- 如果整份 `video-chapter-event-repair` 仍然连续失败，系统还会进一步触发一次只针对单个粗 event 的 `video-chapter-event-split-repair`，把那一个 event 直接拆成更细的相邻 replacement events，再并回整章事件清单
+- 这条链路现在是迭代式的：如果同一章里连续还有别的粗 event，系统会在合并后继续校验整章并自动进入下一轮 repair，而不是修完第一个就直接退出
+- `video-chapter-event-split-repair` 的本地校验现在只要求当前 replacement events 自己合法，不会因为整章里另一个还没处理到的粗 event 而卡死当前 targeted split
 - 最终版 `scene_plan.json` 仍是场景级主规划文件，保存 `chapter -> scene -> segment`
+- stage2 把 scene skeleton 重建成最终 `scene_plan.json` 时，会保留 scene 级 `scene_transition_contract` 与 `covered_event_summaries`，不再在归一化 / subsegment 重编时丢掉 scene 边界信息
 - scene 级字段保留在 scene 层；segment 层聚焦执行合同与承接信息
 - `start_frame_prompt / mid_frame_prompt / end_frame_prompt` 由本地 prompt 组装阶段统一补齐
+- scene 首个 chunk / 首个 segment 现在会显式消费 `scene_transition_contract`：首段 `opening_match` 先建立 entry state，前 1-2 条 `timed_beats` 负责 bridge action 和 reveal
+- scene chunk planner 现在也会同时看到当前 scene 绑定的 `covered_event_summaries`；如果 chunk 提前写进后续 scene 才该发生的 `回应 / 告白 / 亲吻 / 明确关系落点` 之类关键推进，会在结构化阶段直接失败重试
 - scene 内 chunk 合并时，系统会把上一 chunk 尾部压缩成 `visible_tail_state / carry_over_elements / opening_match_seed` 传给下一 chunk 首段，再结合 `previous_segment_id / opening_match` 做结构化校验与重试，减少“同一 scene 里像重新开演”
+- chapter scene planner prompt 现在也会显式提醒：如果相邻关键事件已经形成完整多阶段链路，应优先拆更多 scene，而不是把整串事件都压进同一个 scene
+- scene chunk 规划现在还会前置检查动作容量：如果 `must_cover + transition_goal` 已经明显包含多轮推进，但 `expected_segment_count` 仍过小，这一步会直接失败重试，而不是把压力留到后面的 segment planner
+- 如果 scene chunk 在常规重试后仍然卡在“动作容量过载”，系统现在会自动触发一次 `video-scene-chunk-repair`，把失败 chunk、失败原因和最低所需 segment 数再次交给 LLM 定向修复
+- 如果 scene segment planner 在常规重试后仍然卡在“`timed_beats` 最后一拍过早结束、尾部缺少收束 beat”，系统现在会自动触发一次 `video-scene-segment-timeline-repair`，把失败 batch、失败原因和出错 `segment_id` 再交给 LLM 定向补尾部节拍
+- 如果 scene segment planner 在常规重试后仍然卡在“某个 segment 动作推进点过多、当前 chunk 至少要拆成 N 段”，系统现在会自动触发一次 `video-scene-segment-action-repair`，把失败 batch、出错 `segment_id`、推进点数量和最低所需 segment 数再交给 LLM 定向拆动作链
+- `video-scene-segment-action-repair` 现在也是迭代式的：如果 repair 第一轮后还有新的过载子段，或 repair 已经拆出更多段但被旧的 chunk 段数上限卡住，系统会继续基于最新失败 batch 再跑下一轮修复
+- 如果 scene segment planner 在常规重试后仍然卡在“多人同帧却仍要求单人特写”，系统现在会自动触发一次 `video-scene-segment-focus-repair`，把失败 batch、出错 `segment_id`、冲突字段、冲突帧和该帧角色组再交给 LLM 定向修镜头一致性
 - `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
 - `scene_structure_source.json` 是恢复用的原始 scene skeleton 快照，供失败后从当前位置继续时读取，不参与图片和视频执行
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 持续回写进度、失败章节、失败 scene 和失败 chunk；如果前端看到“从失败位置继续”，底层依赖的就是这份 checkpoint
@@ -249,6 +269,10 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - `continuity_link` 用来显式描述当前片段是否承接上一段、开场要对齐什么状态、哪些元素必须延续、哪些变化被允许
 - 同一步还会生成 `continuity_report.json`，其中包含 `V1` 规则审校，以及按模式决定是否追加 `V2` 软审校；它会检查场景母图、场景基线强度、关键帧承接、帧级角色、对白时长预算和视频执行风险
 - `V1` 当前还会额外提示三类动作承接问题：`opening_match_weak`、`action_progression_stalled`、`adjacent_segment_duplicate`
+- `V1` 现在还会直接提示 scene 边界风险：`scene_transition_exit_state_drift`、`scene_transition_entry_weak`、`scene_transition_bridge_weak`、`scene_transition_opening_not_consumed`、`scene_transition_bridge_not_consumed`
+- `segment contracts` 现在仍会检查 scene 首段是否消费 `scene_transition_contract`、无中段片段的 `start -> end` 关键帧语义是否过平，以及当前 chunk 的最后一个 segment 是否真正落到 `transition_goal`
+- 其中“动作容量 / 开场承接 / 关键帧过平 / 收束不够落地”这类质量问题，当前链路会优先 repair；repair 仍失败时会记入 `planner_warnings` 后继续规划，不再默认整 chunk 卡死
+- 如果动作容量超载，系统不会直接整批失败：会在当前 chunk 内自动重试，并临时提高该 chunk 的可输出 segment 上限，要求模型把这轮动作链拆成更合理的正式片段
 
 ### 4. 生成角色图
 
@@ -289,6 +313,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果 `continuity_link` 判定当前段应承接上一段，首帧会优先按这份承接关系复用或对齐上一段尾部状态
 - 连续承接段的 repair 现在也会自动补强更具体的 `opening_match` 和 `allowed_changes`，减少“只是写了承接，但画面还是像重开一段”的情况
 - 当前帧生成时还会优先引用 `scene_master_frame + 当前帧角色图`；连续承接段的首帧会再额外带上上一段尾帧
+- 如果当前段是非首个 scene 的首段，首帧还会额外带上上一场最后一段的尾帧作为 temporal anchor；它只用于跨 scene 过桥，不会直接复用成当前首帧
 - 场景生图阶段只负责纯画面关键帧，不允许把对白、字幕、聊天气泡或任何可见文字直接画进图片
 - 每个 segment 卡片都可以展开查看 `start_frame_prompt / mid_frame_prompt / end_frame_prompt`
 
@@ -300,9 +325,13 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 视频阶段默认按多模态参考图模式提交：首帧 / 中段 / 尾帧会作为有顺序的 `reference_image` 一起送入 Seedance，并在 prompt 里显式绑定成 `图片1 / 图片2 / 图片3`
 - 视频阶段不再额外提交 `scene_master_frame` 或角色图；Seedance 只接收首帧 / 中段 / 尾帧三张时间锚点图
 - `scene_bible / shot_state / continuity_link` 的约束会先被压缩进关键帧描述里，视频基础 prompt 不再逐段复述这些大段合同原文
-- 视频基础 prompt 现在会直接输出 `参考图片时间轴`：`图片1 / 图片2 / 图片3` 分别描述起步、中段、收束画面，再补一条连续推进要求
-- Seedance 提交前会再补一层 `实际提交图片绑定`，只说明本次真实提交里的 `图片1 / 图片2 / 图片3`
+- 视频基础 prompt 现在会直接输出 `参考图`：`图片1 / 图片2 / 图片3` 分别描述起步、中段、收束画面，再按开场 / 中段 / 收束分阶段写 `画面推进`；如果 `timed_beats` 已给出明确秒数与动作，会优先直接用这些 beat 来写
+- 如果某段有真实旁白或对白，`画面推进` 里也会直接写出该时间段的口播内容，方便你直接看到“哪一秒谁说什么”
+- 上游结构化阶段现在也会明确要求：有旁白或对白的 segment，`timed_beats` 本身就要写出对应时间段里的真实口播内容
+- 如果当前段是非首个 scene 的首段，视频 prompt 还会额外追加一小段跨 scene 承接指令：前几秒先长成 `next_scene_entry_match`，再执行 `bridge_action / visual_bridge`，并按 `audio_bridge` 保持开场音频尾韵
+- Seedance 提交前会再补一层 `提交素材绑定`，只说明本次真实提交里的 `图片1 / 图片2 / 图片3`
 - 简化后仍会保留对白、旁白、角色音色、环境音、音乐和硬字幕要求；只是去掉了大量重复的合同复述
+- 当前短版视频 prompt 不再单独输出 `片段标题 / 场景与基线 / 镜头与动作` 这些重复栏目
 - 如果某段使用 `mid_frame_mode=insert_cut`，视频 prompt 会再额外写明：`图片1 / 图片3` 是主关系镜头，`图片2` 是插入镜头，必须先建立主关系、再自然切入插入镜头、最后切回主关系
 - 如果关键帧之间角色人数、角色集合或构图关系发生变化，视频 prompt 会明确要求可见的入画 / 靠近 / 离场 / 景别重构过程，避免直接硬跳
 - 如果某个 segment 没有对白、旁白和字幕，视频 prompt 会明确声明“无口播、无字幕、只保留环境音 / 拟音 / 音乐”，不会再对静音动作段追加硬字幕烧录指令
@@ -367,7 +396,7 @@ outputs/<story-slug>/
   视频角色视觉设定，用来约束角色外观、服装、色彩和角色定妆 prompt。
 - `character_image_manifest.json`
   角色定妆图任务清单，记录每个角色要怎么生成、输出到哪里、当前状态是什么。
-  角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只保留角色姓名和人物描述，要求正面、左侧面、背面三栏全身站姿一致。性别、身份和职业只作为造型参考，不允许作为画面文字。
+  角色图 prompt 会统一追加固定 `SF-TURN-01` 横版 16:9 白底三视图模板，只使用角色姓名、性别、外观和服装；其中 `gender` 只作为内部造型约束保留，不会作为画面文字显示。最终 prompt 不再把 `role / portrait_prompt` 额外拼进角色图生成。
 - `segment_plan.json`
   视频片段规划，定义每个片段的参与角色、对白、字幕、时长、首帧 / 中段锚点帧 / 尾帧 prompt，以及分段关系。
   其中 `requires_mid_frame = true` 表示该片段会额外生成中段锚点帧；常见于双人 / 多人同框、8 秒以上片段、动作推进明显或中段关系变化明显的镜头。

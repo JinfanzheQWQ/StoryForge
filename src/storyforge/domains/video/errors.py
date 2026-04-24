@@ -55,3 +55,26 @@ class SegmentSpeechSplitRequiredError(ValueError):
             f"但单段上限只有 {max_duration_seconds} 秒，"
             f"当前 chunk 必须至少拆成 {required_segment_count} 个 segment。"
         )
+
+
+class SegmentActionSplitRequiredError(ValueError):
+    def __init__(
+        self,
+        *,
+        segment_id: str,
+        action_node_count: int,
+        current_duration_seconds: int,
+        max_action_nodes: int,
+        required_segment_count: int,
+    ) -> None:
+        self.segment_id = segment_id
+        self.action_node_count = action_node_count
+        self.current_duration_seconds = current_duration_seconds
+        self.max_action_nodes = max_action_nodes
+        self.required_segment_count = required_segment_count
+        super().__init__(
+            f"segment {segment_id} 的动作容量过载："
+            f"当前约有 {action_node_count} 个推进点，"
+            f"但 {current_duration_seconds} 秒片段最多只允许 {max_action_nodes} 个。"
+            f"当前 chunk 必须至少拆成 {required_segment_count} 个 segment。"
+        )

@@ -255,7 +255,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果 scene segment planner 在常规重试后仍然卡在“某个 segment 动作推进点过多、当前 chunk 至少要拆成 N 段”，系统会自动触发一次 `video-scene-segment-action-repair`，把失败 batch、出错 `segment_id`、推进点数量和最低所需 segment 数再交给 LLM 定向拆动作链
 - `video-scene-segment-action-repair` 是迭代式的：如果 repair 第一轮后还有新的过载子段，或 repair 拆出更多段但触发 chunk 段数上限，系统会继续基于最新失败 batch 再跑下一轮修复
 - 如果 scene segment planner 在常规重试后仍然卡在“多人同帧却仍要求单人特写”，系统会自动触发一次 `video-scene-segment-focus-repair`，把失败 batch、出错 `segment_id`、冲突字段、冲突帧和该帧角色组再交给 LLM 定向修镜头一致性
-- `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state` 与 `continuity_link`
+- `segment_plan.json` 是执行索引，供逐段生成场景图、视频和失败重试使用；每个 segment 会继承所属 scene 的 `scene_bible`，并额外带 `shot_state`、`continuity_link` 与 `motion_plan`
 - `scene_structure_source.json` 是恢复用的原始 scene skeleton 快照，供失败后从当前位置继续时读取，不参与图片和视频执行
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 持续回写进度、失败章节、失败 scene 和失败 chunk；如果前端看到“从失败位置继续”，底层依赖的就是这份 checkpoint
 - 视频 segment 规划在 live LLM 模式下会最多自动重试 3 次；如果模型返回的是分析备注、伪分镜或空结构，而不是可执行的正式场景计划，这一步会直接失败并把原因写入任务，而不会静默生成坏掉的 `scene_plan.json`
@@ -267,6 +267,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
   - `on`：强制追加 `V2` LLM 软审校
 - `shot_state` 用来锁定该片段的景别、镜头推进、人物调度、动作推进、道具连续性和尾部承接状态
 - `continuity_link` 用来显式描述当前片段是否承接上一段、开场要对齐什么状态、哪些元素必须延续、哪些变化被允许
+- `motion_plan` 用来描述 `图片1 -> 图片2 -> 图片3` 的镜头路径、角色运动和防硬跳要求；结构化输出缺失时会由后处理基于 `timed_beats / shot_state` 补齐
 - 同一步还会生成 `continuity_report.json`，其中包含 `V1` 规则审校，以及按模式决定是否追加 `V2` 软审校；它会检查场景母图、场景基线强度、关键帧承接、帧级角色、对白时长预算和视频执行风险
 - `V1` 当前还会额外提示三类动作承接问题：`opening_match_weak`、`action_progression_stalled`、`adjacent_segment_duplicate`
 - `V1` 还会直接提示 scene 边界风险：`scene_transition_exit_state_drift`、`scene_transition_entry_weak`、`scene_transition_bridge_weak`、`scene_transition_opening_not_consumed`、`scene_transition_bridge_not_consumed`
@@ -325,7 +326,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 视频阶段默认按多模态参考图模式提交：首帧 / 中段 / 尾帧会作为有顺序的 `reference_image` 一起送入 Seedance，并在 prompt 里显式绑定成 `图片1 / 图片2 / 图片3`
 - 视频阶段不提交 `scene_master_frame` 或角色图；Seedance 只接收首帧 / 中段 / 尾帧三张时间锚点图
 - `scene_bible / shot_state / continuity_link` 的约束会先被压缩进关键帧描述里，视频基础 prompt 不逐段复述这些大段合同原文
-- 视频基础 prompt 会直接输出 `参考图绑定`：`图片1 / 图片2 / 图片3` 分别描述首帧、中段帧、尾帧，再按开场 / 中段 / 收束分阶段写 `画面推进`；如果 `timed_beats` 已给出明确秒数与动作，会优先直接用这些 beat 来写
+- 视频基础 prompt 会直接输出 `参考图绑定`：`图片1 / 图片2 / 图片3` 分别描述首帧、中段帧、尾帧，再按开场 / 中段 / 收束分阶段写 `画面推进`；推进细节优先来自 `motion_plan`，并结合 `timed_beats` 的秒数与动作
 - 如果某段有真实旁白或对白，`画面推进` 里也会直接写出该时间段的口播内容，方便你直接看到“哪一秒谁说什么”
 - 上游结构化阶段会明确要求：有旁白或对白的 segment，`timed_beats` 本身就要写出对应时间段里的真实口播内容
 - 如果当前段是非首个 scene 的首段，视频 prompt 还会额外追加一小段跨 scene 承接指令：前几秒先长成 `next_scene_entry_match`，再执行 `bridge_action / visual_bridge`，并按 `audio_bridge` 保持开场音频尾韵

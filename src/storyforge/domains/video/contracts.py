@@ -127,6 +127,33 @@ class ShotState:
 
 
 @dataclass(slots=True)
+class MotionPlan:
+    start_to_mid: str = ""
+    mid_to_end: str = ""
+    camera_path: str = ""
+    character_motion: str = ""
+    continuity_guard: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: object | None) -> "MotionPlan":
+        if raw is None:
+            payload: dict[str, Any] = {}
+        elif isinstance(raw, dict):
+            payload = raw
+        elif hasattr(raw, "model_dump"):
+            payload = dict(raw.model_dump())
+        else:
+            payload = {}
+        return cls(
+            start_to_mid=str(payload.get("start_to_mid", "") or ""),
+            mid_to_end=str(payload.get("mid_to_end", "") or ""),
+            camera_path=str(payload.get("camera_path", "") or ""),
+            character_motion=str(payload.get("character_motion", "") or ""),
+            continuity_guard=str(payload.get("continuity_guard", "") or ""),
+        )
+
+
+@dataclass(slots=True)
 class ContinuityLink:
     previous_segment_id: str = ""
     transition_mode: str = "start"
@@ -227,6 +254,7 @@ class VideoSegment:
     scene_bible: SceneBible = field(default_factory=SceneBible)
     shot_state: ShotState = field(default_factory=ShotState)
     continuity_link: ContinuityLink = field(default_factory=ContinuityLink)
+    motion_plan: MotionPlan = field(default_factory=MotionPlan)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "VideoSegment":
@@ -268,6 +296,7 @@ class VideoSegment:
             scene_bible=SceneBible.from_dict(raw.get("scene_bible")),
             shot_state=ShotState.from_dict(raw.get("shot_state")),
             continuity_link=ContinuityLink.from_dict(raw.get("continuity_link")),
+            motion_plan=MotionPlan.from_dict(raw.get("motion_plan")),
         )
 
 

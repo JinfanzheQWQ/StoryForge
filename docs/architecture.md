@@ -209,6 +209,8 @@ scene skeleton 的额外硬约束：
   锁定镜头景别、镜头推进、角色调度、动作推进和尾部状态
 - `continuity_link`
   描述当前片段与上一段的承接关系、开场对齐要求和允许变化
+- `motion_plan`
+  描述首帧到中段帧、中段帧到尾帧的镜头路径、角色运动和防硬跳要求；缺失时由后处理补齐
 
 此外，每个 scene 还会生成：
 
@@ -298,7 +300,7 @@ scene_master_frame
 Seedance 当前默认使用多模态参考图提交：
 
 - 首帧 / 中段 / 尾帧会作为有顺序的 `reference_image`
-- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定首帧、中段帧和尾帧，并收敛成“参考图绑定 + 分阶段画面推进 + 音频字幕约束”的短版结构；其中 `画面推进` 会优先消费 `timed_beats` 的秒数与动作描述
+- prompt 会用 `图片1 / 图片2 / 图片3` 显式绑定首帧、中段帧和尾帧，并收敛成“参考图绑定 + 分阶段画面推进 + 音频字幕约束”的短版结构；其中 `画面推进` 会优先消费 `motion_plan`，并结合 `timed_beats` 的秒数与动作描述
 - 如果当前段存在真实旁白或对白，`画面推进` 阶段行也会直接带入口播内容，而不只依赖单独的对白清单
 - 与此同时，上游 `scene segment planner / segment continuity repair` 的 prompt 也会强制口播型片段把台词落进 `timed_beats`，这样下游视频 prompt 不需要再猜哪一拍发生了哪句口播
 - 如果该段是非首个 scene 的首段，prompt 还会额外压入 `scene_transition_contract` 的 entry / bridge / audio bridge 短指令

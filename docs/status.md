@@ -91,6 +91,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - `Chapter Event Planner` 的尾部覆盖校验已经收紧到短章：不会只检查长章，较短章节如果最后一个 must-cover event 结束得过早，也会直接失败重试
 - `scene_bible` 已进入主规划、场景图 prompt 与视频 prompt
 - `shot_state` 已进入分段合同、场景图 prompt 与视频 prompt
+- `motion_plan` 已进入分段合同与视频 prompt，用于约束 `图片1 -> 图片2 -> 图片3` 的可见运动；缺失时由后处理基于 `timed_beats / shot_state` 补齐
 - `continuity_link` 已进入分段合同、首帧承接判断与视频 prompt
 - `scene_master_frame` 已作为 scene 级空场景母图接入主链路
 - `scene_prompt` 运行时字段不提交；当前只保留 `scene_master_frame_prompt` 与 `start/mid/end_frame_prompt`
@@ -194,7 +195,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - Seedance 默认提交策略使用多模态参考图模式：首帧 / 中段 / 尾帧会按 `图片1 / 图片2 / 图片3` 写进同一个 prompt
 - 视频阶段不提交母场景图或角色图；Seedance 只吃首帧 / 中段 / 尾帧三张时间锚点图，避免额外参考图干扰视频构图
 - 中段锚点图是 Seedance 默认时间锚点的一部分，按 `图片2` 明确参与画面推进
-- 视频基础 prompt 直接输出 `参考图绑定`：用 `图片1 / 图片2 / 图片3` 描述首帧、中段帧、尾帧，再按开场 / 中段 / 收束分阶段写 `画面推进`，并优先消费 `timed_beats` 里的秒数与动作描述，明确镜头如何从前一张自然推进到后一张
+- 视频基础 prompt 直接输出 `参考图绑定`：用 `图片1 / 图片2 / 图片3` 描述首帧、中段帧、尾帧，再按开场 / 中段 / 收束分阶段写 `画面推进`；推进细节优先消费 `motion_plan`，并结合 `timed_beats` 里的秒数与动作描述
 - 如果当前段存在 `dialogue_lines / narration`，视频 prompt 会把真实发生的旁白 / 对白直接挂到对应的 `画面推进` 阶段里，而不只是在后面单独列一份台词清单
 - 上游 `scene segment planner` 与 `segment continuity repair` prompt 会显式要求：只要当前段存在 `dialogue_lines / narration`，`timed_beats` 就必须直接写出哪一秒谁说了哪句，不能只写“他开口 / 她回应”
 - Seedance 提交层只补一小段 `提交素材绑定`，按本次请求的真实图片顺序说明哪一张是首帧 / 中段 / 尾帧

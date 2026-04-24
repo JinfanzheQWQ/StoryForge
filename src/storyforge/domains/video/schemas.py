@@ -49,6 +49,20 @@ class ShotStateSchema(BaseModel):
     end_state_lock: str = Field(default="", description="片段尾部应保持的定格状态，供下一段承接")
 
 
+class MotionPlanSchema(BaseModel):
+    start_to_mid: str = Field(
+        default="",
+        description="从首帧图片推进到中段帧图片的具体画面运动；无中段帧时表示首帧到尾帧的推进",
+    )
+    mid_to_end: str = Field(
+        default="",
+        description="从中段帧图片推进到尾帧图片的具体画面运动；无中段帧时可留空",
+    )
+    camera_path: str = Field(default="", description="镜头路径，例如固定机位、轻微前推、跟拍、切入再切回")
+    character_motion: str = Field(default="", description="角色入画、靠近、转身、停步、离场或站位变化")
+    continuity_guard: str = Field(default="", description="防止硬跳、换景、少人、换脸或构图突变的连续性要求")
+
+
 class ContinuityLinkSchema(BaseModel):
     previous_segment_id: str = Field(default="", description="当前片段承接的上一片段 ID；首段可为空")
     transition_mode: str = Field(
@@ -253,6 +267,10 @@ class SceneSegmentContractSchema(BaseModel):
         default_factory=ContinuityLinkSchema,
         description="与上一片段的连续性关系",
     )
+    motion_plan: MotionPlanSchema = Field(
+        default_factory=MotionPlanSchema,
+        description="首帧 / 中段帧 / 尾帧之间的画面推进合同",
+    )
 
     @model_validator(mode="after")
     def normalize_mid_frame_fields(self) -> "SceneSegmentContractSchema":
@@ -302,6 +320,10 @@ class VideoSegmentSchema(BaseModel):
     continuity_link: ContinuityLinkSchema = Field(
         default_factory=ContinuityLinkSchema,
         description="该片段与上一片段的显式连续性承接关系",
+    )
+    motion_plan: MotionPlanSchema = Field(
+        default_factory=MotionPlanSchema,
+        description="首帧 / 中段帧 / 尾帧之间的画面推进合同，用于生成 Seedance 图片1/2/3 推进提示",
     )
     title: str = Field(description="片段标题")
     summary: str = Field(description="片段摘要")
@@ -423,6 +445,10 @@ class SegmentContinuityRepairSchema(BaseModel):
     continuity_link: ContinuityLinkSchema = Field(
         default_factory=ContinuityLinkSchema,
         description="修复后的跨段连续性约束",
+    )
+    motion_plan: MotionPlanSchema = Field(
+        default_factory=MotionPlanSchema,
+        description="修复后的首帧 / 中段帧 / 尾帧画面推进合同",
     )
 
     @model_validator(mode="after")
@@ -729,6 +755,17 @@ def _normalize_scene_segment_contracts(raw_segments: list[object]) -> list[dict[
             "continuity_link": _normalize_continuity_link(
                 payload.get("continuity_link"),
             ),
+            "motion_plan": _normalize_motion_plan(
+                payload.get("motion_plan"),
+                summary=str(payload.get("summary") or ""),
+                timed_beats=[
+                    str(item).strip()
+                    for item in payload.get("timed_beats", [])
+                    if str(item).strip()
+                ],
+                shot_state=payload.get("shot_state"),
+                requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
+            ),
         }
         normalized.append(normalized_payload)
     return normalized
@@ -774,6 +811,15 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
         payload["shot_state"] = dict(shot_state)
         payload["continuity_link"] = dict(
             _normalize_continuity_link(payload.get("continuity_link"))
+        )
+        payload["motion_plan"] = dict(
+            _normalize_motion_plan(
+                payload.get("motion_plan"),
+                summary=str(payload.get("summary") or scene_summary or ""),
+                timed_beats=[str(item).strip() for item in payload.get("timed_beats", []) if str(item).strip()],
+                shot_state=payload.get("shot_state"),
+                requires_mid_frame=bool(payload.get("requires_mid_frame", False)),
+            )
         )
 
         group_key = (chapter_number, scene_id)
@@ -969,6 +1015,61 @@ def _normalize_continuity_link(raw_continuity_link: object) -> dict[str, object]
         normalized.get("transition_mode", "start")
     )
     return normalized
+
+
+def _normalize_motion_plan(
+    raw_motion_plan: object,
+    *,
+    summary: str,
+    timed_beats: list[str],
+    shot_state: object,
+    requires_mid_frame: bool,
+) -> dict[str, object]:
+    payload = _coerce_mapping(raw_motion_plan) or {}
+    normalized = MotionPlanSchema.model_validate(payload).model_dump()
+    shot_payload = _coerce_mapping(shot_state) or {}
+    beat_focuses = [_extract_timed_beat_focus(item) for item in timed_beats]
+    beat_focuses = [item for item in beat_focuses if item]
+    action_progression = str(shot_payload.get("action_progression") or "").strip()
+    camera_motion = str(shot_payload.get("camera_motion") or "").strip()
+    blocking = str(shot_payload.get("blocking") or "").strip()
+    end_state_lock = str(shot_payload.get("end_state_lock") or "").strip()
+    default_start = beat_focuses[0] if beat_focuses else action_progression or summary
+    default_mid = beat_focuses[len(beat_focuses) // 2] if len(beat_focuses) >= 3 else ""
+    default_end = beat_focuses[-1] if beat_focuses else end_state_lock or action_progression or summary
+    if not str(normalized.get("start_to_mid") or "").strip():
+        if requires_mid_frame:
+            normalized["start_to_mid"] = _join_motion_clauses(default_start, default_mid or action_progression)
+        else:
+            normalized["start_to_mid"] = _join_motion_clauses(default_start, default_end)
+    if requires_mid_frame and not str(normalized.get("mid_to_end") or "").strip():
+        normalized["mid_to_end"] = _join_motion_clauses(default_mid or action_progression, default_end)
+    if not str(normalized.get("camera_path") or "").strip():
+        normalized["camera_path"] = camera_motion or "镜头按关键帧顺序自然推进，不在片尾硬切到下一张图。"
+    if not str(normalized.get("character_motion") or "").strip():
+        normalized["character_motion"] = blocking or action_progression or summary or "角色按当前节拍完成可见动作变化。"
+    if not str(normalized.get("continuity_guard") or "").strip():
+        normalized["continuity_guard"] = "保持同一场景、同一角色身份和同一运动方向，避免突然换景、少人、换脸或跳尾帧。"
+    return normalized
+
+
+def _extract_timed_beat_focus(beat: str) -> str:
+    normalized = str(beat or "").strip()
+    if not normalized:
+        return ""
+    for separator in ("：", ":"):
+        if separator in normalized:
+            return normalized.split(separator, 1)[1].strip(" ，。；;")
+    return normalized.strip(" ，。；;")
+
+
+def _join_motion_clauses(*clauses: str) -> str:
+    normalized: list[str] = []
+    for clause in clauses:
+        text = str(clause or "").strip(" ，。；;")
+        if text and text not in normalized:
+            normalized.append(text)
+    return "，再".join(normalized[:2])
 
 
 def _normalize_scene_transition_contract(raw_contract: object) -> dict[str, object]:

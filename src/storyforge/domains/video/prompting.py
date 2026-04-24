@@ -198,6 +198,16 @@ class VideoPromptingMixin:
             "- 合法示例：`shot_state.camera_motion=轻微前推，保持苏雨、林晨同框，只通过站位和表情差异突出林晨情绪变化`。"
         )
 
+    def _motion_plan_rule_block(self) -> str:
+        return (
+            "- 每个 `segment` 建议输出 `motion_plan`，用于把首帧 / 中段帧 / 尾帧变成连续视频动作，不是图片 prompt。\n"
+            "- `motion_plan.start_to_mid` 写 `图片1 -> 图片2` 的具体可见运动；无中段帧时写 `图片1 -> 尾帧图片` 的运动。\n"
+            "- `motion_plan.mid_to_end` 只在有中段帧时填写，写 `图片2 -> 图片3` 如何自然收束；无中段帧可留空。\n"
+            "- `motion_plan.camera_path` 写镜头路径，例如固定机位轻微前推、跟拍、切入再切回；不要只写抽象情绪。\n"
+            "- `motion_plan.character_motion` 写角色入画、靠近、转身、停步、递出物件、离场或站位变化。\n"
+            "- `motion_plan.continuity_guard` 写防硬跳要求，例如保持同一场景、同一运动方向、不要突然少人、不要片尾跳尾帧。"
+        )
+
     def _segment_audio_budget_rule_block(self) -> str:
         return (
             f"- `duration_seconds` 必须在 {self.PLANNER_MIN_DURATION_SECONDS}-{self.SEEDANCE_MAX_DURATION_SECONDS} 秒内，并按中文自然口播语速估算音频长度，约每秒 {self.SPEECH_CHARS_PER_SECOND} 个中文字。\n"
@@ -942,6 +952,7 @@ story memory JSON：
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`、`当前为第2/2段`。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
+{self._motion_plan_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
 {cross_chunk_opening_rule.rstrip()}
@@ -1036,6 +1047,7 @@ story memory JSON：
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
+{self._motion_plan_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
 {scene_transition_rule.rstrip()}
@@ -1145,6 +1157,7 @@ story memory JSON：
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
+{self._motion_plan_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
 {scene_transition_rule.rstrip()}
@@ -1245,6 +1258,7 @@ story memory JSON：
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
+{self._motion_plan_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
 {scene_transition_rule.rstrip()}
@@ -1361,6 +1375,7 @@ story memory JSON：
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
 {self._segment_audio_budget_rule_block()}
+{self._motion_plan_rule_block()}
 {self._segment_continuity_rule_block()}
 {self._anti_micro_split_rule_block()}
 {scene_transition_rule.rstrip()}
@@ -1901,6 +1916,7 @@ story memory JSON：
   - `transition_hint`
   - `shot_state`
   - `continuity_link`
+  - `motion_plan`
 - 输出必须让画面承接、动作推进、对白长度、字幕时长更成立
 - `duration_seconds` 必须在 5-12 秒
 - `subtitle_lines` 必须和实际能说完的旁白/对白一致
@@ -1915,7 +1931,7 @@ story memory JSON：
 - 如果不需要中段帧，`requires_mid_frame=false`，并把 `mid_frame_prompt` 置空、`mid_frame_characters` 置空数组
 - 如果问题主要是对白超时，就优先缩短对白、拆短字幕、压缩旁白，而不是盲目拉满 12 秒
 - 如果 `speech_budget_context.required_duration_seconds` 已经大于 12，说明原文本本身塞不进单段视频；你必须主动删减或改写对白、旁白和字幕，让修复后的文本能在 12 秒内说完，不能试图保留原长文本
-- 如果问题主要是动作或站位不连贯，就优先修 `shot_state`、`continuity_link` 和帧 prompt
+- 如果问题主要是动作或站位不连贯，就优先修 `motion_plan`、`shot_state`、`continuity_link` 和帧 prompt
 - 如果目标片段承接上一段，`continuity_link.opening_match` 必须明确写出上一段尾部在当前段开场如何被复现
 - `continuity_link.allowed_changes` 必须明确写出这一段比上一段新增推进的动作或关系变化，不能只是重复上一段
 - 不要输出解释，不要输出 Markdown，只返回结构化结果
@@ -3232,9 +3248,13 @@ story memory JSON：
         beat_focus: str = "",
         anchor_text: str = "",
         spoken_note: str = "",
+        motion_detail: str = "",
     ) -> str:
         line = f"画面推进 {time_label}：{base}"
         normalized_focus = str(beat_focus or "").strip(" ，。；;")
+        normalized_motion = str(motion_detail or "").strip(" ，。；;")
+        if normalized_motion:
+            line += f"，推进细节：{normalized_motion}"
         if normalized_focus:
             if normalized_focus in str(anchor_text or ""):
                 line += f"，这一段延续“{normalized_focus}”"
@@ -3243,6 +3263,27 @@ story memory JSON：
         if spoken_note:
             line += f"，这一段口播：{spoken_note}"
         return line + "。"
+
+    def _motion_plan_value(self, segment: VideoSegment, key: str) -> str:
+        motion_plan = getattr(segment, "motion_plan", None)
+        if isinstance(motion_plan, dict):
+            return str(motion_plan.get(key, "") or "").strip()
+        return str(getattr(motion_plan, key, "") or "").strip()
+
+    def _motion_plan_common_detail(self, segment: VideoSegment) -> str:
+        details = []
+        for key in ("camera_path", "character_motion", "continuity_guard"):
+            value = self._motion_plan_value(segment, key).strip(" ，。；;")
+            if value and value not in details:
+                details.append(value)
+        return "；".join(details[:3])
+
+    def _motion_plan_stage_detail(self, segment: VideoSegment, key: str) -> str:
+        stage_detail = self._motion_plan_value(segment, key).strip(" ，。；;")
+        common_detail = self._motion_plan_common_detail(segment)
+        if stage_detail and common_detail:
+            return f"{stage_detail}；{common_detail}"
+        return stage_detail or common_detail
 
     def _segment_visible_characters(self, segment: VideoSegment) -> list[str]:
         ordered: list[str] = []
@@ -3303,6 +3344,7 @@ story memory JSON：
                     beat_focus=start_stage_focus,
                     anchor_text=start_anchor_line,
                     spoken_note=stage_spoken_notes[0],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3312,6 +3354,7 @@ story memory JSON：
                     beat_focus=mid_stage_focus,
                     anchor_text=mid_anchor_line,
                     spoken_note=stage_spoken_notes[1],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3321,6 +3364,7 @@ story memory JSON：
                     beat_focus=end_stage_focus,
                     anchor_text=end_anchor_line,
                     spoken_note=stage_spoken_notes[2],
+                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
                 )
             )
         elif has_mid_anchor and self._same_character_set(start_chars, mid_chars) and self._same_character_set(mid_chars, end_chars):
@@ -3334,6 +3378,7 @@ story memory JSON：
                     beat_focus=start_stage_focus,
                     anchor_text=start_anchor_line,
                     spoken_note=stage_spoken_notes[0],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3343,6 +3388,7 @@ story memory JSON：
                     beat_focus=mid_stage_focus,
                     anchor_text=mid_anchor_line,
                     spoken_note=stage_spoken_notes[1],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3352,6 +3398,7 @@ story memory JSON：
                     beat_focus=end_stage_focus,
                     anchor_text=end_anchor_line,
                     spoken_note=stage_spoken_notes[2],
+                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
                 )
             )
         elif has_mid_anchor:
@@ -3365,6 +3412,7 @@ story memory JSON：
                     beat_focus=start_stage_focus,
                     anchor_text=start_anchor_line,
                     spoken_note=stage_spoken_notes[0],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3374,6 +3422,7 @@ story memory JSON：
                     beat_focus=mid_stage_focus,
                     anchor_text=mid_anchor_line,
                     spoken_note=stage_spoken_notes[1],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3383,6 +3432,7 @@ story memory JSON：
                     beat_focus=end_stage_focus,
                     anchor_text=end_anchor_line,
                     spoken_note=stage_spoken_notes[2],
+                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
                 )
             )
         elif self._same_character_set(start_chars, end_chars):
@@ -3395,6 +3445,7 @@ story memory JSON：
                     beat_focus=start_stage_focus,
                     anchor_text=start_anchor_line,
                     spoken_note=stage_spoken_notes[0],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3404,6 +3455,7 @@ story memory JSON：
                     beat_focus=end_stage_focus,
                     anchor_text=end_anchor_line,
                     spoken_note=stage_spoken_notes[1],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
         else:
@@ -3416,6 +3468,7 @@ story memory JSON：
                     beat_focus=start_stage_focus,
                     anchor_text=start_anchor_line,
                     spoken_note=stage_spoken_notes[0],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
             lines.append(
@@ -3425,6 +3478,7 @@ story memory JSON：
                     beat_focus=end_stage_focus,
                     anchor_text=end_anchor_line,
                     spoken_note=stage_spoken_notes[1],
+                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
                 )
             )
         if (

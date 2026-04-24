@@ -209,7 +209,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - stage2 把 scene skeleton 重建成最终 `scene_plan.json` 时，会保留 scene 级 `scene_transition_contract` 与 `covered_event_summaries`
 - 每个 scene 的首个 chunk / 首个 segment 都会消费 `scene_transition_contract`，把跨 scene 承接落到 `opening_match / timed_beats`
 - `Scene Chunk Planner` 的 prompt 与结构化校验都会读取当前 scene 绑定的 `covered_event_summaries`，提前拦截把后续 scene 关键推进写进当前 scene 的越界 chunk
-- `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state` 与 `continuity_link`
+- `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state`、`continuity_link` 与 `motion_plan`
 - `continuity_report.json` 的 `V1` 还会直接输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
 - `scene_structure_source.json` 是恢复专用的原始 scene skeleton 快照
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 记录进度、失败位置和恢复状态；每完成一个 chunk 就会回写一次 checkpoint
@@ -554,7 +554,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 说明：
 
-- `video_prompt` 是分段合同阶段落盘的基础视频 prompt
+- `video_prompt` 是分段合同阶段落盘的基础视频 prompt；画面推进会消费 `motion_plan` 并绑定 `图片1 / 图片2 / 图片3`
 - `submitted_video_prompt`、`submitted_prompt_variant`、`submitted_reference_bindings` 只有该段真正提交过视频后才会有值
 - `mid_frame_mode` 当前取值为 `continuous` 或 `insert_cut`；当前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
 - `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的首帧 / 中段帧 / 尾帧

@@ -5,6 +5,7 @@ from storyforge.domains.novel.contracts import NovelPackage
 from storyforge.domains.video.contracts import (
     CharacterVisualProfile,
     ContinuityLink,
+    MotionPlan,
     SceneBible,
     ShotState,
     VideoProjectPackage,
@@ -296,6 +297,7 @@ class VideoMaterializationMixin:
                 scene_bible=SceneBible.from_dict(item.scene_bible.model_dump()),
                 shot_state=ShotState.from_dict(item.shot_state.model_dump()),
                 continuity_link=ContinuityLink.from_dict(item.continuity_link.model_dump()),
+                motion_plan=MotionPlan.from_dict(item.motion_plan.model_dump()),
             )
             for item in segments_plan.segments
         ]
@@ -343,6 +345,7 @@ class VideoMaterializationMixin:
                 "transition_hint": self._normalize_transition_hint(repair_patch.transition_hint),
                 "shot_state": repair_patch.shot_state,
                 "continuity_link": repair_patch.continuity_link,
+                "motion_plan": repair_patch.motion_plan,
             }
         )
         single_plan = self._normalize_segment_characters(

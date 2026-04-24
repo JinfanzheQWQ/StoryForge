@@ -42,7 +42,7 @@ from storyforge.domains.novel.schemas import (  # noqa: E402
     StoryDraftSetSchema,
 )
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
-from storyforge.domains.video.contracts import CharacterVisualProfile, ContinuityLink, SceneBible, SceneTransitionContract, ShotState, StoryMemoryPackage, VideoScene, VideoSegment  # noqa: E402
+from storyforge.domains.video.contracts import CharacterVisualProfile, ContinuityLink, MotionPlan, SceneBible, SceneTransitionContract, ShotState, StoryMemoryPackage, VideoScene, VideoSegment  # noqa: E402
 from storyforge.domains.video.errors import SegmentActionSplitRequiredError, VideoStructuredGenerationError  # noqa: E402
 from storyforge.domains.video.schemas import (  # noqa: E402
     ChapterCoveragePlanSchema,
@@ -12323,6 +12323,13 @@ class PipelineTestCase(unittest.TestCase):
                 allowed_changes="在双人对视中插入林晚的单人情绪反应，再回到两人对视。",
                 transition_reason="场景起始段",
             ),
+            motion_plan=MotionPlan(
+                start_to_mid="从双人主镜头切入林晚反应特写，切入前先保持陈默和林晚的对视关系。",
+                mid_to_end="林晚抬眼后切回双人中景，让陈默和林晚重新落回同一条对视轴线。",
+                camera_path="主镜头短切插入再切回，不要停成静态图。",
+                character_motion="林晚低头后抬眼，陈默仍留在主镜头关系中。",
+                continuity_guard="图片2 是插入特写，不要把它误拍成少了陈默的主关系镜头。",
+            ),
         )
 
         prompt = service._build_seedance_clip_prompt(segment)
@@ -12335,6 +12342,8 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("画面推进 3-5秒：再短促切到图片2", prompt)
         self.assertIn("画面推进 5-8秒：最后明确切回图片3", prompt)
         self.assertIn("这一段拍出“镜头短促切入林晚的单人反应特写”", prompt)
+        self.assertIn("推进细节：从双人主镜头切入林晚反应特写", prompt)
+        self.assertIn("林晚抬眼后切回双人中景", prompt)
         self.assertIn("插入镜头：图片2 只切 林晚 的反应或局部动作", prompt)
         self.assertNotIn("图片2 是插入镜头", prompt)
 
@@ -12665,6 +12674,55 @@ class PipelineTestCase(unittest.TestCase):
         self.assertTrue(repaired.scenes[0].scene_bible.location)
         self.assertTrue(repaired.scenes[0].scene_bible.continuity_notes)
         self.assertTrue(repaired.segments[0].scene_bible.background_anchors)
+
+    def test_segment_contract_normalization_backfills_motion_plan(self) -> None:
+        plan = VideoSegmentPlanSchema.model_validate(
+            {
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc01-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc01",
+                        "scene_title": "松林入口",
+                        "scene_summary": "林屿在入口等待苏晚。",
+                        "scene_anchor": "松林入口 / 傍晚",
+                        "title": "入口等待",
+                        "summary": "林屿从低头等待到抬头看见苏晚。",
+                        "involved_characters": ["林屿", "苏晚"],
+                        "start_frame_characters": ["林屿"],
+                        "mid_frame_characters": ["林屿", "苏晚"],
+                        "end_frame_characters": ["林屿", "苏晚"],
+                        "narration": "",
+                        "dialogue_lines": [],
+                        "subtitle_lines": [],
+                        "timed_beats": [
+                            "0-3秒：林屿站在松林入口等待。",
+                            "3-6秒：苏晚从小径尽头入画。",
+                            "6-8秒：两人在入口处停下对视。",
+                        ],
+                        "duration_seconds": 8,
+                        "requires_mid_frame": True,
+                        "start_frame_prompt": "林屿独自站在松林入口。",
+                        "mid_frame_prompt": "苏晚从小径尽头入画，林屿抬头看见她。",
+                        "end_frame_prompt": "林屿和苏晚在入口处停下对视。",
+                        "shot_state": {
+                            "camera_motion": "固定机位轻微前推",
+                            "blocking": "林屿在入口左侧，苏晚从右侧小径进入。",
+                            "action_progression": "从等待到苏晚入画，再到两人对视。",
+                        },
+                        "continuity_link": {},
+                    }
+                ]
+            }
+        )
+
+        segment = plan.segments[0]
+
+        self.assertIn("林屿站在松林入口等待", segment.motion_plan.start_to_mid)
+        self.assertIn("苏晚从小径尽头入画", segment.motion_plan.start_to_mid)
+        self.assertIn("两人在入口处停下对视", segment.motion_plan.mid_to_end)
+        self.assertEqual(segment.motion_plan.camera_path, "固定机位轻微前推")
+        self.assertIn("避免突然换景", segment.motion_plan.continuity_guard)
 
     def test_repair_shot_state_backfills_missing_fields_from_segment_context(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")

@@ -188,6 +188,36 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `seedream_watermark / seedance_watermark` 可选；如果不传，后续阶段会继承当前 run 根任务上的设置
 - 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode + watermark 组合` 复用已有 queued / running / completed 任务
 
+#### `PUT /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}`
+
+保存工作台里人工修改后的媒体 prompt。接口只更新当前 run 的规划文件，不会自动提交 Seedream 或 Seedance 任务。
+
+请求字段：
+
+- `start_frame_prompt`：首帧生图 prompt
+- `mid_frame_prompt`：中段锚点帧生图 prompt
+- `end_frame_prompt`：尾帧生图 prompt
+- `video_prompt`：Seedance 视频 prompt；修改后会清空该段旧视频提交状态和本地旧 mp4，下一次手动生成视频会使用新 prompt
+- `scene_master_frame_prompt`：场景母图 prompt；提交后会同步到同一 scene 的场景图任务
+
+落盘范围：
+
+- `segment_plan.json`
+- `scene_plan.json`
+- `scene_image_manifest.json`
+- `seedance_manifest.json`
+
+响应示例：
+
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "task-id",
+  "segment_id": "ch01-sc01-seg01",
+  "updated_fields": ["start_frame_prompt", "video_prompt"]
+}
+```
+
 #### `POST /v1/projects/segment-contracts`
 
 创建“生成分段合同”任务。

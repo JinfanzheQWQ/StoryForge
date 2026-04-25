@@ -433,6 +433,27 @@ function renderPromptSection(title, promptText, note = "") {
   `;
 }
 
+function renderEditablePromptSection(title, promptText, field, segmentId, note = "") {
+  const normalized = String(promptText || "").trim();
+  if (!normalized) {
+    return "";
+  }
+  return `
+    <section class="prompt-section prompt-section-editable">
+      <label class="prompt-section-head">
+        <strong>${escapeHtml(title)}</strong>
+        ${note ? `<span>${escapeHtml(note)}</span>` : ""}
+      </label>
+      <textarea
+        class="prompt-editor"
+        data-edit-segment-prompt-field="${escapeAttr(field)}"
+        data-segment-id="${escapeAttr(segmentId)}"
+        rows="8"
+      >${escapeHtml(normalized)}</textarea>
+    </section>
+  `;
+}
+
 function renderSubmittedReferenceBindings(bindings, title = "参考图绑定", note = "当前实际提交顺序") {
   if (!bindings?.length) {
     return "";
@@ -526,36 +547,64 @@ function renderSubmittedRequest(title, request, emptyNote = "提交后可见") {
   `;
 }
 
-function renderScenePromptPanel(sceneGroup) {
+function renderScenePromptPanel(sceneGroup, rootTask) {
+  const firstSegment = sceneGroup.segments?.[0] || null;
+  const editablePrompt = firstSegment
+    ? renderEditablePromptSection(
+      "场景母图 Prompt",
+      sceneGroup.sceneMasterFramePrompt,
+      "scene_master_frame_prompt",
+      firstSegment.segmentId,
+      "保存后手动重跑场景母图生效",
+    )
+    : renderPromptSection("场景母图 Prompt", sceneGroup.sceneMasterFramePrompt);
   const sections = [
-    renderPromptSection("场景母图 Prompt", sceneGroup.sceneMasterFramePrompt),
+    editablePrompt,
     renderSubmittedRequest("场景母图实际提交参数", sceneGroup.sceneMasterFrameRequest, "场景母图提交后可见"),
   ].filter(Boolean);
   if (!sections.length) {
     return "";
   }
+  const projectId = rootTask?.project_id || state.selectedProjectId || "";
+  const sourceTaskId = rootTask?.task_id || "";
   return `
-    <details class="prompt-panel">
-      <summary>查看场景母图 Prompt / 请求参数</summary>
+    <details class="prompt-panel" data-segment-prompt-panel="${escapeAttr(firstSegment?.segmentId || sceneGroup.sceneId)}">
+      <summary>查看 / 修改场景母图 Prompt / 请求参数</summary>
       <div class="prompt-panel-body">
         ${sections.join("")}
+        ${firstSegment ? `
+          <div class="prompt-edit-actions">
+            <button
+              type="button"
+              class="primary-button"
+              data-save-segment-prompts="${escapeAttr(firstSegment.segmentId)}"
+              data-project-id="${escapeAttr(projectId)}"
+              data-source-task="${escapeAttr(sourceTaskId)}"
+            >保存场景母图 Prompt</button>
+            <span class="asset-note">同步到同一 scene 的场景图任务，不会自动开始生成。</span>
+          </div>
+        ` : ""}
       </div>
     </details>
   `;
 }
 
-function renderSegmentPromptPanel(segment) {
+function renderSegmentPromptPanel(segment, rootTask) {
   const hasMidFrame = Boolean(segment.requiresMidFrame);
-  const sections = [
-    renderPromptSection("首帧 Prompt", segment.startFramePrompt),
-    hasMidFrame ? renderPromptSection("中段 Prompt", segment.midFramePrompt, "中段锚点帧") : "",
-    renderPromptSection("尾帧 Prompt", segment.endFramePrompt),
+  const editableSections = [
+    renderEditablePromptSection("首帧 Prompt", segment.startFramePrompt, "start_frame_prompt", segment.segmentId),
+    hasMidFrame
+      ? renderEditablePromptSection("中段 Prompt", segment.midFramePrompt, "mid_frame_prompt", segment.segmentId, "中段锚点帧")
+      : "",
+    renderEditablePromptSection("尾帧 Prompt", segment.endFramePrompt, "end_frame_prompt", segment.segmentId),
+    renderEditablePromptSection("视频 Prompt（可修改）", segment.videoPrompt, "video_prompt", segment.segmentId, "保存后该段旧视频会失效，需要手动重跑视频"),
+  ].filter(Boolean);
+  const readonlySections = [
     renderSubmittedRequest("首帧实际提交参数", segment.startFrameRequest, "首帧提交后可见"),
     hasMidFrame ? renderSubmittedRequest("中段实际提交参数", segment.midFrameRequest, "中段提交后可见") : "",
     renderSubmittedRequest("尾帧实际提交参数", segment.endFrameRequest, "尾帧提交后可见"),
     renderMotionPlanSection(segment.motionPlan),
     renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
-    renderPromptSection("视频规划 Prompt", segment.videoPrompt, "segment_contracts 阶段落盘"),
     renderPromptSection(
       "视频实际提交 Prompt",
       segment.submittedVideoPrompt,
@@ -566,14 +615,29 @@ function renderSegmentPromptPanel(segment) {
     renderSubmittedRequest("视频实际提交参数", segment.videoRequest, "视频提交后可见"),
     segment.videoRequest ? "" : renderSubmittedReferenceBindings(segment.submittedReferenceBindings),
   ].filter(Boolean);
+  const sections = [...editableSections, ...readonlySections];
   if (!sections.length) {
     return "";
   }
+  const projectId = rootTask?.project_id || state.selectedProjectId || "";
+  const sourceTaskId = rootTask?.task_id || "";
   return `
-    <details class="prompt-panel">
-      <summary>查看本段图片 / 视频 Prompt / 请求参数</summary>
+    <details class="prompt-panel" data-segment-prompt-panel="${escapeAttr(segment.segmentId)}">
+      <summary>查看 / 修改本段图片与视频 Prompt / 请求参数</summary>
       <div class="prompt-panel-body">
         ${sections.join("")}
+        ${editableSections.length ? `
+          <div class="prompt-edit-actions">
+            <button
+              type="button"
+              class="primary-button"
+              data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
+              data-project-id="${escapeAttr(projectId)}"
+              data-source-task="${escapeAttr(sourceTaskId)}"
+            >保存 Prompt</button>
+            <span class="asset-note">只保存当前计划，不会自动开始生图或生视频。</span>
+          </div>
+        ` : ""}
       </div>
     </details>
   `;
@@ -1406,7 +1470,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                       <div class="timeline-scene-master">
                         ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
                       </div>
-                      ${renderScenePromptPanel(sceneGroup)}
+                      ${renderScenePromptPanel(sceneGroup, rootTask)}
                       ${renderSegmentTaskError(sceneMasterTask, "场景母图失败")}
                       <div class="timeline-list">
                         ${sceneGroup.segments
@@ -1486,7 +1550,7 @@ function renderTimelineTab(task, artifacts, context, run = null) {
                         ${renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
                         ${renderTimelinePreview(segment.clip, "视频", galleryId)}
                       </div>
-                      ${renderSegmentPromptPanel(segment)}
+                      ${renderSegmentPromptPanel(segment, rootTask)}
                       <div class="timeline-card-footer">
                         <div class="detail-chip-row">
                           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}

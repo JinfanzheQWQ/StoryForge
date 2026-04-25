@@ -120,6 +120,21 @@ class JobAcceptedResponse(BaseModel):
     status: str
 
 
+class UpdateSegmentPromptRequest(BaseModel):
+    scene_master_frame_prompt: str | None = None
+    start_frame_prompt: str | None = None
+    mid_frame_prompt: str | None = None
+    end_frame_prompt: str | None = None
+    video_prompt: str | None = None
+
+
+class SegmentPromptUpdateResponse(BaseModel):
+    project_id: str
+    source_task_id: str
+    segment_id: str
+    updated_fields: list[str] = Field(default_factory=list)
+
+
 class ProjectDeletedResponse(BaseModel):
     project_id: str
     deleted: bool

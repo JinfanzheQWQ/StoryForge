@@ -1,5 +1,5 @@
 import { elements } from "./dom.js";
-import { deleteProject } from "./api.js";
+import { deleteProject, updateSegmentPrompts } from "./api.js";
 import { askProjectDeleteConfirmation } from "./confirm_modal.js";
 import {
   applyBootstrapToForm,
@@ -386,6 +386,12 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const savePromptButton = event.target.closest("[data-save-segment-prompts]");
+  if (savePromptButton) {
+    await saveSegmentPrompts(savePromptButton);
+    return;
+  }
+
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
     await submitStageFromButton(
@@ -452,6 +458,35 @@ async function handleProjectDetailClick(event) {
   const previewButton = event.target.closest("[data-preview-group]");
   if (previewButton) {
     openLightbox(previewButton.dataset.previewGroup, Number(previewButton.dataset.previewIndex));
+  }
+}
+
+
+async function saveSegmentPrompts(button) {
+  const panel = button.closest("[data-segment-prompt-panel]");
+  if (!panel) {
+    return;
+  }
+  const payload = {};
+  panel.querySelectorAll("[data-edit-segment-prompt-field]").forEach((field) => {
+    payload[field.dataset.editSegmentPromptField] = field.value;
+  });
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "保存中...";
+  setSubmitStatus(elements.pollIndicator, "正在保存 Prompt...");
+  try {
+    const projectId = button.dataset.projectId || state.selectedProjectId;
+    const sourceTaskId = button.dataset.sourceTask;
+    const segmentId = button.dataset.saveSegmentPrompts;
+    await updateSegmentPrompts(projectId, sourceTaskId, segmentId, payload);
+    setSubmitStatus(elements.pollIndicator, "Prompt 已保存。需要重新生图或生视频时，请手动点击对应按钮。", true);
+    await refreshTasks();
+  } catch (error) {
+    setSubmitStatus(elements.pollIndicator, error.message || "Prompt 保存失败。", false);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel || "保存 Prompt";
   }
 }
 

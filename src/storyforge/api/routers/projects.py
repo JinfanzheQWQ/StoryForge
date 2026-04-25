@@ -15,15 +15,17 @@ from storyforge.api.schemas import (
     CreateStoryTaskRequest,
     JobAcceptedResponse,
     ProjectDeletedResponse,
+    SegmentPromptUpdateResponse,
     ProjectDetailResponse,
     ProjectSummaryResponse,
     StorySourceResponse,
+    UpdateSegmentPromptRequest,
     UpdateStorySourceRequest,
 )
 from storyforge.application.tasks import utc_now
 from storyforge.application.project_deletion import delete_project_output_dirs
 from storyforge.application.task_support import resolve_pipeline_root_task_id
-from storyforge.core.io import read_json
+from storyforge.core.io import read_json, write_json
 from storyforge.domains.novel.contracts import DraftChapter, StorySourcePackage
 from storyforge.pipelines.story_files import (
     clear_story_derived_artifacts,
@@ -33,6 +35,155 @@ from storyforge.pipelines.story_files import (
 
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
+
+
+PROMPT_UPDATE_FIELDS = {
+    "scene_master_frame_prompt",
+    "start_frame_prompt",
+    "mid_frame_prompt",
+    "end_frame_prompt",
+    "video_prompt",
+}
+
+
+def _load_json_file(path: Path, fallback):
+    if not path.exists():
+        return fallback
+    return read_json(path)
+
+
+def _normalize_prompt_updates(payload: UpdateSegmentPromptRequest) -> dict[str, str]:
+    updates: dict[str, str] = {}
+    for field in PROMPT_UPDATE_FIELDS:
+        raw_value = getattr(payload, field)
+        if raw_value is None:
+            continue
+        value = str(raw_value).strip()
+        if not value:
+            raise HTTPException(status_code=422, detail=f"{field} 不能为空。")
+        updates[field] = value
+    if not updates:
+        raise HTTPException(status_code=422, detail="至少需要提交一个 prompt 字段。")
+    return updates
+
+
+def _update_segment_plan_prompts(output_dir: Path, segment_id: str, updates: dict[str, str]) -> tuple[set[str], str]:
+    path = output_dir / "segment_plan.json"
+    plan = _load_json_file(path, [])
+    if not isinstance(plan, list):
+        raise HTTPException(status_code=400, detail="segment_plan.json 格式无效。")
+
+    matched_segment: dict[str, object] | None = None
+    for item in plan:
+        if isinstance(item, dict) and str(item.get("segment_id", "")) == segment_id:
+            matched_segment = item
+            break
+    if matched_segment is None:
+        raise HTTPException(status_code=404, detail=f"Segment {segment_id} not found in segment_plan.json")
+
+    scene_id = str(matched_segment.get("scene_id", "") or "")
+    changed: set[str] = set()
+    for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt"):
+        if field in updates and matched_segment.get(field) != updates[field]:
+            matched_segment[field] = updates[field]
+            changed.add(field)
+    if changed:
+        write_json(path, plan)
+    return changed, scene_id
+
+
+def _update_scene_plan_master_prompt(output_dir: Path, scene_id: str, prompt: str | None) -> set[str]:
+    if not prompt or not scene_id:
+        return set()
+    path = output_dir / "scene_plan.json"
+    plan = _load_json_file(path, {"scenes": []})
+    scenes = plan.get("scenes") if isinstance(plan, dict) else None
+    if not isinstance(scenes, list):
+        return set()
+
+    changed: set[str] = set()
+    for scene in scenes:
+        if isinstance(scene, dict) and str(scene.get("scene_id", "")) == scene_id:
+            if scene.get("scene_master_frame_prompt") != prompt:
+                scene["scene_master_frame_prompt"] = prompt
+                changed.add("scene_master_frame_prompt")
+            break
+    if changed:
+        write_json(path, plan)
+    return changed
+
+
+def _update_scene_image_manifest_prompts(output_dir: Path, segment_id: str, scene_id: str, updates: dict[str, str]) -> set[str]:
+    path = output_dir / "scene_image_manifest.json"
+    tasks = _load_json_file(path, [])
+    if not isinstance(tasks, list):
+        return set()
+
+    changed: set[str] = set()
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        is_target_segment = str(task.get("segment_id", "")) == segment_id
+        is_target_scene = scene_id and str(task.get("scene_id", "")) == scene_id
+        if "scene_master_frame_prompt" in updates and is_target_scene:
+            if task.get("scene_master_frame_prompt") != updates["scene_master_frame_prompt"]:
+                task["scene_master_frame_prompt"] = updates["scene_master_frame_prompt"]
+                changed.add("scene_master_frame_prompt")
+        if not is_target_segment:
+            continue
+        for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt"):
+            if field in updates and task.get(field) != updates[field]:
+                task[field] = updates[field]
+                changed.add(field)
+    if changed:
+        write_json(path, tasks)
+    return changed
+
+
+def _delete_output_file(raw_path: object) -> None:
+    if not raw_path:
+        return
+    path = Path(str(raw_path))
+    if path.exists() and path.is_file():
+        path.unlink()
+
+
+def _reset_seedance_clip_after_prompt_change(clip: dict[str, object]) -> None:
+    _delete_output_file(clip.get("downloaded_path"))
+    _delete_output_file(clip.get("output_path"))
+    clip["submitted_prompt"] = ""
+    clip["submit_variant"] = ""
+    clip["submitted_reference_bindings"] = []
+    clip["submitted_request_info"] = {}
+    clip["remote_task_id"] = ""
+    clip["submit_status"] = "planned"
+    clip["remote_status"] = "planned"
+    clip["video_url"] = ""
+    clip["cover_url"] = ""
+    clip["downloaded_path"] = ""
+    clip["error"] = ""
+
+
+def _update_seedance_manifest_prompt(output_dir: Path, segment_id: str, prompt: str | None) -> set[str]:
+    if not prompt:
+        return set()
+    path = output_dir / "seedance_manifest.json"
+    manifest = _load_json_file(path, {"clips": []})
+    clips = manifest.get("clips") if isinstance(manifest, dict) else None
+    if not isinstance(clips, list):
+        return set()
+
+    changed: set[str] = set()
+    for clip in clips:
+        if isinstance(clip, dict) and str(clip.get("segment_id", "")) == segment_id:
+            if clip.get("prompt") != prompt:
+                clip["prompt"] = prompt
+                _reset_seedance_clip_after_prompt_change(clip)
+                changed.add("video_prompt")
+            break
+    if changed:
+        write_json(path, manifest)
+    return changed
 
 
 def _ensure_live_llm_requested(use_llm: bool | None) -> None:
@@ -711,6 +862,42 @@ async def create_video_job(
         project_id=payload.project_id,
         task_id=record.task_id,
         status=record.status,
+    )
+
+
+
+@router.put(
+    "/{project_id}/segment-prompts/{source_task_id}/{segment_id}",
+    response_model=SegmentPromptUpdateResponse,
+)
+async def update_segment_prompts(
+    project_id: str,
+    source_task_id: str,
+    segment_id: str,
+    payload: UpdateSegmentPromptRequest,
+    request: Request,
+) -> SegmentPromptUpdateResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    output_dir = _output_dir(source_task)
+    updates = _normalize_prompt_updates(payload)
+
+    updated_fields, scene_id = _update_segment_plan_prompts(output_dir, segment_id, updates)
+    updated_fields.update(
+        _update_scene_plan_master_prompt(
+            output_dir,
+            scene_id,
+            updates.get("scene_master_frame_prompt"),
+        )
+    )
+    updated_fields.update(_update_scene_image_manifest_prompts(output_dir, segment_id, scene_id, updates))
+    updated_fields.update(_update_seedance_manifest_prompt(output_dir, segment_id, updates.get("video_prompt")))
+
+    return SegmentPromptUpdateResponse(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        segment_id=segment_id,
+        updated_fields=sorted(updated_fields),
     )
 
 

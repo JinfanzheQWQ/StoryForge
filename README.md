@@ -250,6 +250,8 @@ uv run storyforge api serve
 - `continuity_review_mode`: `off`、`auto` 或 `on`
 完整字段、请求示例和阶段接口说明见：[docs/api.md](docs/api.md)
 
+项目详情时间线支持查看并修改单个 segment 的首帧、中段、尾帧和 Seedance 视频 prompt。保存视频 prompt 后该段旧视频会失效，后续由用户手动重跑视频。
+
 ## 输出产物
 
 核心产物包括：

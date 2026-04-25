@@ -274,12 +274,15 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 
 ### 第一优先级
 
-1. 把执行队列替换成持久化任务队列
-2. 接入对象存储与公网素材 URL 管理
-3. 继续强化长篇规划的控长能力与章节批次记忆压缩
+1. 项目详情二级 Tab 化：`总览 / 正文结构 / 场景 / 分段审片 / 请求调试`。
+2. 分段审片台：左侧 segment 列表，右侧集中展示首 / 中 / 尾图、视频、风险、motion_plan、Seedance 推进 prompt 和 prompt 编辑器。
+3. 场景工作台：按 scene 展示空场景母图、母图 prompt、scene 风险和 scene 下 segment 对比。
+4. 请求调试 Inspector：集中展示 Seedream / Seedance 的实际 payload、参考图绑定顺序、计划 prompt、实际提交 prompt 和 API 错误。
 
 ### 第二优先级
 
-1. 为 `scene_master_frame` 增加更强的评估与重生成闭环
-2. 继续提升连续性修复的自动分流与批处理策略
-3. 在视频生成侧补更稳定的字幕与音频时长校验
+1. Prompt 编辑器增强：复制、重置、计划 prompt 与实际提交 prompt diff。
+2. 保存并重跑：保存 prompt 后可选择直接重生成对应图片或视频。
+3. 批量筛选和批量操作：按 scene、风险、图片状态、视频状态、prompt 是否人工修改过滤。
+4. 为 `scene_master_frame` 增加更强的评估与重生成闭环。
+5. 接入持久化任务队列、对象存储与公网素材 URL 管理。

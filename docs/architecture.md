@@ -195,6 +195,7 @@ scene skeleton 的额外硬约束：
 - `enrichment.py`：首帧 / 尾帧本地 prompt、音效和音乐方向补全。
 - `materialization.py`：chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化。
 - `planning.py`：默认推导、story memory、媒体任务构建、规划产物路径 / 读取与任务装配。
+- `api/routers/projects.py`：项目阶段任务入口，并提供 segment prompt 保存接口；保存后同步当前 run 的 `segment_plan.json / scene_image_manifest.json / seedance_manifest.json` 等媒体计划文件。
 - `text_rules.py`：文本相似度、推进点、边界词、方向词等共用规则。
 
 ## 场景一致性与连续性合同

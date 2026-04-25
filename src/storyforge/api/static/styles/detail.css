@@ -910,7 +910,8 @@
   color: var(--muted);
 }
 
-.prompt-code {
+.prompt-code,
+.prompt-editor {
   margin: 0;
   padding: 12px;
   overflow: auto;
@@ -922,6 +923,23 @@
   line-height: 1.7;
   white-space: pre-wrap;
   color: var(--text-strong);
+}
+
+.prompt-editor {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+}
+
+.prompt-section-editable .prompt-section-head {
+  justify-content: flex-start;
+}
+
+.prompt-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
 .prompt-binding-list {

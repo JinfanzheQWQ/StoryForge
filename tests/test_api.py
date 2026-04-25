@@ -1064,6 +1064,174 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(video_task["result"]["scene_id"], scene_id)
             self.assertEqual(mock_run_video_render_pipeline.call_args.kwargs["scene_id"], scene_id)
 
+
+    def test_update_segment_prompts_persists_planned_media_prompts(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {
+                "title_hint": "Prompt 编辑测试",
+                "idea": "两名学生在松树公园入口见面。",
+                "genre": "青春",
+                "tone": "电影感",
+                "target_audience": "成年读者",
+                "chapter_count": 1,
+                "total_word_target": 1200,
+                "must_include": ["松树公园"],
+                "style_keywords": ["黄昏"],
+            }
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                (output_dir / "story_source.json").write_text(
+                    json.dumps({"brief": brief, "title": "Prompt 编辑测试", "chapters": []}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                segment_id = "ch01-sc01-seg01"
+                scene_id = "ch01-sc01"
+                (output_dir / "scene_plan.json").write_text(
+                    json.dumps(
+                        {"scenes": [{"scene_id": scene_id, "scene_master_frame_prompt": "旧场景母图"}]},
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                (output_dir / "segment_plan.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "segment_id": segment_id,
+                                "chapter_number": 1,
+                                "scene_id": scene_id,
+                                "title": "等待",
+                                "summary": "林屿等待苏晚。",
+                                "start_frame_prompt": "旧首帧",
+                                "mid_frame_prompt": "旧中段",
+                                "end_frame_prompt": "旧尾帧",
+                                "duration_seconds": 6,
+                            }
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                (output_dir / "scene_image_manifest.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "segment_id": segment_id,
+                                "scene_id": scene_id,
+                                "scene_master_frame_prompt": "旧场景母图",
+                                "start_frame_prompt": "旧首帧",
+                                "mid_frame_prompt": "旧中段",
+                                "end_frame_prompt": "旧尾帧",
+                            }
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                rendered_dir = output_dir / "rendered"
+                rendered_dir.mkdir(parents=True, exist_ok=True)
+                old_clip_path = rendered_dir / f"{segment_id}.mp4"
+                old_clip_path.write_bytes(b"old mp4")
+                (output_dir / "seedance_manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "clips": [
+                                {
+                                    "segment_id": segment_id,
+                                    "prompt": "旧视频",
+                                    "submitted_prompt": "旧提交视频",
+                                    "submitted_request_info": {"payload": {"content": []}},
+                                    "submitted_reference_bindings": [{"label": "图片1"}],
+                                    "submit_status": "submitted",
+                                    "remote_status": "succeeded",
+                                    "remote_task_id": "task-old",
+                                    "video_url": "https://example.invalid/old.mp4",
+                                    "cover_url": "https://example.invalid/old.jpg",
+                                    "downloaded_path": str(old_clip_path),
+                                    "output_path": str(old_clip_path),
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "Prompt 编辑测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "segment_contracts_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                response = client.put(
+                    f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}",
+                    json={
+                        "scene_master_frame_prompt": "新场景母图",
+                        "start_frame_prompt": "新首帧",
+                        "mid_frame_prompt": "新中段",
+                        "end_frame_prompt": "新尾帧",
+                        "video_prompt": "新视频",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    set(response.json()["updated_fields"]),
+                    {
+                        "scene_master_frame_prompt",
+                        "start_frame_prompt",
+                        "mid_frame_prompt",
+                        "end_frame_prompt",
+                        "video_prompt",
+                    },
+                )
+                segment_plan = json.loads((output_dir / "segment_plan.json").read_text(encoding="utf-8"))
+                self.assertEqual(segment_plan[0]["start_frame_prompt"], "新首帧")
+                self.assertEqual(segment_plan[0]["mid_frame_prompt"], "新中段")
+                self.assertEqual(segment_plan[0]["end_frame_prompt"], "新尾帧")
+                scene_plan = json.loads((output_dir / "scene_plan.json").read_text(encoding="utf-8"))
+                self.assertEqual(scene_plan["scenes"][0]["scene_master_frame_prompt"], "新场景母图")
+                scene_manifest = json.loads((output_dir / "scene_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(scene_manifest[0]["scene_master_frame_prompt"], "新场景母图")
+                self.assertEqual(scene_manifest[0]["start_frame_prompt"], "新首帧")
+                self.assertEqual(scene_manifest[0]["mid_frame_prompt"], "新中段")
+                self.assertEqual(scene_manifest[0]["end_frame_prompt"], "新尾帧")
+                seedance_manifest = json.loads((output_dir / "seedance_manifest.json").read_text(encoding="utf-8"))
+                clip = seedance_manifest["clips"][0]
+                self.assertEqual(clip["prompt"], "新视频")
+                self.assertEqual(clip["submitted_prompt"], "")
+                self.assertEqual(clip["submitted_request_info"], {})
+                self.assertEqual(clip["submitted_reference_bindings"], [])
+                self.assertEqual(clip["submit_status"], "planned")
+                self.assertEqual(clip["remote_status"], "planned")
+                self.assertEqual(clip["remote_task_id"], "")
+                self.assertEqual(clip["video_url"], "")
+                self.assertEqual(clip["cover_url"], "")
+                self.assertEqual(clip["downloaded_path"], "")
+                self.assertFalse(old_clip_path.exists())
+
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")
@@ -1273,6 +1441,8 @@ class ApiTestCase(unittest.TestCase):
             mock_run_scene_image_pipeline.assert_not_called()
             mock_run_video_render_pipeline.assert_not_called()
 
+
+
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     def test_continuity_repair_job_returns_completed_noop_when_segment_has_no_issues(
         self,
@@ -1398,6 +1568,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(task["result"]["pending_media_actions"], [])
             self.assertEqual(task["result"]["scene_id"], scene_id)
             self.assertIn("当前没有需要修复的连续性问题", task["result"]["repair_summary"])
+
+
 
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_continuity_repair_pipeline")

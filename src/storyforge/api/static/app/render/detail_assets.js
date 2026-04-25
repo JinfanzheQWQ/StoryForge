@@ -9,6 +9,7 @@ import {
 import { renderRequestDebugTab as renderRequestDebugWorkbench } from "./request_debug.js";
 import { renderSceneWorkbenchTab as renderSceneWorkbench } from "./scene_workbench.js";
 import { renderSegmentReviewTab as renderSegmentReviewWorkbench } from "./segment_review.js";
+import { renderTimelineTab as renderTimelineWorkbench } from "./timeline.js";
 import {
   getStorySourceDraft,
   getStorySourceMeta,
@@ -1019,6 +1020,41 @@ const REQUEST_DEBUG_HELPERS = {
   renderDocumentBlock,
 };
 
+const TIMELINE_HELPERS = {
+  CONTINUITY_STATUS_LABEL,
+  buildArtifactPendingMessage,
+  buildBatchRepairButtonLabel,
+  buildBlockedSceneButtonLabel,
+  buildMergeButtonLabel,
+  buildSceneGroups,
+  buildSceneMasterButtonLabel,
+  buildSceneRepairButtonLabel,
+  buildSegmentRepairButtonLabel,
+  buildSegmentSceneButtonLabel,
+  buildSegmentVideoButtonLabel,
+  buildTimelineGalleryItems,
+  buildTimelineSegments,
+  buildContinuityLookup,
+  getLatestBatchRepairTask,
+  getLatestSceneMasterTask,
+  getLatestSceneRepairTask,
+  getLatestSegmentStageTask,
+  getRepairAffectedSegmentIds,
+  hasRecommendedContinuityAction,
+  isBusyTaskStatus,
+  renderBatchRepairNotice,
+  renderContinuityIssueList,
+  renderContinuityOverview,
+  renderContinuityRiskChips,
+  renderFullStoryBlock,
+  renderRepairPlanNotice,
+  renderSegmentSceneBlockedNotice,
+  renderSegmentTaskError,
+  renderTimelinePreview,
+  resolveRepairRemainingActions,
+  segmentLabel,
+};
+
 function renderContinuityRiskChips(group) {
   if (!group || !group.issue_count) {
     return chip("连续性稳定");
@@ -1154,354 +1190,13 @@ function renderTimelinePreview(item, label, galleryId) {
 }
 
 function renderTimelineTab(task, artifacts, context, run = null) {
-  if (!artifacts?.available) {
-    return singleAssetMessage("片段时间线暂不可用", buildArtifactPendingMessage(task, "images", run));
-  }
-
-  const timelineItems = buildTimelineGalleryItems(artifacts);
-  const galleryId = `${context}:timeline:${task.task_id}`;
-  registerGallery(galleryId, timelineItems);
-  const segments = buildTimelineSegments(artifacts);
-  const sceneGroups = buildSceneGroups(segments);
-  const continuitySceneLookup = buildContinuityLookup(artifacts?.continuity_scene_groups, "scene_id");
-  const continuitySegmentLookup = buildContinuityLookup(artifacts?.continuity_segment_groups, "segment_id");
-  const rootTask = run?.rootTask || task;
-  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
-  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
-  const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
-  const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
-  const batchRepairTask = getLatestBatchRepairTask(run);
-  const batchRepairTaskStatus = run ? getRunStageStatus(batchRepairTask, storySourceRevision) : "idle";
-  const readySceneCount = segments.filter((segment) => segment.sceneReady).length;
-  const readyVideoCount = segments.filter((segment) => segment.videoReady).length;
-  const canMergeVideos = readyVideoCount >= 2 && !["queued", "running"].includes(mergeTaskStatus);
-  const repairableRiskCount = Number(artifacts?.continuity_summary?.high_risk_count || 0)
-    + Number(artifacts?.continuity_summary?.medium_risk_count || 0);
-  const runHasBusyRepairTask = (run?.tasks || []).some(
-    (item) => (
-      (item.task_type === "project.continuity_repair" || item.task_type === "project.continuity_repair_batch")
-      && isBusyTaskStatus(getRunStageStatus(item, storySourceRevision))
-    ),
-  );
-  const canRunBatchRepair = segmentContractsStatus === "completed"
-    && repairableRiskCount > 0
-    && !runHasBusyRepairTask;
-
-  return `
-    <section class="timeline-shell">
-      <article class="asset-block timeline-hero">
-        <div>
-          <p class="section-kicker">Timeline</p>
-          <h4>按视频片段审片</h4>
-          <p class="asset-note">分段合同完成后，这里会按 LLM 生成的 segment_plan 逐段展示。每一段都可以单独生成场景图和视频，不再一次性把全部片段跑完。</p>
-          <p class="asset-note">首帧、中段锚点帧、尾帧和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
-        </div>
-        <div class="detail-chip-row">
-          ${chip(`场景 ${sceneGroups.length}`)}
-          ${chip(`片段 ${segments.length}`)}
-          ${chip(`场景就绪 ${readySceneCount}/${segments.length || 0}`)}
-          ${chip(`视频就绪 ${readyVideoCount}/${segments.length || 0}`)}
-          ${chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`)}
-          ${
-            artifacts?.continuity_summary
-              ? chip(`连续性 ${CONTINUITY_STATUS_LABEL[artifacts.continuity_summary.status] || artifacts.continuity_summary.status}`)
-              : chip("连续性 未校验")
-          }
-          ${
-            artifacts?.continuity_summary?.high_risk_count
-              ? `<span class="continuity-chip continuity-chip-high">高 ${artifacts.continuity_summary.high_risk_count}</span>`
-              : ""
-          }
-        </div>
-        <div class="timeline-hero-actions">
-          <button
-            type="button"
-            class="secondary"
-            data-auto-repair-batch="${escapeAttr(rootTask.task_id)}"
-            data-project-id="${escapeAttr(rootTask.project_id)}"
-            data-source-task="${escapeAttr(rootTask.task_id)}"
-            ${canRunBatchRepair ? "" : "disabled"}
-          >
-            ${escapeHtml(buildBatchRepairButtonLabel(batchRepairTaskStatus, batchRepairTask))}
-          </button>
-          <button
-            type="button"
-            class="secondary"
-            data-merge-videos="${escapeAttr(rootTask.task_id)}"
-            data-project-id="${escapeAttr(rootTask.project_id)}"
-            ${canMergeVideos ? "" : "disabled"}
-          >
-            ${escapeHtml(buildMergeButtonLabel(artifacts, mergeTaskStatus))}
-          </button>
-        </div>
-        ${renderContinuityOverview(artifacts?.continuity_summary)}
-        ${renderSegmentTaskError(batchRepairTask, "批量合同修复失败")}
-        ${renderBatchRepairNotice(batchRepairTask)}
-        ${renderRepairPlanNotice(
-          batchRepairTask,
-          resolveRepairRemainingActions(run, batchRepairTask, storySourceRevision),
-        )}
-      </article>
-
-      ${artifacts.full_story ? renderFullStoryBlock(artifacts.full_story, context, galleryId) : ""}
-
-      ${
-        segments.length
-          ? `
-            <div class="timeline-scene-list">
-              ${sceneGroups
-                .map(
-                  (sceneGroup) => {
-                    const sceneContinuity = continuitySceneLookup.get(sceneGroup.sceneId) || null;
-                    const sceneMasterTask = getLatestSceneMasterTask(run, sceneGroup.sceneId);
-                    const sceneRepairTask = getLatestSceneRepairTask(run, sceneGroup.sceneId);
-                    const sceneMasterTaskStatus = run ? getRunStageStatus(sceneMasterTask, storySourceRevision) : "idle";
-                    const sceneRepairTaskStatus = run ? getRunStageStatus(sceneRepairTask, storySourceRevision) : "idle";
-                    const sceneRepairRemainingActions = resolveRepairRemainingActions(
-                      run,
-                      sceneRepairTask,
-                      storySourceRevision,
-                    );
-                    const sceneRepairAffectedSegmentIds = getRepairAffectedSegmentIds(sceneRepairTask);
-                    const sceneHasBusySegmentTask = sceneGroup.segments.some((segment) => {
-                      const segmentSceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
-                      const segmentVideoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
-                      const segmentRepairTask = getLatestSegmentStageTask(run, "project.continuity_repair", segment.segmentId);
-                      return [
-                        getRunStageStatus(segmentSceneTask, storySourceRevision),
-                        getRunStageStatus(segmentVideoTask, storySourceRevision),
-                        getRunStageStatus(segmentRepairTask, storySourceRevision),
-                      ].some((status) => isBusyTaskStatus(status));
-                    });
-                    const canGenerateSceneMaster =
-                      segmentContractsStatus === "completed"
-                      && !isBusyTaskStatus(batchRepairTaskStatus)
-                      && !isBusyTaskStatus(sceneRepairTaskStatus)
-                      && !isBusyTaskStatus(sceneMasterTaskStatus)
-                      && !sceneHasBusySegmentTask;
-                    const canRunSceneRepair =
-                      segmentContractsStatus === "completed"
-                      && Boolean(sceneContinuity?.issue_count)
-                      && !isBusyTaskStatus(batchRepairTaskStatus)
-                      && !isBusyTaskStatus(sceneRepairTaskStatus)
-                      && !isBusyTaskStatus(sceneMasterTaskStatus)
-                      && !sceneHasBusySegmentTask;
-                    const sceneMasterRecommended = hasRecommendedContinuityAction(
-                      sceneContinuity,
-                      "regenerate_scene_master_frame",
-                    ) || sceneRepairRemainingActions.includes("regenerate_scene_master_frame");
-                    return `
-                    <section class="timeline-scene-group">
-                      <div class="timeline-scene-head">
-                        <div>
-                          <p class="section-kicker">Scene</p>
-                          <h4>${escapeHtml(sceneGroup.sceneTitle || sceneGroup.sceneId)}</h4>
-                          <p class="asset-note">
-                            ${escapeHtml(`${sceneGroup.chapterNumber ? `第 ${sceneGroup.chapterNumber} 章 · ` : ""}${sceneGroup.sceneId}`)}
-                          </p>
-                          ${sceneGroup.sceneSummary ? `<p class="timeline-scene-summary">${escapeHtml(sceneGroup.sceneSummary)}</p>` : ""}
-                        </div>
-                        <div class="timeline-scene-actions">
-                          <div class="detail-chip-row">
-                            ${chip(`片段 ${sceneGroup.segments.length}`)}
-                            ${chip(`母图 ${sceneGroup.sceneMasterFrame ? "已生成" : "未生成"}`)}
-                            ${sceneRepairRemainingActions.length ? chip("修复方案已更新") : ""}
-                            ${renderContinuityRiskChips(sceneContinuity)}
-                          </div>
-                          <button
-                            type="button"
-                            class="secondary small"
-                            data-auto-repair-scene="${escapeAttr(sceneGroup.sceneId)}"
-                            data-project-id="${escapeAttr(rootTask.project_id)}"
-                            data-source-task="${escapeAttr(rootTask.task_id)}"
-                            ${canRunSceneRepair ? "" : "disabled"}
-                          >
-                            ${escapeHtml(buildSceneRepairButtonLabel(
-                              sceneRepairTaskStatus,
-                              sceneRepairRemainingActions.length > 0,
-                            ))}
-                          </button>
-                          <button
-                            type="button"
-                            class="secondary small${sceneMasterRecommended ? " recommended-action" : ""}"
-                            data-generate-scene-master="${escapeAttr(sceneGroup.sceneId)}"
-                            data-project-id="${escapeAttr(rootTask.project_id)}"
-                            data-source-task="${escapeAttr(rootTask.task_id)}"
-                            ${canGenerateSceneMaster ? "" : "disabled"}
-                          >
-                            ${escapeHtml(buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus))}
-                          </button>
-                        </div>
-                      </div>
-                      ${renderContinuityIssueList(sceneContinuity)}
-                      ${renderSegmentTaskError(sceneRepairTask, "场景智能修复失败")}
-                      ${renderRepairPlanNotice(sceneRepairTask, sceneRepairRemainingActions)}
-                      <div class="timeline-scene-master">
-                        ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
-                      </div>
-                      ${renderScenePromptPanel(sceneGroup, rootTask)}
-                      ${renderSegmentTaskError(sceneMasterTask, "场景母图失败")}
-                      <div class="timeline-list">
-                        ${sceneGroup.segments
-                .map(
-                  (segment, index) => {
-                    const segmentContinuity = continuitySegmentLookup.get(segment.segmentId) || null;
-                    const sceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
-                    const videoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
-                    const repairTask = getLatestSegmentStageTask(run, "project.continuity_repair", segment.segmentId);
-                    const sceneTaskStatus = run ? getRunStageStatus(sceneTask, storySourceRevision) : "idle";
-                    const videoTaskStatus = run ? getRunStageStatus(videoTask, storySourceRevision) : "idle";
-                    const repairTaskStatus = run ? getRunStageStatus(repairTask, storySourceRevision) : "idle";
-                    const segmentRepairRemainingActions = resolveRepairRemainingActions(
-                      run,
-                      repairTask,
-                      storySourceRevision,
-                    );
-                    const sceneScopeLocked =
-                      isBusyTaskStatus(batchRepairTaskStatus)
-                      || runHasBusyRepairTask
-                      || isBusyTaskStatus(sceneRepairTaskStatus)
-                      || isBusyTaskStatus(sceneMasterTaskStatus);
-                    const segmentRepairLocked = isBusyTaskStatus(repairTaskStatus);
-                    const affectedBySceneRepair = sceneRepairAffectedSegmentIds.has(segment.segmentId);
-                    const canGenerateScene =
-                      characterStatus === "completed"
-                      && !sceneScopeLocked
-                      && !segmentRepairLocked
-                      && !isBusyTaskStatus(sceneTaskStatus)
-                      && !isBusyTaskStatus(videoTaskStatus);
-                    const canGenerateVideo =
-                      segment.sceneReady
-                      && !sceneScopeLocked
-                      && !segmentRepairLocked
-                      && !isBusyTaskStatus(sceneTaskStatus)
-                      && !isBusyTaskStatus(videoTaskStatus);
-                    const canRunRepair =
-                      characterStatus === "completed"
-                      && Boolean(segmentContinuity?.issue_count)
-                      && !sceneScopeLocked
-                      && !isBusyTaskStatus(repairTaskStatus)
-                      && !isBusyTaskStatus(sceneTaskStatus)
-                      && !isBusyTaskStatus(videoTaskStatus);
-                    const sceneRecommended = hasRecommendedContinuityAction(
-                      segmentContinuity,
-                      "regenerate_scene_images",
-                    )
-                      || segmentRepairRemainingActions.includes("regenerate_scene_images")
-                      || (
-                        affectedBySceneRepair
-                        && sceneRepairRemainingActions.includes("regenerate_scene_images")
-                      );
-                    const videoRecommended = hasRecommendedContinuityAction(
-                      segmentContinuity,
-                      "regenerate_video",
-                    )
-                      || segmentRepairRemainingActions.includes("regenerate_video")
-                      || (
-                        affectedBySceneRepair
-                        && sceneRepairRemainingActions.includes("regenerate_video")
-                      );
-                    return `
-                    <article class="timeline-card">
-                      <div class="timeline-card-head">
-                        <span class="timeline-index">${String(index + 1).padStart(2, "0")}</span>
-                        <div>
-                          <h4>${escapeHtml(segment.title || segmentLabel(segment.segmentId, index))}</h4>
-                          <p class="asset-note">
-                            ${escapeHtml(`${segment.chapterNumber ? `第 ${segment.chapterNumber} 章 · ` : ""}${segment.sceneId ? `${segment.sceneId} · ` : ""}${segment.segmentId}${segment.durationSeconds ? ` · ${segment.durationSeconds}s` : ""}`)}
-                          </p>
-                        </div>
-                      </div>
-                      ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
-                      <div class="timeline-preview-grid">
-                        ${renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
-                        ${segment.requiresMidFrame ? renderTimelinePreview(segment.midFrame, "中段", galleryId) : ""}
-                        ${renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
-                        ${renderTimelinePreview(segment.clip, "视频", galleryId)}
-                      </div>
-                      ${renderSegmentPromptPanel(segment, rootTask)}
-                      <div class="timeline-card-footer">
-                        <div class="detail-chip-row">
-                          ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
-                          ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
-                          ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
-                          ${segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
-                          ${affectedBySceneRepair && sceneRepairRemainingActions.length ? chip("场景修复目标") : ""}
-                          ${renderContinuityRiskChips(segmentContinuity)}
-                        </div>
-                        ${renderContinuityIssueList(segmentContinuity)}
-                        <div class="timeline-actions">
-                          <button
-                            type="button"
-                            class="secondary small"
-                            data-auto-repair-segment="${escapeAttr(segment.segmentId)}"
-                            data-project-id="${escapeAttr(rootTask.project_id)}"
-                            data-source-task="${escapeAttr(rootTask.task_id)}"
-                            ${canRunRepair ? "" : "disabled"}
-                          >
-                            ${escapeHtml(buildSegmentRepairButtonLabel(
-                              segment,
-                              repairTaskStatus,
-                              segmentRepairRemainingActions.length > 0,
-                            ))}
-                          </button>
-                          <button
-                            type="button"
-                            class="secondary small${sceneRecommended ? " recommended-action" : ""}"
-                            data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
-                            data-project-id="${escapeAttr(rootTask.project_id)}"
-                            data-source-task="${escapeAttr(rootTask.task_id)}"
-                            ${canGenerateScene ? "" : "disabled"}
-                          >
-                            ${escapeHtml(
-                              canGenerateScene
-                                ? buildSegmentSceneButtonLabel(segment, sceneTaskStatus)
-                                : buildBlockedSceneButtonLabel(segment, sceneTaskStatus, characterStatus),
-                            )}
-                          </button>
-                          <button
-                            type="button"
-                            class="secondary small${videoRecommended ? " recommended-action" : ""}"
-                            data-generate-video-segment="${escapeAttr(segment.segmentId)}"
-                            data-project-id="${escapeAttr(rootTask.project_id)}"
-                            data-source-task="${escapeAttr(rootTask.task_id)}"
-                            ${canGenerateVideo ? "" : "disabled"}
-                          >
-                            ${escapeHtml(buildSegmentVideoButtonLabel(segment, videoTaskStatus))}
-                          </button>
-                        </div>
-                        ${renderSegmentTaskError(repairTask, "智能修复失败")}
-                        ${renderRepairPlanNotice(repairTask, segmentRepairRemainingActions)}
-                        ${canGenerateScene
-                          ? ""
-                          : renderSegmentSceneBlockedNotice({
-                            segment,
-                            characterStatus,
-                            sceneScopeLocked,
-                            segmentRepairLocked,
-                            sceneTaskStatus,
-                            videoTaskStatus,
-                          })}
-                        ${renderSegmentTaskError(sceneTask, "场景图失败")}
-                        ${renderSegmentTaskError(videoTask, "视频失败")}
-                      </div>
-                    </article>
-                  `;
-                  },
-                )
-                .join("")}
-                      </div>
-                    </section>
-                  `;
-                  },
-                )
-                .join("")}
-            </div>
-          `
-          : singleAssetMessage("暂无片段资产", buildArtifactPendingMessage(task, "images", run))
-      }
-    </section>
-  `;
+  return renderTimelineWorkbench({
+    task,
+    artifacts,
+    context,
+    run,
+    helpers: TIMELINE_HELPERS,
+  });
 }
 
 

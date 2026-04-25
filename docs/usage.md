@@ -306,6 +306,7 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
 - 分段审片台支持在首帧 / 中段 / 尾帧 / 视频之间切换当前生成点；Prompt Editor、Request Inspector 和重做按钮只作用于当前选择的一个点
 - `保存 Prompt` 只保存当前计划；`保存并重做当前点` 会先保存当前点 prompt，再只提交当前图片或当前视频任务
+- Request Inspector 会显示当前生成点的 Prompt Diff，对比计划 prompt 与真实提交 prompt，帮助判断问题发生在计划、提交组装还是模型执行阶段
 - 单图重做会通过 `frame_kind=start|mid|end` 只生成当前图片，并保留同一 segment 里的其它图片状态
 - 但如果这次单段生成触发了当前 scene 的 `scene_master_frame`，系统会把同 scene 其它片段任务上的母图状态一起同步，避免后续连续性报告把同一 scene 误判成母图状态不一致
 - 同一 scene 下的多个 segment 会共享同一套 `scene_bible` 基线，场景图 prompt 会显式带入这组约束

@@ -6,6 +6,7 @@ import {
   renderScenePromptPanel,
   renderSegmentPromptPanel,
 } from "./prompt_tools.js";
+import { renderRequestDebugTab as renderRequestDebugWorkbench } from "./request_debug.js";
 import { renderSceneWorkbenchTab as renderSceneWorkbench } from "./scene_workbench.js";
 import { renderSegmentReviewTab as renderSegmentReviewWorkbench } from "./segment_review.js";
 import {
@@ -1011,6 +1012,13 @@ const SCENE_WORKBENCH_HELPERS = {
   resolveRepairRemainingActions,
 };
 
+const REQUEST_DEBUG_HELPERS = {
+  buildArtifactPendingMessage,
+  buildTimelineSegments,
+  renderAssetSectionIntro,
+  renderDocumentBlock,
+};
+
 function renderContinuityRiskChips(group) {
   if (!group || !group.issue_count) {
     return chip("连续性稳定");
@@ -1580,39 +1588,13 @@ function renderSegmentReviewTab(task, artifacts, context, run = null) {
 }
 
 function renderRequestDebugTab(task, artifacts, context, run = null) {
-  if (!artifacts?.available) {
-    return singleAssetMessage("请求与调试", buildArtifactPendingMessage(task, "docs", run));
-  }
-  const segments = buildTimelineSegments(artifacts);
-  const debugDocuments = (artifacts.documents || []).filter((item) => [
-    "character_image_manifest.json",
-    "scene_image_manifest.json",
-    "seedance_manifest.json",
-    "seedream_character_execution.json",
-    "seedream_scene_execution.json",
-    "seedance_execution.json",
-    "continuity_report.json",
-  ].includes(item.name));
-  return `
-    <section class="request-debug-shell">
-      ${renderAssetSectionIntro(
-        "请求与调试",
-        "这里集中查看真实提交参数、参考图绑定顺序、计划 prompt、实际提交 prompt 和执行报告。",
-        [chip(`Segment ${segments.length}`), chip(`调试文件 ${debugDocuments.length}`)].join(""),
-      )}
-      <div class="request-debug-grid">
-        ${segments.map((segment) => `
-          <details class="prompt-panel request-debug-item">
-            <summary>${escapeHtml(segment.segmentId)} · ${escapeHtml(segment.title || "未命名片段")}</summary>
-            <div class="prompt-panel-body">
-              ${renderRequestInspectorPanel(segment)}
-            </div>
-          </details>
-        `).join("")}
-      </div>
-      ${debugDocuments.length ? renderDocumentBlock("调试文件", debugDocuments, "当前媒体链路的 manifest 与执行报告。") : ""}
-    </section>
-  `;
+  return renderRequestDebugWorkbench({
+    task,
+    artifacts,
+    context,
+    run,
+    helpers: REQUEST_DEBUG_HELPERS,
+  });
 }
 
 function renderOverviewTab(task, artifacts, context, run = null) {

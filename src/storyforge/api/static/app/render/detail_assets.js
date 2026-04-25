@@ -714,6 +714,8 @@ function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegm
   }
   const projectId = rootTask?.project_id || state.selectedProjectId || "";
   const sourceTaskId = rootTask?.task_id || "";
+  const isVideo = option.kind === "video";
+  const rerunLabel = isVideo ? "保存并重做视频" : `保存并重做${option.label}`;
   return `
     <section class="prompt-editor-panel" data-segment-prompt-panel="${escapeAttr(segment.segmentId)}">
       <div class="prompt-editor-panel-head">
@@ -722,13 +724,24 @@ function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegm
           <h5>${escapeHtml(option.label)}计划 Prompt</h5>
           <p class="asset-note">这里只修改当前选择的生成点。保存后不会自动开始生图或生视频。</p>
         </div>
-        <button
-          type="button"
-          class="primary-button"
-          data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
-          data-project-id="${escapeAttr(projectId)}"
-          data-source-task="${escapeAttr(sourceTaskId)}"
-        >保存${escapeHtml(option.label)} Prompt</button>
+        <div class="prompt-editor-actions">
+          <button
+            type="button"
+            class="secondary small"
+            data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
+            data-project-id="${escapeAttr(projectId)}"
+            data-source-task="${escapeAttr(sourceTaskId)}"
+          >保存${escapeHtml(option.label)} Prompt</button>
+          <button
+            type="button"
+            class="primary-button small"
+            data-save-and-rerun-segment-prompt="${escapeAttr(segment.segmentId)}"
+            data-project-id="${escapeAttr(projectId)}"
+            data-source-task="${escapeAttr(sourceTaskId)}"
+            data-asset-kind="${escapeAttr(option.kind)}"
+            ${isVideo ? "" : `data-frame-kind="${escapeAttr(option.frameKind)}"`}
+          >${escapeHtml(rerunLabel)}</button>
+        </div>
       </div>
       <div class="prompt-panel-body">
         ${sections.join("")}

@@ -123,6 +123,32 @@ async function submitStageFromButton(
   }
 }
 
+async function submitCurrentSegmentAssetTask(button, { afterSave = false } = {}) {
+  const sourceTaskId = button.dataset.sourceTask;
+  const segmentId = button.dataset.generateVideoSegment
+    || button.dataset.generateSceneSegment
+    || button.dataset.saveSegmentPrompts
+    || button.dataset.saveAndRerunSegmentPrompt;
+  const frameKind = button.dataset.frameKind || "";
+  const isVideo = Boolean(button.dataset.generateVideoSegment) || button.dataset.assetKind === "video";
+  await submitStageFromButton(
+    button,
+    isVideo ? "/v1/projects/videos" : "/v1/projects/scenes",
+    withContinuityReviewMode(sourceTaskId, {
+      project_id: button.dataset.projectId || state.selectedProjectId,
+      source_task_id: sourceTaskId,
+      segment_id: segmentId,
+      ...(!isVideo && frameKind ? { frame_kind: frameKind } : {}),
+    }),
+    afterSave
+      ? (isVideo ? "Prompt 已保存，片段视频任务已创建" : "Prompt 已保存，单图重做任务已创建")
+      : (isVideo ? "片段视频任务已创建" : (frameKind ? "单图重做任务已创建" : "片段场景图任务已创建")),
+    isVideo
+      ? "片段视频任务提交失败。"
+      : (frameKind ? "单图重做任务提交失败。" : "片段场景图任务提交失败。"),
+  );
+}
+
 function withContinuityReviewMode(sourceTaskId, payload) {
   const run = getTaskRun(sourceTaskId);
   return {
@@ -354,19 +380,7 @@ async function handleProjectDetailClick(event) {
 
   const sceneSegmentButton = event.target.closest("[data-generate-scene-segment]");
   if (sceneSegmentButton) {
-    const frameKind = sceneSegmentButton.dataset.frameKind || "";
-    await submitStageFromButton(
-      sceneSegmentButton,
-      "/v1/projects/scenes",
-      withContinuityReviewMode(sceneSegmentButton.dataset.sourceTask, {
-        project_id: sceneSegmentButton.dataset.projectId || state.selectedProjectId,
-        source_task_id: sceneSegmentButton.dataset.sourceTask,
-        segment_id: sceneSegmentButton.dataset.generateSceneSegment,
-        ...(frameKind ? { frame_kind: frameKind } : {}),
-      }),
-      frameKind ? "单图重做任务已创建" : "片段场景图任务已创建",
-      frameKind ? "单图重做任务提交失败。" : "片段场景图任务提交失败。",
-    );
+    await submitCurrentSegmentAssetTask(sceneSegmentButton);
     return;
   }
 
@@ -420,7 +434,13 @@ async function handleProjectDetailClick(event) {
 
   const savePromptButton = event.target.closest("[data-save-segment-prompts]");
   if (savePromptButton) {
-    await saveSegmentPrompts(savePromptButton);
+    await saveSegmentPrompts(savePromptButton, { rerunAfterSave: false });
+    return;
+  }
+
+  const saveAndRerunPromptButton = event.target.closest("[data-save-and-rerun-segment-prompt]");
+  if (saveAndRerunPromptButton) {
+    await saveSegmentPrompts(saveAndRerunPromptButton, { rerunAfterSave: true });
     return;
   }
 
@@ -441,17 +461,7 @@ async function handleProjectDetailClick(event) {
 
   const videoSegmentButton = event.target.closest("[data-generate-video-segment]");
   if (videoSegmentButton) {
-    await submitStageFromButton(
-      videoSegmentButton,
-      "/v1/projects/videos",
-      withContinuityReviewMode(videoSegmentButton.dataset.sourceTask, {
-        project_id: videoSegmentButton.dataset.projectId || state.selectedProjectId,
-        source_task_id: videoSegmentButton.dataset.sourceTask,
-        segment_id: videoSegmentButton.dataset.generateVideoSegment,
-      }),
-      "片段视频任务已创建",
-      "片段视频任务提交失败。",
-    );
+    await submitCurrentSegmentAssetTask(videoSegmentButton);
     return;
   }
 
@@ -510,7 +520,7 @@ async function copyNearestCodeBlock(button) {
   }
 }
 
-async function saveSegmentPrompts(button) {
+async function saveSegmentPrompts(button, { rerunAfterSave = false } = {}) {
   const panel = button.closest("[data-segment-prompt-panel]");
   if (!panel) {
     return;
@@ -526,14 +536,21 @@ async function saveSegmentPrompts(button) {
   try {
     const projectId = button.dataset.projectId || state.selectedProjectId;
     const sourceTaskId = button.dataset.sourceTask;
-    const segmentId = button.dataset.saveSegmentPrompts;
+    const segmentId = button.dataset.saveSegmentPrompts || button.dataset.saveAndRerunSegmentPrompt;
     await updateSegmentPrompts(projectId, sourceTaskId, segmentId, payload);
-    setSubmitStatus(elements.pollIndicator, "Prompt 已保存。需要重新生图或生视频时，请手动点击对应按钮。", true);
-    await refreshTasks();
+    if (rerunAfterSave) {
+      setSubmitStatus(elements.pollIndicator, "Prompt 已保存，正在提交当前生成点重做任务...");
+      await submitCurrentSegmentAssetTask(button, { afterSave: true });
+    } else {
+      setSubmitStatus(elements.pollIndicator, "Prompt 已保存。需要重新生图或生视频时，请手动点击对应按钮。", true);
+      await refreshTasks();
+    }
   } catch (error) {
     setSubmitStatus(elements.pollIndicator, error.message || "Prompt 保存失败。", false);
   } finally {
-    button.disabled = false;
+    if (!rerunAfterSave) {
+      button.disabled = false;
+    }
     button.textContent = originalLabel || "保存 Prompt";
   }
 }

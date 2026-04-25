@@ -1065,6 +1065,19 @@
   align-items: center;
 }
 
+.prompt-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.prompt-editor-actions .small {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
 .prompt-binding-list {
   display: grid;
   gap: 8px;

@@ -2,7 +2,6 @@ import { state } from "../state.js";
 import { findGalleryIndex, registerGallery } from "../gallery.js";
 import {
   normalizeSubmittedRequest,
-  renderPromptSection,
   renderScenePromptPanel,
   renderSegmentPromptPanel,
 } from "./prompt_tools.js";
@@ -36,7 +35,6 @@ import {
   resolveRunContinuityReviewMode,
   singleAssetMessage,
   stageStatusLabel,
-  statusLabel,
 } from "../utils.js";
 
 const DOCUMENT_META = {
@@ -286,83 +284,6 @@ function renderAssetSectionIntro(title, summary, chipsMarkup = "") {
           <p class="asset-note">${escapeHtml(summary)}</p>
         </div>
         ${chipsMarkup ? `<div class="detail-chip-row">${chipsMarkup}</div>` : ""}
-      </div>
-    </article>
-  `;
-}
-
-function renderCharacterPromptPanel(item) {
-  const sections = [
-    renderPromptSection("角色图 Prompt", item.prompt),
-    renderPromptSection("一致性备注", item.consistency_notes, "character_image_manifest.json"),
-  ].filter(Boolean);
-  if (!sections.length) {
-    return "";
-  }
-  return `
-    <details class="prompt-panel">
-      <summary>查看角色图 Prompt / 一致性备注</summary>
-      <div class="prompt-panel-body">
-        ${sections.join("")}
-      </div>
-    </details>
-  `;
-}
-
-function renderMediaCard(item, galleryId) {
-  const index = findGalleryIndex(galleryId, item);
-  const isVideo = item.kind === "video";
-  const preview = isVideo
-    ? `<video controls preload="metadata" src="${item.url}"></video>`
-    : `<img src="${item.url}" alt="${escapeAttr(item.name)}" loading="lazy" />`;
-  const note = isVideo ? "可在预览里继续切换其他视频内容。" : "可在预览里继续切换其他图片内容。";
-  const title = String(item.character_name || item.name || "").trim() || item.name;
-  const metaChips = [
-    item.provider ? chip(String(item.provider).trim()) : "",
-    item.status ? chip(`状态 ${statusLabel(String(item.status).trim())}`) : "",
-  ].filter(Boolean).join("");
-  const characterPromptPanel = renderCharacterPromptPanel(item);
-  const errorNote = String(item.status || "").trim() === "failed"
-    ? String(item.error || "").trim()
-    : "";
-
-  return `
-    <article class="media-card">
-      <button
-        type="button"
-        class="preview-trigger"
-        data-preview-group="${escapeAttr(galleryId)}"
-        data-preview-index="${index}"
-      >
-        ${preview}
-      </button>
-      <div class="asset-meta">
-        <a href="${item.url}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a>
-      </div>
-      ${metaChips ? `<div class="detail-chip-row">${metaChips}</div>` : ""}
-      <p class="asset-note">${note}</p>
-      ${errorNote ? `<p class="asset-note">${escapeHtml(errorNote)}</p>` : ""}
-      ${characterPromptPanel}
-    </article>
-  `;
-}
-
-function renderMediaBlock(title, items, galleryId, summary = "") {
-  if (!items?.length) {
-    return singleAssetMessage(title, "暂无可预览内容。");
-  }
-
-  return `
-    <article class="asset-block">
-      <div class="doc-section-head">
-        <div>
-          <h4>${title}</h4>
-          ${summary ? `<p class="asset-note">${escapeHtml(summary)}</p>` : ""}
-        </div>
-        <span class="doc-section-count">${items.length} 份</span>
-      </div>
-      <div class="media-grid">
-        ${items.map((item) => renderMediaCard(item, galleryId)).join("")}
       </div>
     </article>
   `;
@@ -1287,151 +1208,6 @@ function renderStoryTab(task, context, run = null) {
     run,
     helpers: STORY_STRUCTURE_HELPERS,
   });
-}
-
-function renderDocsTab(task, artifacts, run = null) {
-  if (!artifacts?.available) {
-    return singleAssetMessage("文档暂不可用", buildArtifactPendingMessage(task, "docs", run));
-  }
-
-  if (!artifacts.documents.length) {
-    return singleAssetMessage("文档暂不可用", "当前运行没有额外落盘的文档文件。");
-  }
-
-  const documentGroups = groupDocuments(artifacts.documents);
-
-  return `
-    <section class="story-editor-shell">
-      ${renderAssetSectionIntro(
-        "运行文件面板",
-        "这里只保留当前链路真正会继续消费的源文件，以及每一步的执行报告。",
-        chip(`核心文件 ${artifacts.documents.length}`),
-      )}
-      ${documentGroups.map((group) => renderDocumentBlock(group.title, group.items)).join("")}
-    </section>
-  `;
-}
-
-function renderImagesTab(task, artifacts, context, run = null) {
-  if (!artifacts?.available) {
-    return singleAssetMessage("图片暂不可用", buildArtifactPendingMessage(task, "images", run));
-  }
-  if (
-    run
-    && run.latestTask.task_type === "project.story"
-    && !artifacts.character_images.length
-    && !artifacts.scene_frames.length
-  ) {
-    return singleAssetMessage("图片暂不可用", buildArtifactPendingMessage(task, "images", run));
-  }
-
-  const galleryId = `${context}:images:${task.task_id}`;
-  registerGallery(
-    galleryId,
-    [
-      ...artifacts.character_images.map((item) => ({ ...item, kind: "image" })),
-      ...artifacts.scene_frames.map((item) => ({ ...item, kind: "image" })),
-    ],
-  );
-
-  return `
-    <section class="story-editor-shell">
-      ${renderAssetSectionIntro(
-        "图像资产",
-        "先看角色定妆，再看场景关键帧。当前页面只展示真实参与后续链路的图像资产。",
-        [
-          chip(`角色图 ${artifacts.character_images.length}`),
-          chip(`场景帧 ${artifacts.scene_frames.length}`),
-        ].join(""),
-      )}
-      ${
-        artifacts.character_images.length
-          ? renderMediaBlock(
-            "角色定妆图",
-            artifacts.character_images,
-            galleryId,
-            "角色基准参考图。后续场景关键帧和视频片段都会围绕这组角色外观继续生成。",
-          )
-          : singleAssetMessage("角色定妆图", buildArtifactPendingMessage(task, "characters", run))
-      }
-      ${
-        artifacts.scene_frames.length
-          ? renderMediaBlock(
-            "场景关键帧",
-            artifacts.scene_frames,
-            galleryId,
-            "每个片段的首帧、必要时的中段锚点帧，以及尾帧。它们共同决定镜头连续性、角色位置和空间氛围。",
-          )
-          : singleAssetMessage("场景关键帧", buildArtifactPendingMessage(task, "scenes", run))
-      }
-    </section>
-  `;
-}
-
-function renderVideosTab(task, artifacts, context, run = null) {
-  if (!artifacts?.available) {
-    return singleAssetMessage("视频暂不可用", buildArtifactPendingMessage(task, "videos", run));
-  }
-  if (
-    run
-    && run.latestTask.task_type !== "project.videos"
-    && !artifacts.rendered_clips.length
-    && !artifacts.full_story
-  ) {
-    return singleAssetMessage("视频暂不可用", buildArtifactPendingMessage(task, "videos", run));
-  }
-
-  const galleryId = `${context}:videos:${task.task_id}`;
-  const rootTask = run?.rootTask || task;
-  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
-  const mergeTaskStatus = run ? getRunStageStatus(run.latestMergeTask, storySourceRevision) : "idle";
-  const canMergeVideos = artifacts.rendered_clips.length >= 2 && !["queued", "running"].includes(mergeTaskStatus);
-  registerGallery(
-    galleryId,
-    [
-      ...(artifacts.full_story ? [{ ...artifacts.full_story, kind: "video" }] : []),
-      ...artifacts.rendered_clips.map((item) => ({ ...item, kind: "video" })),
-    ],
-  );
-
-  return `
-    <section class="story-editor-shell">
-      ${renderAssetSectionIntro(
-        "视频资产",
-        "视频片段按 segment 单独生成。总片不再自动合并，需要你手动点击合并按钮决定是否输出完整成片。",
-        [
-          chip(`总片 ${artifacts.full_story ? "已生成" : "未生成"}`),
-          chip(`片段 ${artifacts.rendered_clips.length}`),
-        ].join(""),
-      )}
-      <article class="asset-block video-merge-card">
-        <div class="story-editor-head">
-          <div>
-            <h4>总片合并</h4>
-            <p class="asset-note">会按 seedance_manifest.json 顺序，把当前已经存在本地 mp4 的片段合并成 full_story.mp4。</p>
-          </div>
-          <div class="story-editor-actions">
-            <button
-              type="button"
-              class="secondary"
-              data-merge-videos="${escapeAttr(rootTask.task_id)}"
-              data-project-id="${escapeAttr(rootTask.project_id)}"
-              ${canMergeVideos ? "" : "disabled"}
-            >
-              ${escapeHtml(buildMergeButtonLabel(artifacts, mergeTaskStatus))}
-            </button>
-          </div>
-        </div>
-      </article>
-      ${renderFullStoryBlock(artifacts.full_story, context, galleryId)}
-      ${renderMediaBlock(
-        "视频片段",
-        artifacts.rendered_clips,
-        galleryId,
-        "按 segment 输出的独立片段，可用于逐段审片、比较效果和局部重跑。",
-      )}
-    </section>
-  `;
 }
 
 export function renderRunStageActions(run) {

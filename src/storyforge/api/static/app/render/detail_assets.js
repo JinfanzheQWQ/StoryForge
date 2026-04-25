@@ -809,6 +809,14 @@ function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegm
           <button
             type="button"
             class="secondary small"
+            data-reset-segment-prompt="${escapeAttr(segment.segmentId)}"
+            data-prompt-field="${escapeAttr(option.promptField)}"
+            data-project-id="${escapeAttr(projectId)}"
+            data-source-task="${escapeAttr(sourceTaskId)}"
+          >重置当前点 Prompt</button>
+          <button
+            type="button"
+            class="secondary small"
             data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
             data-project-id="${escapeAttr(projectId)}"
             data-source-task="${escapeAttr(sourceTaskId)}"

@@ -1,5 +1,5 @@
 import { elements } from "./dom.js";
-import { deleteProject, updateSegmentPrompts } from "./api.js";
+import { deleteProject, resetSegmentPrompt, updateSegmentPrompts } from "./api.js";
 import { askProjectDeleteConfirmation } from "./confirm_modal.js";
 import {
   applyBootstrapToForm,
@@ -444,6 +444,12 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const resetPromptButton = event.target.closest("[data-reset-segment-prompt]");
+  if (resetPromptButton) {
+    await resetCurrentSegmentPrompt(resetPromptButton);
+    return;
+  }
+
   const videoButton = event.target.closest("[data-generate-videos]");
   if (videoButton) {
     await submitStageFromButton(
@@ -552,6 +558,30 @@ async function saveSegmentPrompts(button, { rerunAfterSave = false } = {}) {
       button.disabled = false;
     }
     button.textContent = originalLabel || "保存 Prompt";
+  }
+}
+
+async function resetCurrentSegmentPrompt(button) {
+  if (button.disabled) {
+    return;
+  }
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = "重置中...";
+  setSubmitStatus(elements.pollIndicator, "正在重置当前点 Prompt...");
+  try {
+    const projectId = button.dataset.projectId || state.selectedProjectId;
+    const sourceTaskId = button.dataset.sourceTask;
+    const segmentId = button.dataset.resetSegmentPrompt;
+    const field = button.dataset.promptField;
+    await resetSegmentPrompt(projectId, sourceTaskId, segmentId, field);
+    setSubmitStatus(elements.pollIndicator, "当前点 Prompt 已重置为系统默认值。", true);
+    await refreshTasks();
+  } catch (error) {
+    setSubmitStatus(elements.pollIndicator, error.message || "Prompt 重置失败。", false);
+    button.disabled = false;
+  } finally {
+    button.textContent = originalLabel || "重置当前点 Prompt";
   }
 }
 

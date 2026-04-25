@@ -231,6 +231,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
   - 手动合并总片
 - 分段审片台把 Prompt Editor 和 Request Inspector 分离，并按当前选择的首帧 / 中段 / 尾帧 / 视频单点展示 prompt、实际 payload、图片顺序和提交记录
 - Prompt Editor 支持显式“保存并重做当前点”：先保存当前首帧 / 中段 / 尾帧 / 视频 prompt，再只提交当前点对应的单图或单段视频任务
+- Prompt Editor 支持重置当前点 prompt：重新按当前合同组装系统默认 prompt 并回写计划，不自动提交媒体任务
 - Request Inspector 已提供 Prompt Diff，用于对比当前计划 prompt 与真实提交 prompt 的长度和差异片段
 - 场景工作台已提供 scene 级修复 / 重生成母图入口，并展示场景基准、过渡合同、母图状态以及同一 scene 下各 segment 的首帧、中段、尾帧、视频和风险状态
 - Request Inspector 已展示规划诊断，包括动作点 / 动作预算、时长、timed_beats 覆盖、中段触发、子段拆分和 continuity_report 来源
@@ -282,12 +283,12 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 ### 第一优先级
 
 1. 请求调试 Inspector：继续补充 API 错误归类。
-2. Prompt 编辑器增强：支持重置。
+2. Prompt 编辑器增强：补充计划 prompt 与默认 prompt 的差异提示。
 3. 场景工作台：继续增强 scene 级筛选、批量操作和母图重跑后的状态解释。
 
 ### 第二优先级
 
-1. Prompt 编辑器增强：重置当前点 prompt。
+1. Prompt 编辑器增强：默认 prompt 对比和重置确认体验。
 2. 保存并重跑：保存 prompt 后可选择直接重生成对应图片或视频。
 3. 批量筛选和批量操作：按 scene、风险、图片状态、视频状态、prompt 是否人工修改过滤。
 4. 为 `scene_master_frame` 增加更强的评估与重生成闭环。

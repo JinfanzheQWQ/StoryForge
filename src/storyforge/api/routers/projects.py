@@ -15,6 +15,7 @@ from storyforge.api.schemas import (
     CreateStoryTaskRequest,
     JobAcceptedResponse,
     ProjectDeletedResponse,
+    ResetSegmentPromptRequest,
     SegmentPromptUpdateResponse,
     ProjectDetailResponse,
     ProjectSummaryResponse,
@@ -26,7 +27,10 @@ from storyforge.application.tasks import utc_now
 from storyforge.application.project_deletion import delete_project_output_dirs
 from storyforge.application.task_support import resolve_pipeline_root_task_id
 from storyforge.core.io import read_json, write_json
+from storyforge.core.config import SeedanceConfig
 from storyforge.domains.novel.contracts import DraftChapter, StorySourcePackage
+from storyforge.domains.video.contracts import VideoScene, VideoSegment
+from storyforge.domains.video.service import NovelToVideoService
 from storyforge.pipelines.story_files import (
     clear_story_derived_artifacts,
     prune_story_derived_result,
@@ -65,6 +69,83 @@ def _normalize_prompt_updates(payload: UpdateSegmentPromptRequest) -> dict[str, 
     if not updates:
         raise HTTPException(status_code=422, detail="至少需要提交一个 prompt 字段。")
     return updates
+
+
+def _load_segment_prompt_target(output_dir: Path, segment_id: str) -> tuple[list[dict[str, object]], dict[str, object]]:
+    path = output_dir / "segment_plan.json"
+    plan = _load_json_file(path, [])
+    if not isinstance(plan, list):
+        raise HTTPException(status_code=400, detail="segment_plan.json 格式无效。")
+    for item in plan:
+        if isinstance(item, dict) and str(item.get("segment_id", "")) == segment_id:
+            return plan, item
+    raise HTTPException(status_code=404, detail=f"Segment {segment_id} not found in segment_plan.json")
+
+
+def _load_scene_prompt_target(output_dir: Path, scene_id: str) -> VideoScene | None:
+    path = output_dir / "scene_plan.json"
+    plan = _load_json_file(path, {"scenes": []})
+    scenes = plan.get("scenes") if isinstance(plan, dict) else None
+    if not isinstance(scenes, list):
+        return None
+    for item in scenes:
+        if isinstance(item, dict) and str(item.get("scene_id", "")) == scene_id:
+            return VideoScene.from_dict(item)
+    return None
+
+
+def _build_prompt_reset_service(container) -> NovelToVideoService:
+    return NovelToVideoService(
+        seedance_config=SeedanceConfig(
+            model=container.config.seedance.model,
+            base_url=container.config.seedance.base_url,
+            with_audio=container.config.seedance.with_audio,
+            subtitle_mode=container.config.seedance.subtitle_mode,
+            subtitle_style=container.config.seedance.subtitle_style,
+        )
+    )
+
+
+def _build_default_segment_prompt(output_dir: Path, segment_id: str, field: str, container) -> tuple[str, str]:
+    _plan, raw_segment = _load_segment_prompt_target(output_dir, segment_id)
+    segment = VideoSegment.from_dict(raw_segment)
+    service = _build_prompt_reset_service(container)
+    if field == "video_prompt":
+        scene = _load_scene_prompt_target(output_dir, segment.scene_id)
+        return service._build_seedance_clip_prompt(segment, scene=scene), segment.scene_id
+
+    frame_specs = {
+        "start_frame_prompt": (
+            segment.start_frame_prompt,
+            service._normalize_frame_character_list(segment.start_frame_characters, segment.involved_characters),
+            "首帧",
+        ),
+        "mid_frame_prompt": (
+            segment.mid_frame_prompt or service._build_default_mid_frame_prompt(segment),
+            service._normalize_frame_character_list(segment.mid_frame_characters, segment.involved_characters),
+            "中段锚点帧",
+        ),
+        "end_frame_prompt": (
+            segment.end_frame_prompt,
+            service._normalize_frame_character_list(segment.end_frame_characters, segment.involved_characters),
+            "尾帧",
+        ),
+    }
+    prompt, frame_characters, frame_type = frame_specs[field]
+    if field == "mid_frame_prompt" and not segment.requires_mid_frame:
+        raise HTTPException(status_code=422, detail="当前 segment 不需要中段 Prompt。")
+    return (
+        service._stylize_frame_prompt(
+            prompt,
+            frame_characters,
+            frame_type,
+            involved_characters=segment.involved_characters,
+            scene_bible=segment.scene_bible,
+            shot_state=segment.shot_state,
+            continuity_link=segment.continuity_link,
+        ),
+        segment.scene_id,
+    )
 
 
 def _update_segment_plan_prompts(output_dir: Path, segment_id: str, updates: dict[str, str]) -> tuple[set[str], str]:
@@ -905,6 +986,41 @@ async def update_segment_prompts(
         source_task_id=source_task_id,
         segment_id=segment_id,
         updated_fields=sorted(updated_fields),
+    )
+
+
+@router.post(
+    "/{project_id}/segment-prompts/{source_task_id}/{segment_id}/reset",
+    response_model=SegmentPromptUpdateResponse,
+)
+async def reset_segment_prompt(
+    project_id: str,
+    source_task_id: str,
+    segment_id: str,
+    payload: ResetSegmentPromptRequest,
+    request: Request,
+) -> SegmentPromptUpdateResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    output_dir = _output_dir(source_task)
+    prompt, scene_id = _build_default_segment_prompt(
+        output_dir,
+        segment_id,
+        payload.field,
+        container,
+    )
+    updates = {payload.field: prompt}
+    updated_fields, resolved_scene_id = _update_segment_plan_prompts(output_dir, segment_id, updates)
+    scene_id = resolved_scene_id or scene_id
+    updated_fields.update(_update_scene_image_manifest_prompts(output_dir, segment_id, scene_id, updates))
+    updated_fields.update(_update_seedance_manifest_prompt(output_dir, segment_id, updates.get("video_prompt")))
+    return SegmentPromptUpdateResponse(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        segment_id=segment_id,
+        updated_fields=sorted(updated_fields),
+        reset_field=payload.field,
+        prompt=prompt,
     )
 
 

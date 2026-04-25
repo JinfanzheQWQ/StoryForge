@@ -218,6 +218,32 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+#### `POST /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}/reset`
+
+重置当前 segment 的单个媒体 prompt。接口会基于当前 segment 合同重新组装系统默认 prompt 并回写计划文件，不会自动提交 Seedream 或 Seedance。
+
+请求字段：
+
+- `field`：只能是 `start_frame_prompt / mid_frame_prompt / end_frame_prompt / video_prompt`
+
+落盘规则：
+
+- 图片 prompt 会回写 `segment_plan.json` 与 `scene_image_manifest.json`
+- 视频 prompt 会回写 `segment_plan.json` 与 `seedance_manifest.json`，并清空该段旧视频提交状态和本地旧 mp4
+
+响应示例：
+
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "task-id",
+  "segment_id": "ch01-sc01-seg01",
+  "updated_fields": ["video_prompt"],
+  "reset_field": "video_prompt",
+  "prompt": "请生成带原生音频的中文剧情短视频片段..."
+}
+```
+
 #### `POST /v1/projects/segment-contracts`
 
 创建“生成分段合同”任务。

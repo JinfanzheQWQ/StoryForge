@@ -133,11 +133,17 @@ class UpdateSegmentPromptRequest(BaseModel):
     video_prompt: str | None = None
 
 
+class ResetSegmentPromptRequest(BaseModel):
+    field: Literal["start_frame_prompt", "mid_frame_prompt", "end_frame_prompt", "video_prompt"]
+
+
 class SegmentPromptUpdateResponse(BaseModel):
     project_id: str
     source_task_id: str
     segment_id: str
     updated_fields: list[str] = Field(default_factory=list)
+    reset_field: str = ""
+    prompt: str = ""
 
 
 class ProjectDeletedResponse(BaseModel):

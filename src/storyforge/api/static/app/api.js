@@ -101,6 +101,18 @@ export async function updateSegmentPrompts(projectId, sourceTaskId, segmentId, p
   return response.json();
 }
 
+export async function resetSegmentPrompt(projectId, sourceTaskId, segmentId, field) {
+  const response = await fetch(`/v1/projects/${projectId}/segment-prompts/${sourceTaskId}/${segmentId}/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ field }),
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
 export async function fetchTaskArtifacts(taskId) {
   const response = await fetch(`/v1/tasks/${taskId}/artifacts`);
   if (!response.ok) {

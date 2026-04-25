@@ -1263,6 +1263,227 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(clip["downloaded_path"], "")
                 self.assertFalse(old_clip_path.exists())
 
+    def test_reset_segment_prompt_rebuilds_current_media_prompt(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {
+                "title_hint": "Prompt 重置测试",
+                "idea": "学生在松树公园入口等待告白。",
+                "genre": "青春",
+                "tone": "电影感",
+                "target_audience": "成年读者",
+                "chapter_count": 1,
+                "total_word_target": 1200,
+                "must_include": ["松树公园"],
+                "style_keywords": ["黄昏"],
+            }
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                (output_dir / "story_source.json").write_text(
+                    json.dumps({"brief": brief, "title": "Prompt 重置测试", "chapters": []}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                segment_id = "ch01-sc01-seg01"
+                scene_id = "ch01-sc01"
+                scene_bible = {
+                    "location": "松树公园入口",
+                    "time_window": "黄昏",
+                    "weather": "晴朗",
+                    "lighting": "夕阳侧光",
+                    "dominant_palette": ["暖金色", "松绿色"],
+                    "background_anchors": ["松树", "石板路"],
+                    "fixed_props": ["入口石柱"],
+                    "spatial_layout": "入口石柱在画面右侧，石板路向松林深处延伸",
+                    "character_blocking": "林屿站在入口处等待",
+                    "continuity_notes": "夕阳方向稳定",
+                }
+                segment_payload = {
+                    "segment_id": segment_id,
+                    "chapter_number": 1,
+                    "scene_id": scene_id,
+                    "scene_title": "入口等待",
+                    "scene_summary": "林屿在公园入口等待苏晚。",
+                    "scene_anchor": "松树公园入口黄昏",
+                    "title": "等待",
+                    "summary": "林屿等待苏晚出现。",
+                    "involved_characters": ["林屿"],
+                    "start_frame_characters": ["林屿"],
+                    "mid_frame_characters": [],
+                    "end_frame_characters": ["林屿"],
+                    "narration": "",
+                    "dialogue_lines": [],
+                    "subtitle_lines": [],
+                    "sound_effects": ["微风声"],
+                    "music_direction": "青春电影感配乐",
+                    "timed_beats": ["0-3秒：林屿站在入口处等待", "3-6秒：林屿抬头看向远处"],
+                    "start_frame_prompt": "林屿站在入口处等待",
+                    "mid_frame_prompt": "",
+                    "end_frame_prompt": "林屿抬头看向远处",
+                    "duration_seconds": 6,
+                    "requires_mid_frame": False,
+                    "scene_bible": scene_bible,
+                    "shot_state": {
+                        "framing": "中景",
+                        "camera_motion": "固定镜头",
+                        "blocking": "林屿站在入口处",
+                        "action_progression": "等待到抬头",
+                        "emotion_progression": "紧张到期待",
+                        "prop_continuity": "无道具",
+                        "screen_direction": "看向画面左侧",
+                        "end_state_lock": "林屿抬头看向远处",
+                    },
+                    "continuity_link": {
+                        "previous_segment_id": "",
+                        "transition_mode": "start",
+                        "opening_match": "",
+                        "carry_over_elements": [],
+                        "allowed_changes": "",
+                        "transition_reason": "起始段",
+                    },
+                }
+                (output_dir / "scene_plan.json").write_text(
+                    json.dumps(
+                        {
+                            "scenes": [
+                                {
+                                    "scene_id": scene_id,
+                                    "chapter_number": 1,
+                                    "title": "入口等待",
+                                    "summary": "林屿在公园入口等待苏晚。",
+                                    "scene_anchor": "松树公园入口黄昏",
+                                    "involved_characters": ["林屿"],
+                                    "scene_bible": scene_bible,
+                                    "segments": [segment_payload],
+                                    "scene_master_frame_prompt": "空场景母图",
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                (output_dir / "segment_plan.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                **segment_payload,
+                                "start_frame_prompt": "手动改坏首帧",
+                                "video_prompt": "手动改坏视频",
+                            }
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                (output_dir / "scene_image_manifest.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "segment_id": segment_id,
+                                "scene_id": scene_id,
+                                "scene_master_frame_prompt": "空场景母图",
+                                "start_frame_prompt": "手动改坏首帧",
+                                "mid_frame_prompt": "",
+                                "end_frame_prompt": "林屿抬头看向远处",
+                            }
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                rendered_dir = output_dir / "rendered"
+                rendered_dir.mkdir(parents=True, exist_ok=True)
+                old_clip_path = rendered_dir / f"{segment_id}.mp4"
+                old_clip_path.write_bytes(b"old mp4")
+                (output_dir / "seedance_manifest.json").write_text(
+                    json.dumps(
+                        {
+                            "clips": [
+                                {
+                                    "segment_id": segment_id,
+                                    "prompt": "手动改坏视频",
+                                    "submitted_prompt": "旧提交视频",
+                                    "submitted_request_info": {"payload": {"content": []}},
+                                    "submitted_reference_bindings": [{"label": "图片1"}],
+                                    "submit_status": "submitted",
+                                    "remote_status": "succeeded",
+                                    "remote_task_id": "task-old",
+                                    "video_url": "https://example.invalid/old.mp4",
+                                    "cover_url": "https://example.invalid/old.jpg",
+                                    "downloaded_path": str(old_clip_path),
+                                    "output_path": str(old_clip_path),
+                                }
+                            ]
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "Prompt 重置测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "segment_contracts_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                start_response = client.post(
+                    f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
+                    json={"field": "start_frame_prompt"},
+                )
+                self.assertEqual(start_response.status_code, 200)
+                self.assertEqual(start_response.json()["reset_field"], "start_frame_prompt")
+                self.assertIn("图片1是空场景参考图", start_response.json()["prompt"])
+
+                segment_plan = json.loads((output_dir / "segment_plan.json").read_text(encoding="utf-8"))
+                scene_manifest = json.loads((output_dir / "scene_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(segment_plan[0]["start_frame_prompt"], start_response.json()["prompt"])
+                self.assertEqual(scene_manifest[0]["start_frame_prompt"], start_response.json()["prompt"])
+
+                video_response = client.post(
+                    f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
+                    json={"field": "video_prompt"},
+                )
+                self.assertEqual(video_response.status_code, 200)
+                self.assertEqual(video_response.json()["reset_field"], "video_prompt")
+                self.assertIn("请生成带原生音频的中文剧情短视频片段", video_response.json()["prompt"])
+
+                seedance_manifest = json.loads((output_dir / "seedance_manifest.json").read_text(encoding="utf-8"))
+                clip = seedance_manifest["clips"][0]
+                self.assertEqual(clip["prompt"], video_response.json()["prompt"])
+                self.assertEqual(clip["submitted_prompt"], "")
+                self.assertEqual(clip["submitted_request_info"], {})
+                self.assertEqual(clip["submitted_reference_bindings"], [])
+                self.assertEqual(clip["submit_status"], "planned")
+                self.assertEqual(clip["remote_status"], "planned")
+                self.assertFalse(old_clip_path.exists())
+
+                mid_response = client.post(
+                    f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
+                    json={"field": "mid_frame_prompt"},
+                )
+                self.assertEqual(mid_response.status_code, 422)
+
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
     @patch("storyforge.application.task_handlers.run_video_render_pipeline")

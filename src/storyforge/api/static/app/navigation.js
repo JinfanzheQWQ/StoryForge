@@ -6,6 +6,9 @@ import { refreshSelectedProjectDetail, refreshSelectedStorySources } from "./ref
 export async function selectProject(projectId) {
   state.selectedProjectId = projectId;
   state.projectDetailTab = "overview";
+  state.selectedSegmentId = "";
+  state.segmentReviewFilter = "all";
+  state.selectedSegmentAssetKind = "start";
   state.currentPage = "project-detail";
   await refreshSelectedProjectDetail();
   await refreshSelectedStorySources();

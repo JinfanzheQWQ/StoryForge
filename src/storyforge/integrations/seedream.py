@@ -75,6 +75,7 @@ class SeedreamClient:
         project_package: VideoProjectPackage,
         force_submit: bool = False,
         segment_ids: set[str] | None = None,
+        frame_kind: str | None = None,
     ) -> SeedreamExecutionReport:
         preflight = self._build_preflight_report(force_submit=force_submit)
         if preflight is not None:
@@ -145,8 +146,9 @@ class SeedreamClient:
                     project_package.character_images,
                     scene_map,
                     scene_lookup,
+                    frame_kind=frame_kind,
                 )
-                generated_count += self._planned_scene_frame_count(task) if success else 0
+                generated_count += self._planned_scene_frame_count(task, frame_kind=frame_kind) if success else 0
                 failed_count += int(not success)
 
         self._apply_scene_urls_to_seedance_manifest(project_package)
@@ -282,6 +284,8 @@ class SeedreamClient:
         character_images: list[CharacterImageTask],
         scene_map: dict[str, SceneImageTask],
         scene_lookup: dict[str, VideoScene],
+        *,
+        frame_kind: str | None = None,
     ) -> bool:
         task.status = "running"
         try:
@@ -293,8 +297,17 @@ class SeedreamClient:
                 else []
             )
             reference_urls = self._resolve_reference_urls(task.reference_images, character_images)
-            start_frame_url = self._resolve_continuity_start_frame(task, scene_map)
-            if start_frame_url:
+            existing_start_frame_url = task.start_frame_url
+            existing_mid_frame_url = task.mid_frame_url
+            existing_end_frame_url = task.end_frame_url
+            generate_start_frame = frame_kind in (None, "start")
+            generate_mid_frame = frame_kind in (None, "mid")
+            generate_end_frame = frame_kind in (None, "end")
+
+            start_frame_url = existing_start_frame_url
+            if generate_start_frame:
+                start_frame_url = self._resolve_continuity_start_frame(task, scene_map)
+            if generate_start_frame and start_frame_url:
                 task.start_frame_request_info = {
                     "provider": task.provider,
                     "variant": "reuse_previous_end_frame",
@@ -313,7 +326,7 @@ class SeedreamClient:
                     ],
                 }
                 self._materialize_reused_start_frame(task, scene_map, client, start_frame_url)
-            else:
+            elif generate_start_frame:
                 start_temporal_anchor_urls = self._resolve_start_temporal_anchor_urls(
                     task,
                     scene_map,
@@ -336,9 +349,8 @@ class SeedreamClient:
                     reference_bindings=start_reference_bindings,
                 )
 
-            mid_frame_url = ""
-            task.mid_frame_request_info = {}
-            if task.requires_mid_frame and task.mid_frame_prompt.strip():
+            mid_frame_url = existing_mid_frame_url
+            if generate_mid_frame and task.requires_mid_frame and task.mid_frame_prompt.strip():
                 mid_frame_references, mid_frame_bindings = self._build_frame_reference_bundle(
                     temporal_anchor_urls=[start_frame_url] if start_frame_url else [],
                     scene_master_reference_urls=scene_master_reference_urls,
@@ -357,36 +369,38 @@ class SeedreamClient:
                     reference_bindings=mid_frame_bindings,
                 )
 
-            end_frame_references, end_frame_bindings = self._build_frame_reference_bundle(
-                temporal_anchor_urls=(
-                    [mid_frame_url]
-                    if mid_frame_url
-                    else ([start_frame_url] if start_frame_url else [])
-                ),
-                scene_master_reference_urls=scene_master_reference_urls,
-                frame_character_names=task.end_frame_characters,
-                character_images=character_images,
-                fallback_urls=reference_urls,
-            )
-            self._last_request_info = {}
-            end_frame_url = self._create_image(
-                client,
-                prompt=task.end_frame_prompt,
-                reference_images=end_frame_references,
-            )
-            task.end_frame_request_info = self._snapshot_last_request_info(
-                provider=task.provider,
-                reference_bindings=end_frame_bindings,
-            )
+            end_frame_url = existing_end_frame_url
+            if generate_end_frame:
+                end_frame_references, end_frame_bindings = self._build_frame_reference_bundle(
+                    temporal_anchor_urls=(
+                        [mid_frame_url]
+                        if mid_frame_url
+                        else ([start_frame_url] if start_frame_url else [])
+                    ),
+                    scene_master_reference_urls=scene_master_reference_urls,
+                    frame_character_names=task.end_frame_characters,
+                    character_images=character_images,
+                    fallback_urls=reference_urls,
+                )
+                self._last_request_info = {}
+                end_frame_url = self._create_image(
+                    client,
+                    prompt=task.end_frame_prompt,
+                    reference_images=end_frame_references,
+                )
+                task.end_frame_request_info = self._snapshot_last_request_info(
+                    provider=task.provider,
+                    reference_bindings=end_frame_bindings,
+                )
             task.start_frame_url = start_frame_url
-            task.mid_frame_url = mid_frame_url
+            task.mid_frame_url = mid_frame_url if task.requires_mid_frame else ""
             task.end_frame_url = end_frame_url
             task.status = "completed"
-            if self.config.download_outputs and start_frame_url and not task.reuse_previous_end_frame:
+            if self.config.download_outputs and generate_start_frame and start_frame_url and not task.reuse_previous_end_frame:
                 self._download_image(client, start_frame_url, Path(task.start_frame_path))
-            if self.config.download_outputs and mid_frame_url and task.mid_frame_path:
+            if self.config.download_outputs and generate_mid_frame and mid_frame_url and task.mid_frame_path:
                 self._download_image(client, mid_frame_url, Path(task.mid_frame_path))
-            if self.config.download_outputs and end_frame_url:
+            if self.config.download_outputs and generate_end_frame and end_frame_url:
                 self._download_image(client, end_frame_url, Path(task.end_frame_path))
             return True
         except Exception as exc:
@@ -842,7 +856,9 @@ class SeedreamClient:
                     merged.append(url)
         return merged
 
-    def _planned_scene_frame_count(self, task: SceneImageTask) -> int:
+    def _planned_scene_frame_count(self, task: SceneImageTask, *, frame_kind: str | None = None) -> int:
+        if frame_kind in {"start", "mid", "end"}:
+            return 1
         return 3 if task.requires_mid_frame else 2
 
     def _build_preflight_report(

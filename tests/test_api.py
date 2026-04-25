@@ -480,6 +480,13 @@ class ApiTestCase(unittest.TestCase):
             self.assertIsInstance(artifacts["continuity_segment_groups"], list)
 
             first_planned_segment = artifacts["planned_segments"][0]
+            self.assertIn("scene_anchor", first_planned_segment)
+            self.assertIn("scene_bible", first_planned_segment)
+            self.assertIn("scene_transition_contract", first_planned_segment)
+            self.assertIn("scene_master_frame_status", first_planned_segment)
+            self.assertIn("scene_master_frame_error", first_planned_segment)
+            self.assertIn("covered_event_ids", first_planned_segment)
+            self.assertIn("covered_event_summaries", first_planned_segment)
             self.assertIn("scene_master_frame_prompt", first_planned_segment)
             self.assertIn("start_frame_prompt", first_planned_segment)
             self.assertIn("end_frame_prompt", first_planned_segment)
@@ -487,6 +494,10 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("submitted_video_prompt", first_planned_segment)
             self.assertIn("seedance_motion_prompt", first_planned_segment)
             self.assertIn("motion_plan", first_planned_segment)
+            self.assertIn("diagnostics", first_planned_segment)
+            self.assertIn("action_node_count", first_planned_segment["diagnostics"])
+            self.assertIn("action_node_budget", first_planned_segment["diagnostics"])
+            self.assertIn("risk_types", first_planned_segment["diagnostics"])
             self.assertIn("submitted_prompt_variant", first_planned_segment)
             self.assertIn("submitted_reference_bindings", first_planned_segment)
             self.assertIn("scene_master_frame_request", first_planned_segment)
@@ -810,6 +821,26 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
             self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedream.watermark)
             self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedance.watermark)
+
+            frame_response = client.post(
+                "/v1/projects/scenes",
+                json={
+                    "project_id": project_id,
+                    "source_task_id": source_task_id,
+                    "segment_id": segment_id,
+                    "frame_kind": "start",
+                },
+            )
+            self.assertEqual(frame_response.status_code, 202)
+            frame_task_id = frame_response.json()["task_id"]
+            frame_task = self._wait_for_completion(client, frame_task_id)
+            self.assertEqual(frame_task["status"], "completed")
+            self.assertEqual(frame_task["payload"]["segment_id"], segment_id)
+            self.assertEqual(frame_task["payload"]["frame_kind"], "start")
+            self.assertEqual(frame_task["result"]["segment_id"], segment_id)
+            self.assertEqual(frame_task["result"]["frame_kind"], "start")
+            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
+            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["frame_kind"], "start")
 
             video_response = client.post(
                 "/v1/projects/videos",
@@ -1760,6 +1791,25 @@ class ApiTestCase(unittest.TestCase):
                 },
             )
             self.assertEqual(response.status_code, 422)
+
+            invalid_frame_scope_cases = [
+                {"frame_kind": "start"},
+                {"segment_id": "seg-01", "scene_id": "scene-01", "frame_kind": "start"},
+                {"segment_id": "seg-01", "master_only": True, "frame_kind": "start"},
+                {"segment_id": "seg-01", "merge_only": True, "frame_kind": "start"},
+                {"segment_id": "seg-01", "frame_kind": "poster"},
+            ]
+            for extra_payload in invalid_frame_scope_cases:
+                with self.subTest(extra_payload=extra_payload):
+                    invalid_frame_response = client.post(
+                        "/v1/projects/scenes",
+                        json={
+                            "project_id": "demo-project",
+                            "source_task_id": "demo-task",
+                            **extra_payload,
+                        },
+                    )
+                    self.assertEqual(invalid_frame_response.status_code, 422)
 
     def test_continuity_repair_job_rejects_invalid_scope(self) -> None:
         config_path = self._create_test_config()

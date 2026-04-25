@@ -304,6 +304,8 @@ style_keywords = ["台风", "潮湿", "霓虹", "监控画面"]
 - 如果 `scene_bible.fixed_props` 里混入了手机、书包、雨伞、花束、信封这类人物随身或临时动作道具，母图与 scene 级环境上下文会在运行时剔除，避免把这类道具误画成地上的环境摆件
 - 即使上游 `scene_bible` 很弱，`scene_master_frame` 也会优先回填地点、时间、光线、空间布局和背景锚点，并尽量补固定道具与主色调，避免母图退化成泛化场景
 - 单段生成只更新该片段对应的首帧 / 中段锚点帧 / 尾帧，不会重跑其它片段
+- 分段审片台支持在首帧 / 中段 / 尾帧 / 视频之间切换当前生成点；Prompt Editor、Request Inspector 和重做按钮只作用于当前选择的一个点
+- 单图重做会通过 `frame_kind=start|mid|end` 只生成当前图片，并保留同一 segment 里的其它图片状态
 - 但如果这次单段生成触发了当前 scene 的 `scene_master_frame`，系统会把同 scene 其它片段任务上的母图状态一起同步，避免后续连续性报告把同一 scene 误判成母图状态不一致
 - 同一 scene 下的多个 segment 会共享同一套 `scene_bible` 基线，场景图 prompt 会显式带入这组约束
 - 当前帧 prompt 会按 `start_frame_characters / mid_frame_characters / end_frame_characters` 做 frame-scoped 净化：未出镜角色、错误服装 / 发型覆盖描述会在运行时被剔除，避免把别的角色或错误定妆带进单帧

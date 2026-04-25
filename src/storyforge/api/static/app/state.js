@@ -16,6 +16,9 @@ export const state = {
   selectedProjectId: null,
   selectedProjectTaskId: null,
   projectDetailTab: "overview",
+  selectedSegmentId: "",
+  segmentReviewFilter: "all",
+  selectedSegmentAssetKind: "start",
   runContinuityReviewModes: new Map(),
   artifactsByTaskId: new Map(),
   artifactVersionByTaskId: new Map(),
@@ -25,9 +28,9 @@ export const state = {
 };
 
 export const DETAIL_TABS = [
-  { id: "overview", label: "时间线" },
-  { id: "story", label: "小说" },
-  { id: "images", label: "素材库" },
-  { id: "videos", label: "成片" },
-  { id: "docs", label: "文件" },
+  { id: "overview", label: "生产总览" },
+  { id: "story", label: "正文与结构" },
+  { id: "scenes", label: "场景工作台" },
+  { id: "segments", label: "分段审片台" },
+  { id: "debug", label: "请求与调试" },
 ];

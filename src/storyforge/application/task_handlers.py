@@ -373,6 +373,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     )
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
+    frame_kind = str(task.payload.get("frame_kind", "")).strip() or None
     master_only = bool(task.payload.get("master_only", False))
     runtime_config = _build_runtime_config(
         context.config,
@@ -403,6 +404,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         submit_scenes=True,
         segment_id=segment_id,
         scene_id=scene_id,
+        frame_kind=frame_kind,
         master_only=master_only,
         continuity_review_mode=continuity_review_mode,
         llm_provider=llm_provider,
@@ -1013,6 +1015,9 @@ def _build_stage_response(
     segment_id = str(task.payload.get("segment_id", "")).strip()
     if segment_id:
         response["segment_id"] = segment_id
+    frame_kind = str(task.payload.get("frame_kind", "")).strip()
+    if frame_kind:
+        response["frame_kind"] = frame_kind
     scene_id = str(task.payload.get("scene_id", "")).strip()
     if scene_id:
         response["scene_id"] = scene_id

@@ -302,7 +302,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 {
   "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "source_task_id": "story-task-id",
-  "segment_id": "ch01_seg01"
+  "segment_id": "ch01_seg01",
+  "frame_kind": "start"
 }
 ```
 
@@ -321,9 +322,11 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - `segment_id` 可选
 - `scene_id` 可选
+- `frame_kind` 可选，只能和 `segment_id` 一起使用，取值为 `start / mid / end`
 - `master_only` 可选
 - 不传时表示对当前 run 执行整批场景图任务
 - 传入后表示只生成单个 segment 的首帧 / 中段锚点帧 / 尾帧
+- 传入 `segment_id + frame_kind` 时，只重做该 segment 对应的一张图片，并保留该 segment 内其它图片状态
 - 传入 `scene_id + master_only = true` 时，只会重生成该 scene 的 `scene_master_frame`
 - `master_only = true` 不能与 `segment_id` 同时提交，也必须配合 `scene_id`
 - 该模式会重新调用 Seedream 并把结果回写到 `scene_plan.json` 与 `scene_image_manifest.json`
@@ -560,6 +563,13 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `scene_id`
 - `scene_title`
 - `scene_summary`
+- `scene_anchor`
+- `scene_bible`
+- `scene_transition_contract`
+- `scene_master_frame_status`
+- `scene_master_frame_error`
+- `covered_event_ids`
+- `covered_event_summaries`
 - `scene_master_frame`
 - `scene_master_frame_prompt`
 - `start_frame_prompt`

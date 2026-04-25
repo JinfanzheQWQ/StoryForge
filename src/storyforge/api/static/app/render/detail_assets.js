@@ -417,6 +417,16 @@ function normalizeSubmittedRequest(request) {
   };
 }
 
+function renderCopyButton(label = "复制") {
+  return `
+    <button
+      type="button"
+      class="copy-code-button"
+      data-copy-nearest-code
+    >${escapeHtml(label)}</button>
+  `;
+}
+
 function renderPromptSection(title, promptText, note = "") {
   const normalized = String(promptText || "").trim();
   if (!normalized) {
@@ -426,7 +436,10 @@ function renderPromptSection(title, promptText, note = "") {
     <section class="prompt-section">
       <div class="prompt-section-head">
         <strong>${escapeHtml(title)}</strong>
-        ${note ? `<span>${escapeHtml(note)}</span>` : ""}
+        <span class="prompt-section-tools">
+          ${note ? `<span>${escapeHtml(note)}</span>` : ""}
+          ${renderCopyButton()}
+        </span>
       </div>
       <pre class="prompt-code">${escapeHtml(normalized)}</pre>
     </section>
@@ -539,7 +552,10 @@ function renderSubmittedRequest(title, request, emptyNote = "提交后可见") {
     <section class="prompt-section">
       <div class="prompt-section-head">
         <strong>${escapeHtml(title)}</strong>
-        <span>${escapeHtml(meta)}</span>
+        <span class="prompt-section-tools">
+          <span>${escapeHtml(meta)}</span>
+          ${hasPayload ? renderCopyButton("复制 JSON") : ""}
+        </span>
       </div>
       ${renderSubmittedReferenceBindings(bindings, "本次实际使用图片", "按真实请求顺序展示")}
       ${hasPayload ? `<pre class="prompt-code">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>` : ""}
@@ -589,55 +605,211 @@ function renderScenePromptPanel(sceneGroup, rootTask) {
   `;
 }
 
-function renderSegmentPromptPanel(segment, rootTask) {
-  const hasMidFrame = Boolean(segment.requiresMidFrame);
-  const editableSections = [
-    renderEditablePromptSection("首帧 Prompt", segment.startFramePrompt, "start_frame_prompt", segment.segmentId),
-    hasMidFrame
-      ? renderEditablePromptSection("中段 Prompt", segment.midFramePrompt, "mid_frame_prompt", segment.segmentId, "中段锚点帧")
-      : "",
-    renderEditablePromptSection("尾帧 Prompt", segment.endFramePrompt, "end_frame_prompt", segment.segmentId),
-    renderEditablePromptSection("视频 Prompt（可修改）", segment.videoPrompt, "video_prompt", segment.segmentId, "保存后该段旧视频会失效，需要手动重跑视频"),
-  ].filter(Boolean);
-  const readonlySections = [
-    renderSubmittedRequest("首帧实际提交参数", segment.startFrameRequest, "首帧提交后可见"),
-    hasMidFrame ? renderSubmittedRequest("中段实际提交参数", segment.midFrameRequest, "中段提交后可见") : "",
-    renderSubmittedRequest("尾帧实际提交参数", segment.endFrameRequest, "尾帧提交后可见"),
-    renderMotionPlanSection(segment.motionPlan),
-    renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
-    renderPromptSection(
-      "视频实际提交 Prompt",
-      segment.submittedVideoPrompt,
-      segment.submittedPromptVariant
-        ? `提交策略：${segment.submittedPromptVariant}`
-        : "视频提交后可见",
+function getSegmentAssetOptions(segment) {
+  return [
+    {
+      kind: "start",
+      label: "首帧",
+      promptTitle: "首帧 Prompt",
+      promptField: "start_frame_prompt",
+      promptText: segment.startFramePrompt,
+      requestTitle: "首帧实际提交参数",
+      request: segment.startFrameRequest,
+      frameKind: "start",
+      ready: Boolean(segment.startFrame),
+    },
+    ...(segment.requiresMidFrame ? [{
+      kind: "mid",
+      label: "中段",
+      promptTitle: "中段 Prompt",
+      promptField: "mid_frame_prompt",
+      promptText: segment.midFramePrompt,
+      requestTitle: "中段实际提交参数",
+      request: segment.midFrameRequest,
+      frameKind: "mid",
+      ready: Boolean(segment.midFrame),
+    }] : []),
+    {
+      kind: "end",
+      label: "尾帧",
+      promptTitle: "尾帧 Prompt",
+      promptField: "end_frame_prompt",
+      promptText: segment.endFramePrompt,
+      requestTitle: "尾帧实际提交参数",
+      request: segment.endFrameRequest,
+      frameKind: "end",
+      ready: Boolean(segment.endFrame),
+    },
+    {
+      kind: "video",
+      label: "视频",
+      promptTitle: "视频 Prompt",
+      promptField: "video_prompt",
+      promptText: segment.videoPrompt,
+      requestTitle: "视频实际提交参数",
+      request: segment.videoRequest,
+      ready: Boolean(segment.videoReady),
+    },
+  ];
+}
+
+function resolveSelectedSegmentAssetOption(segment) {
+  const options = getSegmentAssetOptions(segment);
+  return options.find((option) => option.kind === state.selectedSegmentAssetKind) || options[0];
+}
+
+function renderSegmentAssetSelector(segment, selectedOption) {
+  return `
+    <div class="segment-asset-selector" role="tablist" aria-label="选择当前生成点">
+      ${getSegmentAssetOptions(segment).map((option) => `
+        <button
+          type="button"
+          class="segment-asset-tab${option.kind === selectedOption.kind ? " is-active" : ""}"
+          data-select-segment-asset-kind="${escapeAttr(option.kind)}"
+          aria-selected="${option.kind === selectedOption.kind ? "true" : "false"}"
+        >
+          <span>${escapeHtml(option.label)}</span>
+          <small>${escapeHtml(option.ready ? "已生成" : "待生成")}</small>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function buildSegmentEditablePromptSections(segment, option = resolveSelectedSegmentAssetOption(segment)) {
+  return [
+    renderEditablePromptSection(
+      option.promptTitle,
+      option.promptText,
+      option.promptField,
+      segment.segmentId,
+      option.kind === "video" ? "保存后该段旧视频会失效，需要手动重跑视频" : "保存后手动重做当前图片生效",
     ),
-    renderSubmittedRequest("视频实际提交参数", segment.videoRequest, "视频提交后可见"),
-    segment.videoRequest ? "" : renderSubmittedReferenceBindings(segment.submittedReferenceBindings),
   ].filter(Boolean);
-  const sections = [...editableSections, ...readonlySections];
+}
+
+function buildSegmentRequestInspectorSections(segment, option = resolveSelectedSegmentAssetOption(segment)) {
+  if (option.kind === "video") {
+    return [
+      renderMotionPlanSection(segment.motionPlan),
+      renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
+      renderPromptSection(
+        "视频实际提交 Prompt",
+        segment.submittedVideoPrompt,
+        segment.submittedPromptVariant
+          ? `提交策略：${segment.submittedPromptVariant}`
+          : "视频提交后可见",
+      ),
+      renderSubmittedRequest(option.requestTitle, option.request, "视频提交后可见"),
+      option.request ? "" : renderSubmittedReferenceBindings(segment.submittedReferenceBindings),
+    ].filter(Boolean);
+  }
+  return [renderSubmittedRequest(option.requestTitle, option.request, `${option.label}提交后可见`)].filter(Boolean);
+}
+
+function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegmentAssetOption(segment)) {
+  const sections = buildSegmentEditablePromptSections(segment, option);
   if (!sections.length) {
     return "";
   }
   const projectId = rootTask?.project_id || state.selectedProjectId || "";
   const sourceTaskId = rootTask?.task_id || "";
   return `
-    <details class="prompt-panel" data-segment-prompt-panel="${escapeAttr(segment.segmentId)}">
-      <summary>查看 / 修改本段图片与视频 Prompt / 请求参数</summary>
+    <section class="prompt-editor-panel" data-segment-prompt-panel="${escapeAttr(segment.segmentId)}">
+      <div class="prompt-editor-panel-head">
+        <div>
+          <p class="section-kicker">Prompt Editor</p>
+          <h5>${escapeHtml(option.label)}计划 Prompt</h5>
+          <p class="asset-note">这里只修改当前选择的生成点。保存后不会自动开始生图或生视频。</p>
+        </div>
+        <button
+          type="button"
+          class="primary-button"
+          data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
+          data-project-id="${escapeAttr(projectId)}"
+          data-source-task="${escapeAttr(sourceTaskId)}"
+        >保存${escapeHtml(option.label)} Prompt</button>
+      </div>
       <div class="prompt-panel-body">
         ${sections.join("")}
-        ${editableSections.length ? `
-          <div class="prompt-edit-actions">
-            <button
-              type="button"
-              class="primary-button"
-              data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
-              data-project-id="${escapeAttr(projectId)}"
-              data-source-task="${escapeAttr(sourceTaskId)}"
-            >保存 Prompt</button>
-            <span class="asset-note">只保存当前计划，不会自动开始生图或生视频。</span>
-          </div>
-        ` : ""}
+      </div>
+    </section>
+  `;
+}
+
+
+function renderSegmentDiagnosticsPanel(segment) {
+  const diagnostics = segment?.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {};
+  if (!Object.keys(diagnostics).length) {
+    return "";
+  }
+  const riskTypes = Array.isArray(diagnostics.risk_types) ? diagnostics.risk_types : [];
+  const rows = [
+    ["动作点", `${diagnostics.action_node_count ?? "-"} / ${diagnostics.action_node_budget ?? "-"}`],
+    ["时长", diagnostics.duration_seconds ? `${diagnostics.duration_seconds}s` : "-"],
+    ["节拍", `${diagnostics.timed_beat_count ?? 0} 拍`],
+    ["节拍覆盖", diagnostics.timed_beat_end_seconds != null ? `${diagnostics.timed_beat_end_seconds}s` : "未解析"],
+    ["尾部留空", diagnostics.missing_tail_seconds != null ? `${diagnostics.missing_tail_seconds}s` : "-"],
+    ["中段", diagnostics.requires_mid_frame ? `需要 · ${diagnostics.mid_frame_mode || "continuous"}` : "不需要"],
+    ["子段", `${diagnostics.subsegment_index || 1}/${diagnostics.subsegment_count || 1}`],
+    ["来源", diagnostics.repair_source || "planner"],
+  ];
+  return `
+    <section class="segment-diagnostics-panel">
+      <div class="prompt-editor-panel-head">
+        <div>
+          <p class="section-kicker">Planning Diagnostics</p>
+          <h5>规划诊断</h5>
+          <p class="asset-note">根据当前 segment_plan 和 continuity_report 生成，用来解释动作预算、时长、节拍覆盖和修复来源。</p>
+        </div>
+        <span class="matrix-state ${diagnostics.status === "warning" ? "missing" : "ok"}">${diagnostics.status === "warning" ? "需留意" : "稳定"}</span>
+      </div>
+      ${riskTypes.length ? `<div class="detail-chip-row">${riskTypes.map((item) => chip(item)).join("")}</div>` : ""}
+      <div class="segment-diagnostics-grid">
+        ${rows.map(([label, value]) => `
+          <article>
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(String(value))}</strong>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderRequestInspectorPanel(segment, option = resolveSelectedSegmentAssetOption(segment)) {
+  const sections = buildSegmentRequestInspectorSections(segment, option);
+  return `
+    <section class="request-inspector-panel">
+      <div class="prompt-editor-panel-head">
+        <div>
+          <p class="section-kicker">Request Inspector</p>
+          <h5>${escapeHtml(option.label)}实际请求</h5>
+          <p class="asset-note">这里只显示当前选择生成点的 payload、参考图顺序和实际提交记录。</p>
+        </div>
+      </div>
+      <div class="prompt-panel-body">
+        ${renderSegmentDiagnosticsPanel(segment)}
+        ${sections.length ? sections.join("") : `<p class="asset-note">该片段还没有实际提交请求。</p>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderSegmentPromptPanel(segment, rootTask) {
+  const option = resolveSelectedSegmentAssetOption(segment);
+  const sections = [
+    renderPromptEditorPanel(segment, rootTask, option),
+    renderRequestInspectorPanel(segment, option),
+  ].filter(Boolean);
+  if (!sections.length) {
+    return "";
+  }
+  return `
+    <details class="prompt-panel">
+      <summary>查看 / 修改本段 Prompt 与请求参数</summary>
+      <div class="prompt-panel-body">
+        ${sections.join("")}
       </div>
     </details>
   `;
@@ -650,6 +822,15 @@ function buildTimelineSegments(artifacts) {
       sceneId: segment.scene_id || "",
       sceneTitle: segment.scene_title || "",
       sceneSummary: segment.scene_summary || "",
+      sceneAnchor: segment.scene_anchor || "",
+      sceneBible: segment.scene_bible && typeof segment.scene_bible === "object" ? segment.scene_bible : {},
+      sceneTransitionContract: segment.scene_transition_contract && typeof segment.scene_transition_contract === "object"
+        ? segment.scene_transition_contract
+        : {},
+      sceneMasterFrameStatus: segment.scene_master_frame_status || "",
+      sceneMasterFrameError: segment.scene_master_frame_error || "",
+      coveredEventIds: Array.isArray(segment.covered_event_ids) ? segment.covered_event_ids : [],
+      coveredEventSummaries: Array.isArray(segment.covered_event_summaries) ? segment.covered_event_summaries : [],
       title: segment.title || segmentLabel(segment.segment_id, index),
       summary: segment.summary || "",
       chapterNumber: segment.chapter_number,
@@ -670,6 +851,7 @@ function buildTimelineSegments(artifacts) {
       submittedVideoPrompt: segment.submitted_video_prompt || "",
       seedanceMotionPrompt: segment.seedance_motion_prompt || "",
       motionPlan: segment.motion_plan && typeof segment.motion_plan === "object" ? segment.motion_plan : {},
+      diagnostics: segment.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {},
       submittedPromptVariant: segment.submitted_prompt_variant || "",
       sceneMasterFrameRequest: normalizeSubmittedRequest(segment.scene_master_frame_request),
       startFrameRequest: normalizeSubmittedRequest(segment.start_frame_request),
@@ -694,6 +876,13 @@ function buildTimelineSegments(artifacts) {
           sceneId: "",
           sceneTitle: "",
           sceneSummary: "",
+          sceneAnchor: "",
+          sceneBible: {},
+          sceneTransitionContract: {},
+          sceneMasterFrameStatus: "",
+          sceneMasterFrameError: "",
+          coveredEventIds: [],
+          coveredEventSummaries: [],
         title: segmentId,
         summary: "",
         chapterNumber: 0,
@@ -706,6 +895,7 @@ function buildTimelineSegments(artifacts) {
         clip: null,
         seedanceMotionPrompt: "",
         motionPlan: {},
+        diagnostics: {},
         sceneReady: false,
         videoReady: false,
       });
@@ -753,6 +943,13 @@ function buildSceneGroups(segments) {
         sceneId,
         sceneTitle: segment.sceneTitle || `场景 ${sceneMap.size + 1}`,
         sceneSummary: segment.sceneSummary || "",
+        sceneAnchor: segment.sceneAnchor || "",
+        sceneBible: segment.sceneBible || {},
+        sceneTransitionContract: segment.sceneTransitionContract || {},
+        sceneMasterFrameStatus: segment.sceneMasterFrameStatus || "",
+        sceneMasterFrameError: segment.sceneMasterFrameError || "",
+        coveredEventIds: segment.coveredEventIds || [],
+        coveredEventSummaries: segment.coveredEventSummaries || [],
         chapterNumber: segment.chapterNumber || 0,
         sceneMasterFrame: segment.sceneMasterFrame || null,
         sceneMasterFramePrompt: segment.sceneMasterFramePrompt || "",
@@ -768,6 +965,27 @@ function buildSceneGroups(segments) {
     }
     if (!sceneMap.get(sceneId).sceneMasterFrameRequest && segment.sceneMasterFrameRequest) {
       sceneMap.get(sceneId).sceneMasterFrameRequest = segment.sceneMasterFrameRequest;
+    }
+    if (!sceneMap.get(sceneId).sceneAnchor && segment.sceneAnchor) {
+      sceneMap.get(sceneId).sceneAnchor = segment.sceneAnchor;
+    }
+    if (!Object.keys(sceneMap.get(sceneId).sceneBible || {}).length && Object.keys(segment.sceneBible || {}).length) {
+      sceneMap.get(sceneId).sceneBible = segment.sceneBible;
+    }
+    if (!Object.keys(sceneMap.get(sceneId).sceneTransitionContract || {}).length && Object.keys(segment.sceneTransitionContract || {}).length) {
+      sceneMap.get(sceneId).sceneTransitionContract = segment.sceneTransitionContract;
+    }
+    if (!sceneMap.get(sceneId).sceneMasterFrameStatus && segment.sceneMasterFrameStatus) {
+      sceneMap.get(sceneId).sceneMasterFrameStatus = segment.sceneMasterFrameStatus;
+    }
+    if (!sceneMap.get(sceneId).sceneMasterFrameError && segment.sceneMasterFrameError) {
+      sceneMap.get(sceneId).sceneMasterFrameError = segment.sceneMasterFrameError;
+    }
+    if (!sceneMap.get(sceneId).coveredEventIds.length && segment.coveredEventIds?.length) {
+      sceneMap.get(sceneId).coveredEventIds = segment.coveredEventIds;
+    }
+    if (!sceneMap.get(sceneId).coveredEventSummaries.length && segment.coveredEventSummaries?.length) {
+      sceneMap.get(sceneId).coveredEventSummaries = segment.coveredEventSummaries;
     }
     sceneMap.get(sceneId).segments.push(segment);
   });
@@ -1148,6 +1366,117 @@ function buildContinuityLookup(groups, keyField) {
 
 function hasRecommendedContinuityAction(group, action) {
   return Boolean(group?.recommended_actions?.includes(action));
+}
+
+function hasTextValue(value) {
+  if (Array.isArray(value)) {
+    return value.some((item) => String(item || "").trim());
+  }
+  return Boolean(String(value || "").trim());
+}
+
+function renderSceneInfoRows(rows) {
+  const normalizedRows = rows
+    .map(([label, value]) => [label, Array.isArray(value) ? value.filter(Boolean).join("、") : value])
+    .filter(([, value]) => hasTextValue(value));
+  if (!normalizedRows.length) {
+    return `<p class="asset-note">暂无结构化信息。</p>`;
+  }
+  return `
+    <div class="scene-info-grid">
+      ${normalizedRows.map(([label, value]) => `
+        <article>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(String(value || ""))}</strong>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderSceneBaselinePanel(sceneGroup) {
+  const bible = sceneGroup?.sceneBible || {};
+  return `
+    <section class="scene-info-panel">
+      <div class="prompt-section-head">
+        <strong>场景基准</strong>
+        <span>后续关键帧必须沿用</span>
+      </div>
+      ${sceneGroup.sceneAnchor ? `<p class="asset-note">${escapeHtml(sceneGroup.sceneAnchor)}</p>` : ""}
+      ${renderSceneInfoRows([
+        ["地点", bible.location],
+        ["时间", bible.time_window],
+        ["天气", bible.weather],
+        ["光线", bible.lighting],
+        ["主色", bible.dominant_palette],
+        ["背景锚点", bible.background_anchors],
+        ["固定道具", bible.fixed_props],
+        ["空间布局", bible.spatial_layout],
+        ["角色调度", bible.character_blocking],
+        ["连续性", bible.continuity_notes],
+      ])}
+      ${sceneGroup.coveredEventSummaries?.length ? `
+        <div class="scene-event-strip">
+          ${sceneGroup.coveredEventSummaries.map((item) => chip(item)).join("")}
+        </div>
+      ` : ""}
+    </section>
+  `;
+}
+
+function renderSceneTransitionPanel(sceneGroup) {
+  const contract = sceneGroup?.sceneTransitionContract || {};
+  const hasContract = Object.values(contract).some((value) => hasTextValue(value));
+  return `
+    <section class="scene-info-panel">
+      <div class="prompt-section-head">
+        <strong>过渡合同</strong>
+        <span>scene 到 scene 的承接要求</span>
+      </div>
+      ${hasContract ? renderSceneInfoRows([
+        ["模式", contract.transition_mode],
+        ["上一场景", contract.previous_scene_id],
+        ["上一场退出", contract.previous_scene_exit_state],
+        ["本场开场匹配", contract.next_scene_entry_match],
+        ["桥接动作", contract.bridge_action],
+        ["视觉桥", contract.visual_bridge],
+        ["声音桥", contract.audio_bridge],
+        ["方向策略", contract.screen_direction_policy],
+        ["承接元素", contract.carry_over_elements],
+        ["聚焦秒数", contract.transition_focus_seconds ? `${contract.transition_focus_seconds}s` : ""],
+      ]) : `<p class="asset-note">首个 scene 或当前 scene 不需要跨场过渡合同。</p>`}
+    </section>
+  `;
+}
+
+function renderSceneMasterRiskPanel(sceneGroup, sceneContinuity, sceneMasterTask) {
+  const issues = (sceneContinuity?.issues || []).filter((issue) => {
+    const text = [
+      issue.code,
+      issue.message,
+      issue.recommended_action,
+      issue.recommended_action_label,
+    ].filter(Boolean).join(" ");
+    return text.includes("scene_master_frame") || text.includes("场景母图") || text.includes("母图");
+  });
+  const masterIssueGroup = issues.length ? { ...sceneContinuity, issues, issue_count: issues.length } : null;
+  const status = sceneGroup.sceneMasterFrameStatus || (sceneGroup.sceneMasterFrame ? "ready" : "planned");
+  return `
+    <section class="scene-info-panel scene-master-risk-panel">
+      <div class="prompt-section-head">
+        <strong>母图状态</strong>
+        <span>空环境基准图</span>
+      </div>
+      <div class="detail-chip-row">
+        ${chip(`状态 ${status || "planned"}`)}
+        ${sceneGroup.sceneMasterFrame ? chip("母图已生成") : chip("母图未生成")}
+      </div>
+      <p class="asset-note">场景母图应是无角色环境基准图。若画面出现人物、文字、水印或空间关系错误，请单独重生成场景母图。</p>
+      ${sceneGroup.sceneMasterFrameError ? `<p class="asset-note">${escapeHtml(sceneGroup.sceneMasterFrameError)}</p>` : ""}
+      ${renderContinuityIssueList(masterIssueGroup, "当前没有专门指向场景母图的风险。")}
+      ${renderSegmentTaskError(sceneMasterTask, "场景母图失败")}
+    </section>
+  `;
 }
 
 function renderContinuityRiskChips(group) {
@@ -1631,6 +1960,533 @@ function renderTimelineTab(task, artifacts, context, run = null) {
           `
           : singleAssetMessage("暂无片段资产", buildArtifactPendingMessage(task, "images", run))
       }
+    </section>
+  `;
+}
+
+
+function renderWorkbenchOverviewTab(task, artifacts, context, run = null) {
+  const segments = buildTimelineSegments(artifacts);
+  const sceneGroups = buildSceneGroups(segments);
+  const readySceneCount = segments.filter((segment) => segment.sceneReady).length;
+  const readyVideoCount = segments.filter((segment) => segment.videoReady).length;
+  const highRiskCount = Number(artifacts?.continuity_summary?.high_risk_count || 0);
+  const mediumRiskCount = Number(artifacts?.continuity_summary?.medium_risk_count || 0);
+  const nextAction = (() => {
+    if (!run) {
+      return buildOverviewNote(task, artifacts, run);
+    }
+    const rootTask = run.rootTask || task;
+    const storySourceRevision = getStorySourceRevision(rootTask);
+    const sceneStructureStatus = getRunStageStatus(run.latestSceneStructureTask, storySourceRevision);
+    const segmentContractsStatus = getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision);
+    const characterStatus = getRunStageStatus(run.latestCharacterTask, storySourceRevision);
+    if (sceneStructureStatus !== "completed") {
+      return "下一步：进入正文与结构，生成或重生成场景结构。";
+    }
+    if (segmentContractsStatus !== "completed") {
+      return "下一步：进入正文与结构，生成分段合同。";
+    }
+    if (characterStatus !== "completed") {
+      return "下一步：生成角色定妆图。";
+    }
+    if (segments.length && readySceneCount < segments.length) {
+      return "下一步：进入场景工作台或分段审片台，补齐缺失的场景关键帧。";
+    }
+    if (segments.length && readyVideoCount < segments.length) {
+      return "下一步：进入分段审片台，逐段生成或重生成视频。";
+    }
+    if (readyVideoCount >= 2 && !artifacts?.full_story) {
+      return "下一步：检查视频片段后手动合并总片。";
+    }
+    return "当前版本主链路已就绪，可以继续审片、修 prompt 或合并总片。";
+  })();
+
+  return `
+    <section class="workbench-overview-shell">
+      <article class="asset-block workbench-command-card">
+        <div>
+          <p class="section-kicker">Command Center</p>
+          <h4>生产总览</h4>
+          <p class="asset-note">${escapeHtml(nextAction)}</p>
+        </div>
+        <div class="detail-metrics">
+          ${metricCard("Scene", String(sceneGroups.length))}
+          ${metricCard("Segment", String(segments.length))}
+          ${metricCard("场景图", segments.length ? `${readySceneCount}/${segments.length}` : "0/0")}
+          ${metricCard("视频", segments.length ? `${readyVideoCount}/${segments.length}` : "0/0")}
+          ${metricCard("高风险", String(highRiskCount))}
+          ${metricCard("中风险", String(mediumRiskCount))}
+        </div>
+      </article>
+      ${run ? renderRunStageActions(run) : ""}
+      ${renderContinuityOverview(artifacts?.continuity_summary)}
+      ${renderFullStoryBlock(artifacts?.full_story, context)}
+    </section>
+  `;
+}
+
+
+function renderSceneSegmentMatrix(sceneGroup, segmentContinuityLookup = new Map()) {
+  if (!sceneGroup?.segments?.length) {
+    return "";
+  }
+  return `
+    <div class="scene-segment-matrix">
+      <div class="scene-segment-matrix-head">
+        <span>Segment</span>
+        <span>首帧</span>
+        <span>中段</span>
+        <span>尾帧</span>
+        <span>视频</span>
+        <span>风险</span>
+      </div>
+      ${sceneGroup.segments.map((segment) => {
+        const issue = segmentContinuityLookup.get(segment.segmentId) || null;
+        const midState = segment.requiresMidFrame ? (segment.midFrame ? "OK" : "缺") : "无";
+        const riskText = Number(issue?.high_risk_count || 0)
+          ? `高 ${issue.high_risk_count}`
+          : Number(issue?.medium_risk_count || 0)
+            ? `中 ${issue.medium_risk_count}`
+            : issue?.issue_count
+              ? `低 ${issue.issue_count}`
+              : "稳定";
+        return `
+          <article class="scene-segment-matrix-row">
+            <strong>${escapeHtml(segment.segmentId)}</strong>
+            <span class="matrix-state ${segment.startFrame ? "ok" : "missing"}">${segment.startFrame ? "OK" : "缺"}</span>
+            <span class="matrix-state ${midState === "OK" || midState === "无" ? "ok" : "missing"}">${escapeHtml(midState)}</span>
+            <span class="matrix-state ${segment.endFrame ? "ok" : "missing"}">${segment.endFrame ? "OK" : "缺"}</span>
+            <span class="matrix-state ${segment.videoReady ? "ok" : "missing"}">${segment.videoReady ? "OK" : "缺"}</span>
+            <span class="matrix-risk ${issue?.high_risk_count ? "high" : issue?.medium_risk_count ? "medium" : ""}">${escapeHtml(riskText)}</span>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderSceneWorkbenchActions({ sceneGroup, rootTask, sceneContinuity, sceneMasterTaskStatus, sceneRepairTaskStatus, canGenerateSceneMaster, canRunSceneRepair, sceneMasterRecommended, sceneRepairRemainingActions }) {
+  return `
+    <div class="scene-workbench-action-panel">
+      <div class="detail-chip-row">
+        ${chip(`片段 ${sceneGroup.segments.length}`)}
+        ${chip(`母图 ${sceneGroup.sceneMasterFrame ? "已生成" : "未生成"}`)}
+        ${sceneRepairRemainingActions.length ? chip("修复方案已更新") : ""}
+        ${renderContinuityRiskChips(sceneContinuity)}
+      </div>
+      <div class="timeline-actions">
+        <button
+          type="button"
+          class="secondary small"
+          data-auto-repair-scene="${escapeAttr(sceneGroup.sceneId)}"
+          data-project-id="${escapeAttr(rootTask.project_id)}"
+          data-source-task="${escapeAttr(rootTask.task_id)}"
+          ${canRunSceneRepair ? "" : "disabled"}
+        >${escapeHtml(buildSceneRepairButtonLabel(sceneRepairTaskStatus, sceneRepairRemainingActions.length > 0))}</button>
+        <button
+          type="button"
+          class="secondary small${sceneMasterRecommended ? " recommended-action" : ""}"
+          data-generate-scene-master="${escapeAttr(sceneGroup.sceneId)}"
+          data-project-id="${escapeAttr(rootTask.project_id)}"
+          data-source-task="${escapeAttr(rootTask.task_id)}"
+          ${canGenerateSceneMaster ? "" : "disabled"}
+        >${escapeHtml(buildSceneMasterButtonLabel(sceneGroup, sceneMasterTaskStatus))}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSceneWorkbenchTab(task, artifacts, context, run = null) {
+  if (!artifacts?.available) {
+    return singleAssetMessage("场景工作台", buildArtifactPendingMessage(task, "images", run));
+  }
+  const segments = buildTimelineSegments(artifacts);
+  const sceneGroups = buildSceneGroups(segments);
+  const galleryId = `${context}:scenes:${task.task_id}`;
+  registerGallery(galleryId, buildTimelineGalleryItems(artifacts));
+  if (!sceneGroups.length) {
+    return singleAssetMessage("场景工作台", "当前版本还没有可展示的 scene。请先生成分段合同。");
+  }
+  const continuitySceneLookup = buildContinuityLookup(artifacts?.continuity_scene_groups, "scene_id");
+  const continuitySegmentLookup = buildContinuityLookup(artifacts?.continuity_segment_groups, "segment_id");
+  const rootTask = run?.rootTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
+  const segmentContractsStatus = run ? getRunStageStatus(run.latestSegmentContractsTask, storySourceRevision) : "idle";
+  const batchRepairTask = getLatestBatchRepairTask(run);
+  const batchRepairTaskStatus = run ? getRunStageStatus(batchRepairTask, storySourceRevision) : "idle";
+  return `
+    <section class="scene-workbench-shell">
+      ${renderAssetSectionIntro(
+        "场景工作台",
+        "这里按 scene 管理空场景母图、场景风险和同场景下的片段关键帧。场景母图应优先作为无角色环境基准图。",
+        [chip(`Scene ${sceneGroups.length}`), chip(`Segment ${segments.length}`)].join(""),
+      )}
+      <div class="scene-workbench-grid">
+        ${sceneGroups.map((sceneGroup) => {
+          const sceneContinuity = continuitySceneLookup.get(sceneGroup.sceneId) || null;
+          const sceneMasterTask = getLatestSceneMasterTask(run, sceneGroup.sceneId);
+          const sceneRepairTask = getLatestSceneRepairTask(run, sceneGroup.sceneId);
+          const sceneMasterTaskStatus = run ? getRunStageStatus(sceneMasterTask, storySourceRevision) : "idle";
+          const sceneRepairTaskStatus = run ? getRunStageStatus(sceneRepairTask, storySourceRevision) : "idle";
+          const sceneRepairRemainingActions = resolveRepairRemainingActions(run, sceneRepairTask, storySourceRevision);
+          const canGenerateSceneMaster =
+            segmentContractsStatus === "completed"
+            && !isBusyTaskStatus(batchRepairTaskStatus)
+            && !isBusyTaskStatus(sceneRepairTaskStatus)
+            && !isBusyTaskStatus(sceneMasterTaskStatus);
+          const canRunSceneRepair =
+            segmentContractsStatus === "completed"
+            && Boolean(sceneContinuity?.issue_count)
+            && !isBusyTaskStatus(batchRepairTaskStatus)
+            && !isBusyTaskStatus(sceneRepairTaskStatus)
+            && !isBusyTaskStatus(sceneMasterTaskStatus);
+          const sceneMasterRecommended = hasRecommendedContinuityAction(sceneContinuity, "regenerate_scene_master_frame")
+            || sceneRepairRemainingActions.includes("regenerate_scene_master_frame");
+          return `
+            <article class="asset-block scene-workbench-card">
+              <div class="story-editor-head">
+                <div>
+                  <p class="section-kicker">${escapeHtml(sceneGroup.sceneId)}</p>
+                  <h4>${escapeHtml(sceneGroup.sceneTitle || sceneGroup.sceneId)}</h4>
+                  ${sceneGroup.sceneSummary ? `<p class="asset-note">${escapeHtml(sceneGroup.sceneSummary)}</p>` : ""}
+                </div>
+                ${renderSceneWorkbenchActions({
+                  sceneGroup,
+                  rootTask,
+                  sceneContinuity,
+                  sceneMasterTaskStatus,
+                  sceneRepairTaskStatus,
+                  canGenerateSceneMaster,
+                  canRunSceneRepair,
+                  sceneMasterRecommended,
+                  sceneRepairRemainingActions,
+                })}
+              </div>
+              <div class="scene-workbench-master-row">
+                ${renderTimelinePreview(sceneGroup.sceneMasterFrame, "场景母图", galleryId)}
+                <div>
+                  ${renderSceneBaselinePanel(sceneGroup)}
+                  ${renderSceneTransitionPanel(sceneGroup)}
+                  ${renderSceneMasterRiskPanel(sceneGroup, sceneContinuity, sceneMasterTask)}
+                  ${renderScenePromptPanel(sceneGroup, rootTask)}
+                  ${renderContinuityIssueList(sceneContinuity, "当前 scene 没有连续性风险。")}
+                  ${renderSegmentTaskError(sceneRepairTask, "场景智能修复失败")}
+                  ${renderRepairPlanNotice(sceneRepairTask, sceneRepairRemainingActions)}
+                </div>
+              </div>
+              ${renderSceneSegmentMatrix(sceneGroup, continuitySegmentLookup)}
+            </article>
+          `;
+        }).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function resolveSegmentReviewModel({ segment, run, rootTask, storySourceRevision, characterStatus, batchRepairTaskStatus, runHasBusyRepairTask, continuitySegmentLookup }) {
+  const segmentContinuity = continuitySegmentLookup.get(segment.segmentId) || null;
+  const sceneTask = getLatestSegmentStageTask(run, "project.scenes", segment.segmentId);
+  const videoTask = getLatestSegmentStageTask(run, "project.videos", segment.segmentId);
+  const repairTask = getLatestSegmentStageTask(run, "project.continuity_repair", segment.segmentId);
+  const sceneTaskStatus = run ? getRunStageStatus(sceneTask, storySourceRevision) : "idle";
+  const videoTaskStatus = run ? getRunStageStatus(videoTask, storySourceRevision) : "idle";
+  const repairTaskStatus = run ? getRunStageStatus(repairTask, storySourceRevision) : "idle";
+  const segmentRepairRemainingActions = resolveRepairRemainingActions(run, repairTask, storySourceRevision);
+  const sceneScopeLocked = isBusyTaskStatus(batchRepairTaskStatus) || runHasBusyRepairTask;
+  const segmentRepairLocked = isBusyTaskStatus(repairTaskStatus);
+  const canGenerateScene =
+    characterStatus === "completed"
+    && !sceneScopeLocked
+    && !segmentRepairLocked
+    && !isBusyTaskStatus(sceneTaskStatus)
+    && !isBusyTaskStatus(videoTaskStatus);
+  const canGenerateVideo =
+    segment.sceneReady
+    && !sceneScopeLocked
+    && !segmentRepairLocked
+    && !isBusyTaskStatus(sceneTaskStatus)
+    && !isBusyTaskStatus(videoTaskStatus);
+  const canRunRepair =
+    characterStatus === "completed"
+    && Boolean(segmentContinuity?.issue_count)
+    && !sceneScopeLocked
+    && !isBusyTaskStatus(repairTaskStatus)
+    && !isBusyTaskStatus(sceneTaskStatus)
+    && !isBusyTaskStatus(videoTaskStatus);
+  const sceneRecommended = hasRecommendedContinuityAction(segmentContinuity, "regenerate_scene_images")
+    || segmentRepairRemainingActions.includes("regenerate_scene_images");
+  const videoRecommended = hasRecommendedContinuityAction(segmentContinuity, "regenerate_video")
+    || segmentRepairRemainingActions.includes("regenerate_video");
+  return {
+    rootTask,
+    segmentContinuity,
+    sceneTask,
+    videoTask,
+    repairTask,
+    sceneTaskStatus,
+    videoTaskStatus,
+    repairTaskStatus,
+    segmentRepairRemainingActions,
+    sceneScopeLocked,
+    segmentRepairLocked,
+    canGenerateScene,
+    canGenerateVideo,
+    canRunRepair,
+    sceneRecommended,
+    videoRecommended,
+  };
+}
+
+function renderSegmentReviewDetail(segment, index, model, galleryId, characterStatus) {
+  if (!segment) {
+    return singleAssetMessage("选择片段", "请从左侧选择一个 segment 进行审片。");
+  }
+  const selectedOption = resolveSelectedSegmentAssetOption(segment);
+  const isVideoSelected = selectedOption.kind === "video";
+  const canRerunSelectedAsset = isVideoSelected ? model.canGenerateVideo : model.canGenerateScene;
+  const selectedRerunLabel = isVideoSelected ? "重做当前视频" : `重做${selectedOption.label}`;
+  return `
+    <article class="segment-review-detail-card">
+      <div class="timeline-card-head">
+        <span class="timeline-index">${String(index + 1).padStart(2, "0")}</span>
+        <div>
+          <h4>${escapeHtml(segment.title || segmentLabel(segment.segmentId, index))}</h4>
+          <p class="asset-note">
+            ${escapeHtml(`${segment.chapterNumber ? `第 ${segment.chapterNumber} 章 · ` : ""}${segment.sceneId ? `${segment.sceneId} · ` : ""}${segment.segmentId}${segment.durationSeconds ? ` · ${segment.durationSeconds}s` : ""}`)}
+          </p>
+        </div>
+      </div>
+      ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
+      <div class="timeline-preview-grid segment-review-preview-grid">
+        ${renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
+        ${segment.requiresMidFrame ? renderTimelinePreview(segment.midFrame, "中段", galleryId) : ""}
+        ${renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
+        ${renderTimelinePreview(segment.clip, "视频", galleryId)}
+      </div>
+      <div class="timeline-card-footer">
+        ${renderSegmentAssetSelector(segment, selectedOption)}
+        <div class="detail-chip-row">
+          ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
+          ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
+          ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+          ${model.segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
+          ${renderContinuityRiskChips(model.segmentContinuity)}
+        </div>
+        ${renderContinuityIssueList(model.segmentContinuity)}
+        <div class="timeline-actions">
+          <button
+            type="button"
+            class="secondary small"
+            data-auto-repair-segment="${escapeAttr(segment.segmentId)}"
+            data-project-id="${escapeAttr(model.rootTask.project_id)}"
+            data-source-task="${escapeAttr(model.rootTask.task_id)}"
+            ${model.canRunRepair ? "" : "disabled"}
+          >
+            ${escapeHtml(buildSegmentRepairButtonLabel(segment, model.repairTaskStatus, model.segmentRepairRemainingActions.length > 0))}
+          </button>
+          <button
+            type="button"
+            class="secondary small${model.sceneRecommended ? " recommended-action" : ""}"
+            data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
+            data-project-id="${escapeAttr(model.rootTask.project_id)}"
+            data-source-task="${escapeAttr(model.rootTask.task_id)}"
+            ${model.canGenerateScene ? "" : "disabled"}
+          >
+            ${escapeHtml(model.canGenerateScene ? buildSegmentSceneButtonLabel(segment, model.sceneTaskStatus) : buildBlockedSceneButtonLabel(segment, model.sceneTaskStatus, characterStatus))}
+          </button>
+          <button
+            type="button"
+            class="secondary small${model.videoRecommended ? " recommended-action" : ""}"
+            data-generate-video-segment="${escapeAttr(segment.segmentId)}"
+            data-project-id="${escapeAttr(model.rootTask.project_id)}"
+            data-source-task="${escapeAttr(model.rootTask.task_id)}"
+            ${model.canGenerateVideo ? "" : "disabled"}
+          >
+            ${escapeHtml(buildSegmentVideoButtonLabel(segment, model.videoTaskStatus))}
+          </button>
+          <button
+            type="button"
+            class="primary-button small"
+            ${isVideoSelected ? `data-generate-video-segment="${escapeAttr(segment.segmentId)}"` : `data-generate-scene-segment="${escapeAttr(segment.segmentId)}" data-frame-kind="${escapeAttr(selectedOption.frameKind)}"`}
+            data-project-id="${escapeAttr(model.rootTask.project_id)}"
+            data-source-task="${escapeAttr(model.rootTask.task_id)}"
+            ${canRerunSelectedAsset ? "" : "disabled"}
+          >${escapeHtml(selectedRerunLabel)}</button>
+        </div>
+        ${renderSegmentTaskError(model.repairTask, "智能修复失败")}
+        ${renderRepairPlanNotice(model.repairTask, model.segmentRepairRemainingActions)}
+        ${model.canGenerateScene ? "" : renderSegmentSceneBlockedNotice({
+          segment,
+          characterStatus,
+          sceneScopeLocked: model.sceneScopeLocked,
+          segmentRepairLocked: model.segmentRepairLocked,
+          sceneTaskStatus: model.sceneTaskStatus,
+          videoTaskStatus: model.videoTaskStatus,
+        })}
+        ${renderSegmentTaskError(model.sceneTask, "场景图失败")}
+        ${renderSegmentTaskError(model.videoTask, "视频失败")}
+      </div>
+      <div class="segment-review-inspector-grid">
+        ${renderPromptEditorPanel(segment, model.rootTask, selectedOption)}
+        ${renderRequestInspectorPanel(segment, selectedOption)}
+      </div>
+    </article>
+  `;
+}
+
+function segmentMatchesReviewFilter(segment, segmentContinuity, filter) {
+  if (filter === "risk") {
+    return Number(segmentContinuity?.high_risk_count || 0) > 0;
+  }
+  if (filter === "scene_missing") {
+    return !segment.sceneReady;
+  }
+  if (filter === "video_missing") {
+    return !segment.videoReady;
+  }
+  if (filter === "video_ready") {
+    return segment.videoReady;
+  }
+  return true;
+}
+
+function renderSegmentReviewTab(task, artifacts, context, run = null) {
+  if (!artifacts?.available) {
+    return singleAssetMessage("分段审片台", buildArtifactPendingMessage(task, "images", run));
+  }
+  const timelineItems = buildTimelineGalleryItems(artifacts);
+  const galleryId = `${context}:segment-review:${task.task_id}`;
+  registerGallery(galleryId, timelineItems);
+  const segments = buildTimelineSegments(artifacts);
+  if (!segments.length) {
+    return singleAssetMessage("分段审片台", buildArtifactPendingMessage(task, "images", run));
+  }
+  const continuitySegmentLookup = buildContinuityLookup(artifacts?.continuity_segment_groups, "segment_id");
+  const rootTask = run?.rootTask || task;
+  const storySourceRevision = run ? getStorySourceRevision(rootTask) : getStorySourceRevision(task);
+  const characterStatus = run ? getRunStageStatus(run.latestCharacterTask, storySourceRevision) : "idle";
+  const batchRepairTask = getLatestBatchRepairTask(run);
+  const batchRepairTaskStatus = run ? getRunStageStatus(batchRepairTask, storySourceRevision) : "idle";
+  const runHasBusyRepairTask = (run?.tasks || []).some(
+    (item) => (
+      (item.task_type === "project.continuity_repair" || item.task_type === "project.continuity_repair_batch")
+      && isBusyTaskStatus(getRunStageStatus(item, storySourceRevision))
+    ),
+  );
+  const activeFilter = state.segmentReviewFilter || "all";
+  const filteredSegments = segments.filter((segment) => segmentMatchesReviewFilter(
+    segment,
+    continuitySegmentLookup.get(segment.segmentId) || null,
+    activeFilter,
+  ));
+  const selectedSegment = filteredSegments.find((segment) => segment.segmentId === state.selectedSegmentId)
+    || filteredSegments[0]
+    || null;
+  const selectedIndex = selectedSegment
+    ? segments.findIndex((segment) => segment.segmentId === selectedSegment.segmentId)
+    : -1;
+  const selectedModel = selectedSegment
+    ? resolveSegmentReviewModel({
+      segment: selectedSegment,
+      run,
+      rootTask,
+      storySourceRevision,
+      characterStatus,
+      batchRepairTaskStatus,
+      runHasBusyRepairTask,
+      continuitySegmentLookup,
+    })
+    : null;
+  const filters = [
+    ["all", "全部", segments.length],
+    ["risk", "高风险", segments.filter((segment) => Number((continuitySegmentLookup.get(segment.segmentId) || {}).high_risk_count || 0) > 0).length],
+    ["scene_missing", "未生成场景图", segments.filter((segment) => !segment.sceneReady).length],
+    ["video_missing", "未生成视频", segments.filter((segment) => !segment.videoReady).length],
+    ["video_ready", "已生成视频", segments.filter((segment) => segment.videoReady).length],
+  ];
+
+  return `
+    <section class="segment-review-shell">
+      <article class="asset-block segment-review-hero">
+        <div>
+          <p class="section-kicker">Segment Review</p>
+          <h4>分段审片台</h4>
+          <p class="asset-note">左侧选择片段，右侧只审当前 segment。这里集中处理关键帧、视频、prompt、实际请求和风险修复。</p>
+        </div>
+        <div class="segment-review-filters">
+          ${filters.map(([id, label, count]) => `
+            <button
+              type="button"
+              class="detail-tab ${activeFilter === id ? "active" : ""}"
+              data-segment-review-filter="${escapeAttr(id)}"
+            >${escapeHtml(label)} ${escapeHtml(String(count))}</button>
+          `).join("")}
+        </div>
+      </article>
+      <div class="segment-review-layout">
+        <aside class="segment-review-sidebar">
+          ${filteredSegments.length ? filteredSegments.map((segment) => {
+            const issue = continuitySegmentLookup.get(segment.segmentId) || null;
+            const isActive = selectedSegment?.segmentId === segment.segmentId;
+            return `
+              <button
+                type="button"
+                class="segment-review-list-item ${isActive ? "active" : ""}"
+                data-select-review-segment="${escapeAttr(segment.segmentId)}"
+              >
+                <strong>${escapeHtml(segment.segmentId)}</strong>
+                <span>${escapeHtml(segment.title || segment.segmentId)}</span>
+                <small>${escapeHtml(segment.sceneId || "未绑定 scene")} · ${escapeHtml(segment.durationSeconds ? `${segment.durationSeconds}s` : "未知时长")}</small>
+                <div class="detail-chip-row">
+                  ${chip(`图 ${segment.sceneReady ? "OK" : "缺"}`)}
+                  ${chip(`视频 ${segment.videoReady ? "OK" : "缺"}`)}
+                  ${Number(issue?.high_risk_count || 0) ? `<span class="continuity-chip continuity-chip-high">高 ${issue.high_risk_count}</span>` : ""}
+                </div>
+              </button>
+            `;
+          }).join("") : `<p class="asset-note">当前筛选下没有片段。</p>`}
+        </aside>
+        <div class="segment-review-main">
+          ${selectedModel ? renderSegmentReviewDetail(selectedSegment, selectedIndex, selectedModel, galleryId, characterStatus) : singleAssetMessage("无片段", "当前筛选下没有可审片段。")}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderRequestDebugTab(task, artifacts, context, run = null) {
+  if (!artifacts?.available) {
+    return singleAssetMessage("请求与调试", buildArtifactPendingMessage(task, "docs", run));
+  }
+  const segments = buildTimelineSegments(artifacts);
+  const debugDocuments = (artifacts.documents || []).filter((item) => [
+    "character_image_manifest.json",
+    "scene_image_manifest.json",
+    "seedance_manifest.json",
+    "seedream_character_execution.json",
+    "seedream_scene_execution.json",
+    "seedance_execution.json",
+    "continuity_report.json",
+  ].includes(item.name));
+  return `
+    <section class="request-debug-shell">
+      ${renderAssetSectionIntro(
+        "请求与调试",
+        "这里集中查看真实提交参数、参考图绑定顺序、计划 prompt、实际提交 prompt 和执行报告。",
+        [chip(`Segment ${segments.length}`), chip(`调试文件 ${debugDocuments.length}`)].join(""),
+      )}
+      <div class="request-debug-grid">
+        ${segments.map((segment) => `
+          <details class="prompt-panel request-debug-item">
+            <summary>${escapeHtml(segment.segmentId)} · ${escapeHtml(segment.title || "未命名片段")}</summary>
+            <div class="prompt-panel-body">
+              ${renderRequestInspectorPanel(segment)}
+            </div>
+          </details>
+        `).join("")}
+      </div>
+      ${debugDocuments.length ? renderDocumentBlock("调试文件", debugDocuments, "当前媒体链路的 manifest 与执行报告。") : ""}
     </section>
   `;
 }
@@ -2163,14 +3019,14 @@ export function renderRunTabContent(task, artifacts, context, activeTab, run = n
   if (activeTab === "story") {
     return renderStoryTab(task, context, run);
   }
-  if (activeTab === "docs") {
-    return renderDocsTab(task, artifacts, run);
+  if (activeTab === "scenes") {
+    return renderSceneWorkbenchTab(task, artifacts, context, run);
   }
-  if (activeTab === "images") {
-    return renderImagesTab(task, artifacts, context, run);
+  if (activeTab === "segments") {
+    return renderSegmentReviewTab(task, artifacts, context, run);
   }
-  if (activeTab === "videos") {
-    return renderVideosTab(task, artifacts, context, run);
+  if (activeTab === "debug") {
+    return renderRequestDebugTab(task, artifacts, context, run);
   }
-  return renderOverviewTab(task, artifacts, context, run);
+  return renderWorkbenchOverviewTab(task, artifacts, context, run);
 }

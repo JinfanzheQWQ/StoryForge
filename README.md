@@ -56,6 +56,7 @@ StoryForge 默认采用六阶段后台任务流：
 - 结构化多 Agent 小说生成链路：`Story Architect`、`Story Drafter`、`Cast Analyzer`、`Character Designer`、`Chapter Planner`、`Editorial Reviewer`
 - 小说链路采用 story-first：先生成完整小说草稿并落成 `story_source.json`，再从这份可编辑正文里解析 cast、生成角色卡和结构化章节蓝图
 - Web 工作台支持审阅并编辑生成后的小说正文；保存正文后，相关结构化结果和媒体资产会被标记为需要重做
+- 场景工作台按 scene 展示场景基准、跨场过渡合同、空场景母图状态和片段矩阵，方便检查场景一致性与承接关系
 - Web 创建页支持直接选择当前故事使用的 LLM provider；`模型 ID` 只读并自动跟随默认模型，内置 `DeepSeek` 与 `ChatGPT 5.4`
 - 角色结构以 LLM `Cast Analyzer` 结果为主，优先依据小说正文抽取 cast slots；heuristics 负责规则校验、归一化与轻量 repair
 - 小说结构化阶段在 live LLM 模式下采用 fail-fast：坏结构最多自动重试 3 次，失败原因会写入任务记录

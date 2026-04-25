@@ -257,10 +257,40 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const copyCodeButton = event.target.closest("[data-copy-nearest-code]");
+  if (copyCodeButton) {
+    await copyNearestCodeBlock(copyCodeButton);
+    return;
+  }
+
   const tabButton = event.target.closest("[data-detail-tab]");
   if (tabButton) {
     state.projectDetailTab = tabButton.dataset.detailTab;
     syncLocationFromState();
+    renderProjectDetail();
+    return;
+  }
+
+  const segmentReviewButton = event.target.closest("[data-select-review-segment]");
+  if (segmentReviewButton) {
+    state.selectedSegmentId = segmentReviewButton.dataset.selectReviewSegment || "";
+    state.selectedSegmentAssetKind = "start";
+    renderProjectDetail();
+    return;
+  }
+
+  const segmentAssetButton = event.target.closest("[data-select-segment-asset-kind]");
+  if (segmentAssetButton) {
+    state.selectedSegmentAssetKind = segmentAssetButton.dataset.selectSegmentAssetKind || "start";
+    renderProjectDetail();
+    return;
+  }
+
+  const segmentReviewFilterButton = event.target.closest("[data-segment-review-filter]");
+  if (segmentReviewFilterButton) {
+    state.segmentReviewFilter = segmentReviewFilterButton.dataset.segmentReviewFilter || "all";
+    state.selectedSegmentId = "";
+    state.selectedSegmentAssetKind = "start";
     renderProjectDetail();
     return;
   }
@@ -324,6 +354,7 @@ async function handleProjectDetailClick(event) {
 
   const sceneSegmentButton = event.target.closest("[data-generate-scene-segment]");
   if (sceneSegmentButton) {
+    const frameKind = sceneSegmentButton.dataset.frameKind || "";
     await submitStageFromButton(
       sceneSegmentButton,
       "/v1/projects/scenes",
@@ -331,9 +362,10 @@ async function handleProjectDetailClick(event) {
         project_id: sceneSegmentButton.dataset.projectId || state.selectedProjectId,
         source_task_id: sceneSegmentButton.dataset.sourceTask,
         segment_id: sceneSegmentButton.dataset.generateSceneSegment,
+        ...(frameKind ? { frame_kind: frameKind } : {}),
       }),
-      "片段场景图任务已创建",
-      "片段场景图任务提交失败。",
+      frameKind ? "单图重做任务已创建" : "片段场景图任务已创建",
+      frameKind ? "单图重做任务提交失败。" : "片段场景图任务提交失败。",
     );
     return;
   }
@@ -461,6 +493,22 @@ async function handleProjectDetailClick(event) {
   }
 }
 
+
+async function copyNearestCodeBlock(button) {
+  const section = button.closest(".prompt-section");
+  const code = section?.querySelector(".prompt-code");
+  const text = code?.textContent || "";
+  if (!text.trim()) {
+    setSubmitStatus(elements.pollIndicator, "没有可复制的内容。", false);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    setSubmitStatus(elements.pollIndicator, "已复制到剪贴板。", true);
+  } catch {
+    setSubmitStatus(elements.pollIndicator, "复制失败：浏览器不允许访问剪贴板。", false);
+  }
+}
 
 async function saveSegmentPrompts(button) {
   const panel = button.closest("[data-segment-prompt-panel]");

@@ -70,9 +70,9 @@ export function renderRunDetail(task, artifacts, context, run = null) {
     <section class="workspace-content-shell">
       <div class="workspace-content-head">
         <div>
-          <p class="section-kicker">Content Navigator</p>
-          <h3>查看当前版本内容</h3>
-          <p class="asset-note">按故事正文、素材、视频和文件切换，当前页面始终围绕同一个制作版本展开。</p>
+          <p class="section-kicker">Production Workbench</p>
+          <h3>小说转视频生产工作台</h3>
+          <p class="asset-note">按生产总览、正文结构、场景、分段审片和请求调试切换，所有操作都围绕当前制作版本展开。</p>
         </div>
         <div class="detail-tabs">
           ${DETAIL_TABS.map((tab) => renderDetailTab(tab, activeTab)).join("")}

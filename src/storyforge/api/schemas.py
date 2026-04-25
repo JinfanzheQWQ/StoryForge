@@ -39,6 +39,7 @@ class CreateStageTaskRequest(BaseModel):
     seedance_watermark: bool | None = None
     segment_id: str | None = None
     scene_id: str | None = None
+    frame_kind: Literal["start", "mid", "end"] | None = None
     master_only: bool = False
     merge_only: bool = False
     resume_from_progress: bool = False
@@ -55,6 +56,10 @@ class CreateStageTaskRequest(BaseModel):
             raise ValueError("master_only=true 时必须提供 scene_id。")
         if self.master_only and segment_id:
             raise ValueError("master_only=true 不能与 segment_id 同时提交。")
+        if self.frame_kind and not segment_id:
+            raise ValueError("frame_kind 只能用于 segment_id 局部场景图任务。")
+        if self.frame_kind and (scene_id or self.master_only or self.merge_only):
+            raise ValueError("frame_kind 不能与 scene_id、master_only 或 merge_only 同时提交。")
         if self.resume_from_progress and (segment_id or scene_id or self.master_only or self.merge_only):
             raise ValueError("resume_from_progress 目前只支持分段合同阶段，不能和局部媒体范围一起提交。")
         return self
@@ -195,6 +200,13 @@ class PlannedSegmentArtifactResponse(BaseModel):
     scene_id: str = ""
     scene_title: str = ""
     scene_summary: str = ""
+    scene_anchor: str = ""
+    scene_bible: dict[str, Any] = Field(default_factory=dict)
+    scene_transition_contract: dict[str, Any] = Field(default_factory=dict)
+    scene_master_frame_status: str = ""
+    scene_master_frame_error: str = ""
+    covered_event_ids: list[str] = Field(default_factory=list)
+    covered_event_summaries: list[str] = Field(default_factory=list)
     title: str
     summary: str = ""
     chapter_number: int
@@ -214,6 +226,7 @@ class PlannedSegmentArtifactResponse(BaseModel):
     submitted_video_prompt: str = ""
     seedance_motion_prompt: str = ""
     motion_plan: dict[str, str] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
     submitted_prompt_variant: str = ""
     submitted_reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)
     scene_master_frame_request: SubmittedRequestResponse | None = None

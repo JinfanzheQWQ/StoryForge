@@ -213,8 +213,9 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 ### Web / API / 数据
 
 - 已提供六阶段 Web 工作台
-- 已提供项目列表页、详情页、时间线视图与资产视图
-- 时间线已按 `scene` 分组展示 `segment`
+- 已提供项目列表页、详情页和生产工作台视图
+- 项目详情已按 `生产总览 / 正文与结构 / 场景工作台 / 分段审片台 / 请求与调试` 组织
+- 分段审片台已提供左侧 segment 列表、基础筛选和右侧当前 segment 详情
 - 前端已展示任务失败原因、阶段失败原因和连续性风险摘要
 - 前端支持：
   - 生成场景结构
@@ -225,9 +226,13 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
   - 修复单个 segment
   - 批量修复风险合同
   - 单段生成场景图
+  - 单独重做首帧 / 中段 / 尾帧
   - 单段生成视频
   - 手动合并总片
-- 时间线可直接展开查看场景母图 prompt、每段图片 prompt、`motion_plan`、Seedance 画面推进摘录、视频基础 prompt，以及视频提交后真实送往 Seedance 的最终 prompt / submit variant / 参考图绑定顺序
+- 分段审片台把 Prompt Editor 和 Request Inspector 分离，并按当前选择的首帧 / 中段 / 尾帧 / 视频单点展示 prompt、实际 payload、图片顺序和提交记录
+- 场景工作台已提供 scene 级修复 / 重生成母图入口，并展示场景基准、过渡合同、母图状态以及同一 scene 下各 segment 的首帧、中段、尾帧、视频和风险状态
+- Request Inspector 已展示规划诊断，包括动作点 / 动作预算、时长、timed_beats 覆盖、中段触发、子段拆分和 continuity_report 来源
+- 只读 prompt 和实际请求 JSON 支持一键复制，便于排查 Seedream / Seedance 实际提交内容
 - 时间线还会展示场景母图、首帧、中段帧、尾帧和视频片段的真实提交参数 JSON，可直接核对当次到底用了哪些图、按什么顺序提交
 - 项目、任务、任务结果已持久化到 MySQL
 - 删除项目支持，会同步清理安全范围内的输出目录
@@ -274,10 +279,9 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 
 ### 第一优先级
 
-1. 项目详情二级 Tab 化：`总览 / 正文结构 / 场景 / 分段审片 / 请求调试`。
-2. 分段审片台：左侧 segment 列表，右侧集中展示首 / 中 / 尾图、视频、风险、motion_plan、Seedance 推进 prompt 和 prompt 编辑器。
-3. 场景工作台：按 scene 展示空场景母图、母图 prompt、scene 风险和 scene 下 segment 对比。
-4. 请求调试 Inspector：集中展示 Seedream / Seedance 的实际 payload、参考图绑定顺序、计划 prompt、实际提交 prompt 和 API 错误。
+1. 请求调试 Inspector：继续补充 API 错误归类。
+2. Prompt 编辑器增强：支持 diff、重置和保存并重跑。
+3. 场景工作台：继续增强 scene 级筛选、批量操作和母图重跑后的状态解释。
 
 ### 第二优先级
 

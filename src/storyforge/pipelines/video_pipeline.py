@@ -95,6 +95,7 @@ def run_scene_image_pipeline(
     submit_scenes: bool = True,
     segment_id: str | None = None,
     scene_id: str | None = None,
+    frame_kind: str | None = None,
     master_only: bool = False,
     continuity_review_mode: str = "auto",
     llm_provider: str | None = None,
@@ -125,6 +126,7 @@ def run_scene_image_pipeline(
             planning.project_package,
             force_submit=submit_scenes,
             segment_ids=selected_segment_ids,
+            frame_kind=frame_kind,
         )
         character_execution = read_seedream_execution_report(character_execution_path)
         combined_execution = merge_seedream_execution_reports(character_execution, scene_execution)
@@ -136,6 +138,7 @@ def run_scene_image_pipeline(
         planning.scene_images_path,
         selected_segment_ids=selected_segment_ids,
         selected_scene_ids=selected_scene_ids,
+        frame_kind=frame_kind,
     )
     manifest_selected_segment_ids = set() if master_only else selected_segment_ids
     merged_manifest = _merge_seedance_manifest_for_write(
@@ -692,6 +695,7 @@ def _merge_scene_image_tasks_for_write(
     *,
     selected_segment_ids: set[str] | None,
     selected_scene_ids: set[str] | None,
+    frame_kind: str | None = None,
 ) -> list[SceneImageTask]:
     latest_tasks = _load_scene_image_tasks_from_path(path)
     latest_by_segment = {item.segment_id: item for item in latest_tasks}
@@ -720,7 +724,7 @@ def _merge_scene_image_tasks_for_write(
         primary, secondary = (
             (current_task, latest_task) if prefer_current else (latest_task, current_task)
         )
-        merged_tasks.append(_merge_scene_image_task(primary, secondary))
+        merged_tasks.append(_merge_scene_image_task(primary, secondary, frame_kind=frame_kind if prefer_current else None))
     return merged_tasks
 
 
@@ -790,9 +794,13 @@ def _should_prefer_current_segment_state(
 def _merge_scene_image_task(
     preferred: SceneImageTask,
     fallback: SceneImageTask,
+    *,
+    frame_kind: str | None = None,
 ) -> SceneImageTask:
     payload = to_jsonable(preferred)
     fallback_payload = to_jsonable(fallback)
+    if frame_kind in {"start", "mid", "end"}:
+        payload = _merge_single_frame_scene_image_task_payload(payload, fallback_payload, frame_kind)
     payload["status"] = _prefer_nondefault_status(
         payload.get("status", "planned"),
         fallback_payload.get("status", "planned"),
@@ -831,6 +839,23 @@ def _merge_scene_image_task(
             fallback_payload.get(field_name, {}),
         )
     return SceneImageTask.from_dict(payload)
+
+
+def _merge_single_frame_scene_image_task_payload(
+    payload: dict[str, object],
+    fallback_payload: dict[str, object],
+    frame_kind: str,
+) -> dict[str, object]:
+    keep_frame_kinds = {"start", "mid", "end"} - {frame_kind}
+    for keep_kind in keep_frame_kinds:
+        for suffix in ("frame_url", "frame_request_info"):
+            field_name = f"{keep_kind}_{suffix}"
+            payload[field_name] = fallback_payload.get(field_name, payload.get(field_name, ""))
+    if frame_kind != "start" and fallback_payload.get("start_frame_url"):
+        payload["start_frame_url"] = fallback_payload.get("start_frame_url", "")
+    if frame_kind != "mid" and fallback_payload.get("mid_frame_url"):
+        payload["mid_frame_url"] = fallback_payload.get("mid_frame_url", "")
+    return payload
 
 
 def _merge_seedance_clip_task(

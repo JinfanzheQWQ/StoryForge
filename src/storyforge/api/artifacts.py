@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
+import re
 
 from storyforge.api.schemas import (
     ArtifactItem,
@@ -21,13 +22,137 @@ from storyforge.api.schemas import (
 from storyforge.application.tasks import TaskRecord
 from storyforge.core.config import AppConfig
 from storyforge.core.io import read_json
-from storyforge.domains.video.contracts import VideoSegment
+from storyforge.domains.video.contracts import SceneBible, SceneTransitionContract, VideoScene, VideoSegment
+from storyforge.domains.video.text_rules import (
+    ACTION_STEP_SPLIT_PATTERN,
+    TIMED_BEAT_PREFIX_PATTERN,
+    extract_progression_signal_terms,
+    normalize_similarity_text,
+    progress_text_too_generic,
+)
 from storyforge.pipelines.video_planning import (
     load_scene_image_task_map,
     load_seedance_clip_map,
     load_video_segment_plan,
 )
 
+
+
+TIMED_BEAT_PATTERN = re.compile(
+    r"(?P<start>\d+(?:\.\d+)?)\s*[-~到]\s*(?P<end>\d+(?:\.\d+)?)\s*秒"
+)
+
+
+def _scene_bible_to_dict(scene_bible: SceneBible) -> dict[str, object]:
+    return {
+        "location": scene_bible.location,
+        "time_window": scene_bible.time_window,
+        "weather": scene_bible.weather,
+        "lighting": scene_bible.lighting,
+        "dominant_palette": scene_bible.dominant_palette,
+        "background_anchors": scene_bible.background_anchors,
+        "fixed_props": scene_bible.fixed_props,
+        "spatial_layout": scene_bible.spatial_layout,
+        "character_blocking": scene_bible.character_blocking,
+        "continuity_notes": scene_bible.continuity_notes,
+    }
+
+
+def _scene_transition_contract_to_dict(contract: SceneTransitionContract) -> dict[str, object]:
+    return {
+        "previous_scene_id": contract.previous_scene_id,
+        "transition_mode": contract.transition_mode,
+        "previous_scene_exit_state": contract.previous_scene_exit_state,
+        "next_scene_entry_match": contract.next_scene_entry_match,
+        "bridge_action": contract.bridge_action,
+        "carry_over_elements": contract.carry_over_elements,
+        "screen_direction_policy": contract.screen_direction_policy,
+        "visual_bridge": contract.visual_bridge,
+        "audio_bridge": contract.audio_bridge,
+        "transition_focus_seconds": contract.transition_focus_seconds,
+    }
+
+
+def _segment_action_node_budget(duration_seconds: int) -> int:
+    if duration_seconds <= 7:
+        return 2
+    if duration_seconds <= 9:
+        return 3
+    return 4
+
+
+def _estimate_segment_action_node_count(timed_beats: list[str]) -> int:
+    total_nodes = 0
+    for beat in timed_beats:
+        description = TIMED_BEAT_PREFIX_PATTERN.sub("", str(beat or "").strip())
+        if not description:
+            continue
+        clause_count = 0
+        for raw_clause in ACTION_STEP_SPLIT_PATTERN.split(description):
+            clause = str(raw_clause or "").strip(" ，。；;")
+            if not clause:
+                continue
+            normalized = normalize_similarity_text(clause)
+            if len(normalized) < 4:
+                continue
+            if progress_text_too_generic(clause) and not extract_progression_signal_terms(clause):
+                continue
+            clause_count += 1
+        total_nodes += max(1, clause_count)
+    return max(1, total_nodes)
+
+
+def _timed_beat_end_seconds(timed_beats: list[str]) -> float | None:
+    max_end_seconds: float | None = None
+    for beat in timed_beats:
+        match = TIMED_BEAT_PATTERN.search(str(beat or ""))
+        if not match:
+            continue
+        end_seconds = float(match.group("end"))
+        max_end_seconds = end_seconds if max_end_seconds is None else max(max_end_seconds, end_seconds)
+    return max_end_seconds
+
+
+def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object | None = None) -> dict[str, object]:
+    duration_seconds = int(segment.duration_seconds or 0)
+    timed_beats = list(segment.timed_beats or [])
+    action_node_count = _estimate_segment_action_node_count(timed_beats) if timed_beats else 0
+    action_node_budget = _segment_action_node_budget(duration_seconds) if duration_seconds else 0
+    timed_beat_end_seconds = _timed_beat_end_seconds(timed_beats)
+    missing_tail_seconds = (
+        round(max(0.0, float(duration_seconds) - timed_beat_end_seconds), 2)
+        if timed_beat_end_seconds is not None and duration_seconds
+        else None
+    )
+    risk_types: list[str] = []
+    if action_node_budget and action_node_count > action_node_budget:
+        risk_types.append("动作容量过载")
+    if missing_tail_seconds is not None and missing_tail_seconds > 0.2:
+        risk_types.append("尾部节拍留空")
+    if segment.requires_mid_frame:
+        risk_types.append("需要中段锚点")
+    if getattr(segment, "subsegment_count", 1) > 1:
+        risk_types.append("拆分子段")
+    if getattr(segment, "mid_frame_mode", "continuous") == "insert_cut":
+        risk_types.append("插入镜头")
+    if continuity_group and getattr(continuity_group, "issue_count", 0):
+        risk_types.append("连续性风险")
+    status = "warning" if risk_types else "ok"
+    return {
+        "status": status,
+        "risk_types": risk_types,
+        "action_node_count": action_node_count,
+        "action_node_budget": action_node_budget,
+        "duration_seconds": duration_seconds,
+        "timed_beat_count": len(timed_beats),
+        "timed_beat_end_seconds": timed_beat_end_seconds,
+        "missing_tail_seconds": missing_tail_seconds,
+        "requires_mid_frame": bool(segment.requires_mid_frame),
+        "mid_frame_mode": str(getattr(segment, "mid_frame_mode", "continuous") or "continuous"),
+        "subsegment_index": int(getattr(segment, "subsegment_index", 1) or 1),
+        "subsegment_count": int(getattr(segment, "subsegment_count", 1) or 1),
+        "repair_source": "continuity_report" if continuity_group and getattr(continuity_group, "issue_count", 0) else "",
+    }
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".m4v"}
@@ -352,9 +477,15 @@ def _collect_planned_segments(
         )
         for scene in getattr(plan, "scenes", [])
     }
+    scene_by_id: dict[str, VideoScene] = {
+        scene.scene_id: scene
+        for scene in getattr(plan, "scenes", [])
+    }
+    continuity_lookup = _build_continuity_segment_lookup(output_dir)
     planned_segments: list[PlannedSegmentArtifactResponse] = []
 
     for segment in segments:
+        scene = scene_by_id.get(segment.scene_id)
         scene_task = scene_task_map.get(segment.segment_id)
         clip_task = clip_map.get(segment.segment_id)
         requires_mid_frame = bool(getattr(segment, "requires_mid_frame", False))
@@ -388,6 +519,21 @@ def _collect_planned_segments(
                 scene_id=segment.scene_id,
                 scene_title=segment.scene_title,
                 scene_summary=segment.scene_summary,
+                scene_anchor=(scene.scene_anchor if scene else segment.scene_anchor),
+                scene_bible=(
+                    _scene_bible_to_dict(scene.scene_bible)
+                    if scene
+                    else _scene_bible_to_dict(segment.scene_bible)
+                ),
+                scene_transition_contract=(
+                    _scene_transition_contract_to_dict(scene.scene_transition_contract)
+                    if scene
+                    else {}
+                ),
+                scene_master_frame_status=(scene.scene_master_frame_status if scene else ""),
+                scene_master_frame_error=(scene.scene_master_frame_error if scene else ""),
+                covered_event_ids=(scene.covered_event_ids if scene else []),
+                covered_event_summaries=(scene.covered_event_summaries if scene else []),
                 title=segment.title,
                 summary=segment.summary,
                 chapter_number=segment.chapter_number,
@@ -413,6 +559,10 @@ def _collect_planned_segments(
                     str((clip_task.submitted_prompt if clip_task else "") or (clip_task.prompt if clip_task else "") or ""),
                 ),
                 motion_plan=_build_motion_plan_response(segment),
+                diagnostics=_build_segment_diagnostics(
+                    segment,
+                    continuity_lookup.get(segment.segment_id),
+                ),
                 submitted_prompt_variant=clip_task.submit_variant if clip_task else "",
                 submitted_reference_bindings=_build_prompt_reference_bindings(
                     clip_task.submitted_reference_bindings if clip_task else [],
@@ -489,6 +639,22 @@ def _collect_planned_segments(
             )
         )
     return planned_segments
+
+
+
+
+def _build_continuity_segment_lookup(output_dir: Path) -> dict[str, object]:
+    report_path = output_dir / "continuity_report.json"
+    if not report_path.exists():
+        return {}
+    try:
+        _, _, _, segment_groups = _collect_continuity_report(
+            output_dir=output_dir,
+            output_root=output_dir,
+        )
+    except Exception:
+        return {}
+    return {group.segment_id: group for group in segment_groups if group.segment_id}
 
 
 def _build_motion_plan_response(segment: VideoSegment) -> dict[str, str]:

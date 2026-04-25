@@ -83,7 +83,7 @@ def _update_segment_plan_prompts(output_dir: Path, segment_id: str, updates: dic
 
     scene_id = str(matched_segment.get("scene_id", "") or "")
     changed: set[str] = set()
-    for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt"):
+    for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt", "video_prompt"):
         if field in updates and matched_segment.get(field) != updates[field]:
             matched_segment[field] = updates[field]
             changed.add(field)
@@ -651,6 +651,7 @@ def _find_existing_stage_task(
     source_task_id: str,
     segment_id: str | None,
     scene_id: str | None = None,
+    frame_kind: str | None = None,
     master_only: bool = False,
     merge_only: bool = False,
     continuity_review_mode: str | None = None,
@@ -659,6 +660,7 @@ def _find_existing_stage_task(
 ):
     expected_segment_id = segment_id or ""
     expected_scene_id = scene_id or ""
+    expected_frame_kind = frame_kind or ""
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     expected_seedream_watermark = _normalize_optional_bool(seedream_watermark)
     expected_seedance_watermark = _normalize_optional_bool(seedance_watermark)
@@ -670,6 +672,8 @@ def _find_existing_stage_task(
         if str(task.payload.get("segment_id", "")) != expected_segment_id:
             continue
         if str(task.payload.get("scene_id", "")) != expected_scene_id:
+            continue
+        if str(task.payload.get("frame_kind", "")) != expected_frame_kind:
             continue
         if bool(task.payload.get("master_only", False)) != master_only:
             continue
@@ -750,6 +754,7 @@ async def create_scene_job(
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
         scene_id=payload.scene_id,
+        frame_kind=payload.frame_kind,
         master_only=payload.master_only,
         merge_only=False,
         continuity_review_mode=payload.continuity_review_mode,
@@ -775,6 +780,8 @@ async def create_scene_job(
     )
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
+    if payload.frame_kind:
+        task_payload["frame_kind"] = payload.frame_kind
     if payload.scene_id:
         task_payload["scene_id"] = payload.scene_id
     if payload.master_only:

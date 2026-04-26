@@ -87,7 +87,7 @@ class CharacterProfile:
         voice_profile_raw = raw.get("voice_profile")
         if not isinstance(voice_profile_raw, dict) or not voice_profile_raw:
             raise ValueError(
-                "CharacterProfile.from_dict 需要结构化 voice_profile；旧版仅 voice_style 数据已不再支持。"
+                "CharacterProfile.from_dict 需要结构化 voice_profile。"
             )
         voice_profile = CharacterVoiceProfile.from_dict(voice_profile_raw)
         voice_style = str(raw.get("voice_style", "") or "").strip()

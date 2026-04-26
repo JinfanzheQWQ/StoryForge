@@ -503,7 +503,7 @@ def _restore_segment_contract_resume_state(
 
     if not any(chapter.scenes for chapter in progress.chapters):
         raise ValueError(
-            "现有分段合同 checkpoint 缺少 scene 级结构，属于旧版本数据；请重新生成分段合同。"
+            "现有分段合同 checkpoint 缺少 scene 级结构，无法继续恢复；请重新生成分段合同。"
         )
     if any(
         not scene.chunks
@@ -517,7 +517,7 @@ def _restore_segment_contract_resume_state(
         )
     ):
         raise ValueError(
-            "现有分段合同 checkpoint 缺少 chunk 级进度，属于旧版本数据；请重新生成分段合同。"
+            "现有分段合同 checkpoint 缺少 chunk 级进度，无法继续恢复；请重新生成分段合同。"
         )
 
     partial_plan = (

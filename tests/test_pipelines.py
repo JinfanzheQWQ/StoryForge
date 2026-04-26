@@ -4352,7 +4352,7 @@ class PipelineTestCase(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(ValueError, "旧版本数据"):
+        with self.assertRaisesRegex(ValueError, "无法继续恢复"):
             run_story_segment_contracts_pipeline(
                 novel_package=scene_structure.novel_package,
                 config=config,

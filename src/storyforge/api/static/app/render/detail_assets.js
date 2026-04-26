@@ -1,9 +1,5 @@
 import { state } from "../state.js";
 import {
-  renderScenePromptPanel,
-  renderSegmentPromptPanel,
-} from "./prompt_tools.js";
-import {
   CONTINUITY_STATUS_LABEL,
   buildContinuityLookup,
   hasRecommendedContinuityAction,
@@ -204,67 +200,6 @@ const RUN_STAGE_ACTION_HELPERS = {
   resolveStorySourceLocator,
 };
 
-function renderTimelineTab(task, artifacts, context, run = null) {
-  return renderTimelineWorkbench({
-    task,
-    artifacts,
-    context,
-    run,
-    helpers: TIMELINE_HELPERS,
-  });
-}
-
-
-function renderWorkbenchOverviewTab(task, artifacts, context, run = null) {
-  return renderWorkbenchOverview({
-    task,
-    artifacts,
-    context,
-    run,
-    helpers: OVERVIEW_HELPERS,
-  });
-}
-
-
-function renderSceneWorkbenchTab(task, artifacts, context, run = null) {
-  return renderSceneWorkbench({
-    task,
-    artifacts,
-    context,
-    run,
-    helpers: SCENE_WORKBENCH_HELPERS,
-  });
-}
-
-function renderSegmentReviewTab(task, artifacts, context, run = null) {
-  return renderSegmentReviewWorkbench({
-    task,
-    artifacts,
-    context,
-    run,
-    helpers: SEGMENT_REVIEW_HELPERS,
-  });
-}
-
-function renderRequestDebugTab(task, artifacts, context, run = null) {
-  return renderRequestDebugWorkbench({
-    task,
-    artifacts,
-    context,
-    run,
-    helpers: REQUEST_DEBUG_HELPERS,
-  });
-}
-
-function renderStoryTab(task, context, run = null) {
-  return renderStoryStructure({
-    task,
-    context,
-    run,
-    helpers: STORY_STRUCTURE_HELPERS,
-  });
-}
-
 export function renderRunStageActions(run) {
   return renderRunStageActionPanel({
     run,
@@ -274,16 +209,16 @@ export function renderRunStageActions(run) {
 
 export function renderRunTabContent(task, artifacts, context, activeTab, run = null) {
   if (activeTab === "story") {
-    return renderStoryTab(task, context, run);
+    return renderStoryStructure({ task, context, run, helpers: STORY_STRUCTURE_HELPERS });
   }
   if (activeTab === "scenes") {
-    return renderSceneWorkbenchTab(task, artifacts, context, run);
+    return renderSceneWorkbench({ task, artifacts, context, run, helpers: SCENE_WORKBENCH_HELPERS });
   }
   if (activeTab === "segments") {
-    return renderSegmentReviewTab(task, artifacts, context, run);
+    return renderSegmentReviewWorkbench({ task, artifacts, context, run, helpers: SEGMENT_REVIEW_HELPERS });
   }
   if (activeTab === "debug") {
-    return renderRequestDebugTab(task, artifacts, context, run);
+    return renderRequestDebugWorkbench({ task, artifacts, context, run, helpers: REQUEST_DEBUG_HELPERS });
   }
-  return renderWorkbenchOverviewTab(task, artifacts, context, run);
+  return renderWorkbenchOverview({ task, artifacts, context, run, helpers: OVERVIEW_HELPERS });
 }

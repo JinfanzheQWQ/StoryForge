@@ -138,11 +138,23 @@ def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object |
     if continuity_group and getattr(continuity_group, "issue_count", 0):
         risk_types.append("连续性风险")
     status = "warning" if risk_types else "ok"
+    planner_warning_source = ""
+    if action_node_budget and action_node_count > action_node_budget:
+        planner_warning_source = "action_capacity"
+    elif missing_tail_seconds is not None and missing_tail_seconds > 0.2:
+        planner_warning_source = "timed_beats"
+    elif segment.requires_mid_frame:
+        planner_warning_source = "mid_frame"
+    elif getattr(segment, "subsegment_count", 1) > 1:
+        planner_warning_source = "subsegment_split"
+    repair_source = "continuity_report" if continuity_group and getattr(continuity_group, "issue_count", 0) else ""
     return {
         "status": status,
+        "risk_type": risk_types[0] if risk_types else "",
         "risk_types": risk_types,
         "action_node_count": action_node_count,
         "action_node_budget": action_node_budget,
+        "duration_auto_expanded_from": None,
         "duration_seconds": duration_seconds,
         "timed_beat_count": len(timed_beats),
         "timed_beat_end_seconds": timed_beat_end_seconds,
@@ -151,7 +163,30 @@ def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object |
         "mid_frame_mode": str(getattr(segment, "mid_frame_mode", "continuous") or "continuous"),
         "subsegment_index": int(getattr(segment, "subsegment_index", 1) or 1),
         "subsegment_count": int(getattr(segment, "subsegment_count", 1) or 1),
-        "repair_source": "continuity_report" if continuity_group and getattr(continuity_group, "issue_count", 0) else "",
+        "repair_source": repair_source,
+        "planner_warning_source": planner_warning_source,
+    }
+
+
+def _build_inferred_segment_diagnostics(segment: PlannedSegmentArtifactResponse) -> dict[str, object]:
+    duration_seconds = int(segment.duration_seconds or 0)
+    return {
+        "status": "ok",
+        "risk_type": "",
+        "risk_types": [],
+        "action_node_count": 0,
+        "action_node_budget": _segment_action_node_budget(duration_seconds) if duration_seconds else 0,
+        "duration_auto_expanded_from": None,
+        "duration_seconds": duration_seconds,
+        "timed_beat_count": 0,
+        "timed_beat_end_seconds": None,
+        "missing_tail_seconds": None,
+        "requires_mid_frame": bool(segment.requires_mid_frame),
+        "mid_frame_mode": str(segment.mid_frame_mode or "continuous"),
+        "subsegment_index": 1,
+        "subsegment_count": 1,
+        "repair_source": "",
+        "planner_warning_source": "",
     }
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
@@ -1260,6 +1295,7 @@ def _build_inferred_planned_segments(
             segment.start_frame and segment.end_frame and (not segment.requires_mid_frame or segment.mid_frame)
         )
         segment.video_ready = segment.rendered_clip is not None
+        segment.diagnostics = _build_inferred_segment_diagnostics(segment)
     return sorted(segment_map.values(), key=lambda item: item.segment_id)
 
 

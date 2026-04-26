@@ -21,6 +21,7 @@ if str(TESTS) not in sys.path:
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from storyforge.api.artifacts import build_task_artifacts  # noqa: E402
 from storyforge.api.main import create_app  # noqa: E402
 from storyforge.application.container import AppContainer  # noqa: E402
 from storyforge.application.projects import ProjectRecord, ProjectStore  # noqa: E402
@@ -497,7 +498,20 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("diagnostics", first_planned_segment)
             self.assertIn("action_node_count", first_planned_segment["diagnostics"])
             self.assertIn("action_node_budget", first_planned_segment["diagnostics"])
+            self.assertIn("duration_auto_expanded_from", first_planned_segment["diagnostics"])
+            self.assertIn("duration_seconds", first_planned_segment["diagnostics"])
+            self.assertIn("timed_beat_count", first_planned_segment["diagnostics"])
+            self.assertIn("timed_beat_end_seconds", first_planned_segment["diagnostics"])
+            self.assertIn("missing_tail_seconds", first_planned_segment["diagnostics"])
+            self.assertIn("requires_mid_frame", first_planned_segment["diagnostics"])
+            self.assertIn("mid_frame_mode", first_planned_segment["diagnostics"])
+            self.assertIn("subsegment_index", first_planned_segment["diagnostics"])
+            self.assertIn("subsegment_count", first_planned_segment["diagnostics"])
+            self.assertIn("risk_type", first_planned_segment["diagnostics"])
             self.assertIn("risk_types", first_planned_segment["diagnostics"])
+            self.assertIn("repair_source", first_planned_segment["diagnostics"])
+            self.assertIn("planner_warning_source", first_planned_segment["diagnostics"])
+            self.assertIn("status", first_planned_segment["diagnostics"])
             self.assertIn("submitted_prompt_variant", first_planned_segment)
             self.assertIn("submitted_reference_bindings", first_planned_segment)
             self.assertIn("scene_master_frame_request", first_planned_segment)
@@ -512,6 +526,7 @@ class ApiTestCase(unittest.TestCase):
                 self.assertFalse(first_planned_segment["mid_frame"])
                 self.assertEqual(first_planned_segment["mid_frame_prompt"], "")
                 self.assertIsNone(first_planned_segment["mid_frame_request"])
+
             continuity_report_path = Path(segment_task["result"]["output_dir"]) / "continuity_report.json"
             continuity_payload = json.loads(continuity_report_path.read_text(encoding="utf-8"))
             continuity_payload["status"] = "critical"
@@ -663,6 +678,47 @@ class ApiTestCase(unittest.TestCase):
                     ),
                 },
             )
+
+    def test_inferred_planned_segments_include_stable_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            output_dir = output_root / "run"
+            frames_dir = output_dir / "assets" / "frames"
+            rendered_dir = output_dir / "rendered"
+            frames_dir.mkdir(parents=True)
+            rendered_dir.mkdir(parents=True)
+            (frames_dir / "ch01-sc01-seg01_start.png").write_bytes(b"start")
+            (frames_dir / "ch01-sc01-seg01_mid.png").write_bytes(b"mid")
+            (frames_dir / "ch01-sc01-seg01_end.png").write_bytes(b"end")
+            (rendered_dir / "ch01-sc01-seg01.mp4").write_bytes(b"video")
+
+            task = TaskRecord(
+                task_id="task-1",
+                project_id="project-1",
+                task_type="project.story",
+                status="completed",
+                payload={},
+                created_at=utc_now(),
+                result={
+                    "output_dir": str(output_dir),
+                    "story_title": "Fallback",
+                },
+            )
+            artifacts = build_task_artifacts(task, output_root)
+
+        self.assertTrue(artifacts.available)
+        self.assertEqual(len(artifacts.planned_segments), 1)
+        segment = artifacts.planned_segments[0]
+        self.assertTrue(segment.requires_mid_frame)
+        diagnostics = segment.diagnostics
+        self.assertEqual(diagnostics["status"], "ok")
+        self.assertEqual(diagnostics["risk_type"], "")
+        self.assertEqual(diagnostics["risk_types"], [])
+        self.assertIn("duration_auto_expanded_from", diagnostics)
+        self.assertIn("planner_warning_source", diagnostics)
+        self.assertEqual(diagnostics["requires_mid_frame"], True)
+        self.assertEqual(diagnostics["mid_frame_mode"], "continuous")
+        self.assertEqual(diagnostics["action_node_count"], 0)
 
     def test_story_job_accepts_openai_selection(self) -> None:
         config_path = self._create_test_config()

@@ -611,6 +611,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `mid_frame_request`
 - `end_frame_request`
 - `video_request`
+- `diagnostics`
 - `start_frame`
 - `mid_frame`
 - `end_frame`
@@ -629,6 +630,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
 - 如果某段是非首个 scene 的首段，且上一场尾帧已经可用，`start_frame_request.reference_bindings` 里还会多一张 `temporal` 参考图，对应上一场最后一段尾帧
 - 接口返回 manifest 中记录的请求视图；当 manifest 只包含产物文件时，会基于当前 manifest 和产物文件提供 `derived_from_manifest` 请求视图
+- `diagnostics` 由后端统一生成，用于前端展示规划状态，包含 `status / risk_type / risk_types / action_node_count / action_node_budget / duration_auto_expanded_from / duration_seconds / timed_beat_count / timed_beat_end_seconds / missing_tail_seconds / requires_mid_frame / mid_frame_mode / subsegment_index / subsegment_count / repair_source / planner_warning_source`
+- `duration_auto_expanded_from` 只有源计划真实记录扩秒前时长时才有值，否则为 `null`；接口不会推断或伪造扩秒前时长
+- `planner_warning_source` 当前可能为 `action_capacity / timed_beats / mid_frame / subsegment_split` 或空字符串
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
 

@@ -235,7 +235,7 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - Prompt Editor 支持重置当前点 prompt：重新按当前合同组装系统默认 prompt 并回写计划，不自动提交媒体任务
 - Request Inspector 已提供 Prompt Diff，用于对比当前计划 prompt 与真实提交 prompt 的长度和差异片段
 - 场景工作台已提供 scene 级修复 / 重生成母图入口，并展示场景基准、过渡合同、母图状态以及同一 scene 下各 segment 的首帧、中段、尾帧、视频和风险状态
-- 分段审片台已展示规划诊断摘要；Request Inspector 已展示规划诊断面板与完整 diagnostics JSON，包括动作点 / 动作预算、自动扩秒、时长、timed_beats 覆盖、中段触发、子段拆分、风险类型和修复来源
+- 分段审片台已展示规划诊断摘要；Request Inspector 已展示后端统一生成的 diagnostics JSON，包括动作点 / 动作预算、自动扩秒、时长、timed_beats 覆盖、中段触发、子段拆分、风险类型、修复来源和规划告警来源
 - 只读 prompt 和实际请求 JSON 支持一键复制，便于排查 Seedream / Seedance 实际提交内容
 - 时间线还会展示场景母图、首帧、中段帧、尾帧和视频片段的真实提交参数 JSON，可直接核对当次到底用了哪些图、按什么顺序提交
 - 项目、任务、任务结果已持久化到 MySQL

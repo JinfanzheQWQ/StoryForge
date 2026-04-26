@@ -248,8 +248,8 @@ StoryForge 当前是一套面向“小说生成 -> 结构化规划 -> 图片生�
 - 应用层已拆分为 container / runtime / handlers / support / persistence
 - 小说域已拆分为 service / prompts / schemas / repair / rules
 - 视频域已拆分为 service / chapter_event_validation / chapter_orchestration / chunk_orchestration / segment_validation / structure_validation / structured_generation / structured_retry_prompts / text_rules / prompting / repair / planning
-- 前端详情页已开始拆分：Prompt Editor / Request Inspector / Prompt Diff 已从 `render/detail_assets.js` 抽到 `render/prompt_tools.js`，生产总览已抽到 `render/overview.js`，正文与结构页已抽到 `render/story_structure.js`，阶段入口已抽到 `render/run_stage_actions.js`，分段审片台主体已抽到 `render/segment_review.js`，场景工作台主体已抽到 `render/scene_workbench.js`，请求与调试页已抽到 `render/request_debug.js`，旧时间线已抽到 `render/timeline.js`
-- 前端已新增轻量 Node 渲染测试，覆盖当前点 prompt 面板、Request Inspector、生产总览指标、正文与结构页入口、阶段入口按钮、分段审片当前点按钮属性、场景工作台按钮属性、状态矩阵、请求调试文档过滤和旧时间线关键生成按钮
+- 前端详情页已开始拆分：Prompt Editor / Request Inspector / Prompt Diff 已从 `render/detail_assets.js` 抽到 `render/prompt_tools.js`，生产总览已抽到 `render/overview.js`，正文与结构页已抽到 `render/story_structure.js`，阶段入口已抽到 `render/run_stage_actions.js`，分段审片台主体已抽到 `render/segment_review.js`，场景工作台主体已抽到 `render/scene_workbench.js`，请求与调试页已抽到 `render/request_debug.js`，时间线界面已抽到 `render/timeline.js`，时间线数据归一化已抽到 `render/timeline_data.js`
+- 前端已新增轻量 Node 渲染测试，覆盖当前点 prompt 面板、Request Inspector、生产总览指标、正文与结构页入口、阶段入口按钮、分段审片当前点按钮属性、场景工作台按钮属性、状态矩阵、请求调试文档过滤、时间线数据归一化和时间线关键生成按钮
 - 测试侧 deterministic builders 已与运行时代码分离
 - 最近一次本地基线：
   - `.venv/bin/ruff check src/storyforge tests/test_pipelines.py tests/test_api.py`

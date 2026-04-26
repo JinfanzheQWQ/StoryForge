@@ -12,6 +12,7 @@ import {
   renderPromptEditorPanel,
   renderRequestInspectorPanel,
   renderSegmentAssetSelector,
+  renderSegmentDiagnosticsSummary,
   resolveSelectedSegmentAssetOption,
 } from "./prompt_tools.js";
 
@@ -99,6 +100,7 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
         </div>
       </div>
       ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
+      ${renderSegmentDiagnosticsSummary(segment)}
       <div class="timeline-preview-grid segment-review-preview-grid">
         ${helpers.renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
         ${segment.requiresMidFrame ? helpers.renderTimelinePreview(segment.midFrame, "中段", galleryId) : ""}

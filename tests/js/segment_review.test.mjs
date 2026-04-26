@@ -66,12 +66,28 @@ const segment = {
   videoRequest: { payload: { content: [{ type: "text", text: "实际视频" }] }, referenceBindings: [] },
   motionPlan: {},
   submittedReferenceBindings: [],
-  diagnostics: {},
+  diagnostics: {
+    status: "warning",
+    risk_type: "动作容量过载",
+    action_node_count: 3,
+    action_node_budget: 2,
+    duration_auto_expanded_from: 5,
+    duration_seconds: 8,
+    timed_beat_count: 2,
+    timed_beat_end_seconds: 8,
+    requires_mid_frame: true,
+    mid_frame_mode: "continuous",
+    repair_source: "planner",
+  },
 };
 
 state.selectedSegmentAssetKind = "start";
 const startHtml = renderSegmentReviewDetail({ segment, index: 0, model, galleryId: "g", characterStatus: "completed", helpers });
 assert.match(startHtml, /重做首帧/);
+assert.match(startHtml, /规划诊断摘要/);
+assert.match(startHtml, /动作容量过载/);
+assert.match(startHtml, /3 \/ 2/);
+assert.match(startHtml, /5s -&gt; 8s/);
 assert.match(startHtml, /data-generate-scene-segment="ch01-sc01-seg01"/);
 assert.match(startHtml, /data-frame-kind="start"/);
 assert.match(startHtml, /计划首帧/);

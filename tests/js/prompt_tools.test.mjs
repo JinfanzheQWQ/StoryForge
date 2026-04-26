@@ -39,7 +39,22 @@ const segment = {
   },
   motionPlan: {},
   submittedReferenceBindings: [],
-  diagnostics: {},
+  diagnostics: {
+    status: "warning",
+    risk_types: ["容量过载"],
+    action_node_count: 4,
+    action_node_budget: 3,
+    duration_auto_expanded_from: 8,
+    duration_seconds: 10,
+    timed_beat_count: 3,
+    timed_beat_end_seconds: 10,
+    missing_tail_seconds: 0,
+    requires_mid_frame: true,
+    mid_frame_mode: "continuous",
+    subsegment_index: 1,
+    subsegment_count: 2,
+    repair_source: "timeline_repair",
+  },
 };
 
 state.selectedSegmentAssetKind = "start";
@@ -57,6 +72,12 @@ assert.doesNotMatch(startEditorHtml, /计划视频/);
 
 const startInspectorHtml = renderRequestInspectorPanel(segment, startOption);
 assert.match(startInspectorHtml, /Prompt Diff/);
+assert.match(startInspectorHtml, /规划诊断/);
+assert.match(startInspectorHtml, /动作点/);
+assert.match(startInspectorHtml, /4 \/ 3/);
+assert.match(startInspectorHtml, /8s -&gt; 10s/);
+assert.match(startInspectorHtml, /完整诊断 JSON/);
+assert.match(startInspectorHtml, /timeline_repair/);
 assert.match(startInspectorHtml, /实际首帧/);
 assert.doesNotMatch(startInspectorHtml, /视频实际提交 Prompt/);
 

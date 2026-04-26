@@ -90,6 +90,18 @@ const segment = {
   video_prompt: "视频 prompt",
   seedance_motion_prompt: "图片1到图片2自然推进。",
   motion_plan: { start_to_end: "从等待到抬头" },
+  diagnostics: {
+    status: "warning",
+    risk_types: ["尾部留空"],
+    action_node_count: 2,
+    action_node_budget: 2,
+    duration_seconds: 6,
+    timed_beat_count: 2,
+    timed_beat_end_seconds: 4,
+    missing_tail_seconds: 2,
+    requires_mid_frame: false,
+    planner_warning_source: "timed_beats",
+  },
   scene_ready: true,
   video_ready: true,
 };
@@ -154,12 +166,15 @@ assert.match(scenesHtml, /data-generate-scene-master="ch01-sc01"/);
 const segmentsHtml = renderRunTabContent(rootTask, artifacts, "project", "segments", run);
 assert.match(segmentsHtml, /分段审片台/);
 assert.match(segmentsHtml, /入口等待/);
+assert.match(segmentsHtml, /规划诊断摘要/);
+assert.match(segmentsHtml, /尾部留空/);
 assert.match(segmentsHtml, /data-select-review-segment="ch01-sc01-seg01"/);
 
 const debugHtml = renderRunTabContent(rootTask, artifacts, "project", "debug", run);
 assert.match(debugHtml, /请求与调试/);
 assert.match(debugHtml, /seedance_execution.json/);
 assert.match(debugHtml, /ch01-sc01-seg01/);
+assert.match(debugHtml, /完整诊断 JSON/);
 
 const fallbackHtml = renderRunTabContent(rootTask, artifacts, "task", "unknown", run);
 assert.match(fallbackHtml, /生产总览/);

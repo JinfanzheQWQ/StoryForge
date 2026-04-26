@@ -24,6 +24,87 @@ function renderCopyButton(label = "复制") {
   `;
 }
 
+function getSegmentDiagnostics(segment) {
+  return segment?.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {};
+}
+
+function hasSegmentDiagnostics(segment) {
+  return Object.keys(getSegmentDiagnostics(segment)).length > 0;
+}
+
+function formatDiagnosticsSeconds(value, fallback = "-") {
+  return value != null && value !== "" ? `${value}s` : fallback;
+}
+
+function diagnosticsRiskTypes(diagnostics) {
+  return Array.isArray(diagnostics.risk_types)
+    ? diagnostics.risk_types
+    : Array.isArray(diagnostics.risk_type)
+      ? diagnostics.risk_type
+      : diagnostics.risk_type
+        ? [diagnostics.risk_type]
+        : [];
+}
+
+function diagnosticsRows(segment) {
+  const diagnostics = getSegmentDiagnostics(segment);
+  const duration = diagnostics.duration_seconds ?? segment?.durationSeconds;
+  const autoExpandedFrom = diagnostics.duration_auto_expanded_from;
+  const durationLabel = autoExpandedFrom != null && duration != null
+    ? `${autoExpandedFrom}s -> ${duration}s`
+    : formatDiagnosticsSeconds(duration);
+  return [
+    ["动作点", `${diagnostics.action_node_count ?? "-"} / ${diagnostics.action_node_budget ?? "-"}`],
+    ["时长", durationLabel],
+    ["节拍", `${diagnostics.timed_beat_count ?? 0} 拍`],
+    ["节拍覆盖", formatDiagnosticsSeconds(diagnostics.timed_beat_end_seconds, "未解析")],
+    ["尾部留空", formatDiagnosticsSeconds(diagnostics.missing_tail_seconds)],
+    ["中段", (diagnostics.requires_mid_frame ?? segment?.requiresMidFrame) ? `需要 · ${diagnostics.mid_frame_mode || "continuous"}` : "不需要"],
+    ["子段", `${diagnostics.subsegment_index || 1}/${diagnostics.subsegment_count || 1}`],
+    ["来源", diagnostics.repair_source || diagnostics.planner_warning_source || "planner"],
+  ];
+}
+
+export function renderSegmentDiagnosticsSummary(segment) {
+  if (!hasSegmentDiagnostics(segment)) {
+    return "";
+  }
+  const diagnostics = getSegmentDiagnostics(segment);
+  const riskTypes = diagnosticsRiskTypes(diagnostics);
+  return `
+    <section class="segment-diagnostics-summary">
+      <div class="prompt-section-head">
+        <strong>规划诊断摘要</strong>
+        <span class="matrix-state ${diagnostics.status === "warning" ? "missing" : "ok"}">${diagnostics.status === "warning" ? "需留意" : "稳定"}</span>
+      </div>
+      ${riskTypes.length ? `<div class="detail-chip-row">${riskTypes.map((item) => chip(item)).join("")}</div>` : ""}
+      <div class="segment-diagnostics-grid compact">
+        ${diagnosticsRows(segment).map(([label, value]) => `
+          <article>
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(String(value))}</strong>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderSegmentDiagnosticsJson(segment) {
+  if (!hasSegmentDiagnostics(segment)) {
+    return "";
+  }
+  return `
+    <section class="prompt-section">
+      <div class="prompt-section-head">
+        <strong>完整诊断 JSON</strong>
+        <span>${renderCopyButton()}</span>
+      </div>
+      <pre class="prompt-code">${escapeHtml(JSON.stringify(getSegmentDiagnostics(segment), null, 2))}</pre>
+    </section>
+  `;
+}
+
 export function renderPromptSection(title, promptText, note = "") {
   const normalized = String(promptText || "").trim();
   if (!normalized) {
@@ -438,21 +519,12 @@ export function renderPromptEditorPanel(segment, rootTask, option = resolveSelec
 
 
 function renderSegmentDiagnosticsPanel(segment) {
-  const diagnostics = segment?.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {};
+  const diagnostics = getSegmentDiagnostics(segment);
   if (!Object.keys(diagnostics).length) {
     return "";
   }
-  const riskTypes = Array.isArray(diagnostics.risk_types) ? diagnostics.risk_types : [];
-  const rows = [
-    ["动作点", `${diagnostics.action_node_count ?? "-"} / ${diagnostics.action_node_budget ?? "-"}`],
-    ["时长", diagnostics.duration_seconds ? `${diagnostics.duration_seconds}s` : "-"],
-    ["节拍", `${diagnostics.timed_beat_count ?? 0} 拍`],
-    ["节拍覆盖", diagnostics.timed_beat_end_seconds != null ? `${diagnostics.timed_beat_end_seconds}s` : "未解析"],
-    ["尾部留空", diagnostics.missing_tail_seconds != null ? `${diagnostics.missing_tail_seconds}s` : "-"],
-    ["中段", diagnostics.requires_mid_frame ? `需要 · ${diagnostics.mid_frame_mode || "continuous"}` : "不需要"],
-    ["子段", `${diagnostics.subsegment_index || 1}/${diagnostics.subsegment_count || 1}`],
-    ["来源", diagnostics.repair_source || "planner"],
-  ];
+  const riskTypes = diagnosticsRiskTypes(diagnostics);
+  const rows = diagnosticsRows(segment);
   return `
     <section class="segment-diagnostics-panel">
       <div class="prompt-editor-panel-head">
@@ -472,6 +544,7 @@ function renderSegmentDiagnosticsPanel(segment) {
           </article>
         `).join("")}
       </div>
+      ${renderSegmentDiagnosticsJson(segment)}
     </section>
   `;
 }

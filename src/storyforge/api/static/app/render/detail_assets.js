@@ -64,11 +64,7 @@ import {
   buildSegmentContractFailureLabel,
   buildSegmentContractProgressLabel,
   buildOverviewNote,
-  escapeHtml,
-  formatShortTime,
   getSegmentContractProgress,
-  metricCard,
-  singleAssetMessage,
 } from "../utils.js";
 
 function resolveSegmentContractsUiState(segmentContractsTask, segmentContractsStatus) {
@@ -258,27 +254,6 @@ function renderRequestDebugTab(task, artifacts, context, run = null) {
     run,
     helpers: REQUEST_DEBUG_HELPERS,
   });
-}
-
-function renderOverviewTab(task, artifacts, context, run = null) {
-  if (context === "project") {
-    return renderTimelineTab(task, artifacts, context, run);
-  }
-  return `
-    <section class="asset-grid">
-      <article class="asset-block">
-        <h4>制作概览</h4>
-        <div class="detail-metrics">
-          ${metricCard("创建时间", formatShortTime(task.created_at))}
-          ${metricCard("角色图", String(artifacts?.character_images?.length || 0))}
-          ${metricCard("场景帧", String(artifacts?.scene_frames?.length || 0))}
-          ${metricCard("片段视频", String(artifacts?.rendered_clips?.length || 0))}
-        </div>
-        <p class="asset-note">${escapeHtml(buildOverviewNote(task, artifacts, run))}</p>
-      </article>
-      ${renderFullStoryBlock(artifacts?.full_story, context)}
-    </section>
-  `;
 }
 
 function renderStoryTab(task, context, run = null) {

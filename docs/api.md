@@ -1,13 +1,13 @@
 # API 文档
 
-这份文档描述 StoryForge 当前可用的 HTTP 接口。  
+这份文档描述 StoryForge 的 HTTP 接口。
 默认服务基于 `FastAPI`，接口文档也可在运行时通过 Swagger 查看。
 
 这里主要记录 HTTP contract，不重复安装、完整操作流程或系统分层：
 
 - 安装与使用步骤：看 [usage.md](usage.md)
 - 系统分层与模块边界：看 [architecture.md](architecture.md)
-- 当前完成度与路线图：看 [status.md](status.md)
+- 产品状态：看 [status.md](status.md)
 
 ## 启动服务
 
@@ -56,7 +56,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 前端创建页只允许选择 `llm_provider`
 - `llm_model` 会由后端和 bootstrap 返回，但页面中的模型 ID 为只读默认值，不允许手工编辑
-- 同时会返回默认的 `continuity_review_mode`，当前默认值为 `auto`
+- 同时会返回默认的 `continuity_review_mode`，默认值为 `auto`
 - 同时会返回 `seedream_watermark` 与 `seedance_watermark` 默认值，供前端决定本次 run 是否保留图片 / 视频水印
 
 ### 项目
@@ -137,7 +137,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `project_id = null` 时会自动新建项目
 - 传入已有 `project_id` 时，会把本次运行挂到已有项目下
 - Web 页面的 `llm_model` 为只读默认值；如通过 API 直调，仍可显式传入
-- `continuity_review_mode` 可选 `off / auto / on`，用于控制后续 `continuity_report.json` 是否执行 `V2` LLM 软审校
+- `continuity_review_mode` 可选 `off / auto / on`，用于控制后续 `continuity_report.json` 是否执行 LLM 软审校
 - `seedream_watermark` 控制后续 Seedream 生图是否保留水印
 - `seedance_watermark` 控制后续 Seedance 生视频是否保留水印
 
@@ -155,18 +155,18 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 创建“生成场景结构”任务。
 
-这一步会基于当前 `story_source.json` 生成：
+这一步会基于 `story_source.json` 生成：
 
 - `novel_package.json`
 - `novel_audit.json`
 - `story_memory.json`
 - `character_visual_bible.json`
-- 第一版 `scene_plan.json`
+- `scene_plan.json`
 
 其中：
 
-- `scene_plan.json` 这时只保存 `chapter -> scene` skeleton、`scene_transition_contract`、`scene_bible` 和 `scene_master_frame` 相关字段
-- 每个 scene 还会带 `covered_event_ids` 与紧凑版 `covered_event_summaries`，用于显式标记它覆盖了当前章节的哪些 must-cover 关键事件，以及后续 chunk planner 应聚焦的事件摘要
+- `scene_plan.json` 在场景结构阶段保存 `chapter -> scene` skeleton、`scene_transition_contract`、`scene_bible` 和 `scene_master_frame` 相关字段
+- 每个 scene 还会带 `covered_event_ids` 与紧凑版 `covered_event_summaries`，用于显式标记它覆盖了目标章节的哪些 must-cover 关键事件，以及后续 chunk planner 应聚焦的事件摘要
 - 还不会生成正式 `segment contracts`、`segment_plan.json`、`scene_image_manifest.json` 或 `seedance_manifest.json`
 
 请求示例：
@@ -185,12 +185,12 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `continuity_review_mode` 会跟随任务记录保留下来，供后续 `project.segment_contracts`、`project.scenes`、`project.videos` 继承
-- `seedream_watermark / seedance_watermark` 可选；如果不传，后续阶段会继承当前 run 根任务上的设置
+- `seedream_watermark / seedance_watermark` 可选；如果不传，后续阶段会继承本次 run 根任务上的设置
 - 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode + watermark 组合` 复用已有 queued / running / completed 任务
 
 #### `PUT /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}`
 
-保存工作台里人工修改后的媒体 prompt。接口只更新当前 run 的规划文件，不会自动提交 Seedream 或 Seedance 任务。
+保存工作台里人工修改后的媒体 prompt。接口只更新本次 run 的规划文件，不会自动提交 Seedream 或 Seedance 任务。
 
 请求字段：
 
@@ -220,7 +220,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 #### `POST /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}/reset`
 
-重置当前 segment 的单个媒体 prompt。接口会基于当前 segment 合同重新组装系统默认 prompt 并回写计划文件，不会自动提交 Seedream 或 Seedance。
+重置目标 segment 的单个媒体 prompt。接口会基于目标 segment 合同重新组装系统默认 prompt 并回写计划文件，不会自动提交 Seedream 或 Seedance。
 
 请求字段：
 
@@ -264,9 +264,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 最终版 `scene_plan.json` 是场景级主规划文件，保存 `chapter -> scene -> segment`
 - stage2 把 scene skeleton 重建成最终 `scene_plan.json` 时，会保留 scene 级 `scene_transition_contract` 与 `covered_event_summaries`
 - 每个 scene 的首个 chunk / 首个 segment 都会消费 `scene_transition_contract`，把跨 scene 承接落到 `opening_match / timed_beats`
-- `Scene Chunk Planner` 的 prompt 与结构化校验都会读取当前 scene 绑定的 `covered_event_summaries`，提前拦截把后续 scene 关键推进写进当前 scene 的越界 chunk
+- `Scene Chunk Planner` 的 prompt 与结构化校验都会读取目标 scene 绑定的 `covered_event_summaries`，提前拦截把后续 scene 关键推进写进目标 scene 的越界 chunk
 - `segment_plan.json` 是 flat 执行索引，供逐段生成、重试和任务映射使用；每个 segment 会继承所属 scene 的 `scene_bible`，并带 `shot_state`、`continuity_link` 与 `motion_plan`
-- `continuity_report.json` 的 `V1` 还会直接输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
+- `continuity_report.json` 会输出 scene 边界风险，例如 `scene_transition_exit_state_drift / scene_transition_entry_weak / scene_transition_bridge_not_consumed`
 - `scene_structure_source.json` 是恢复专用的原始 scene skeleton 快照
 - `segment_contract_progress.json` 会按 `chapter -> scene -> chunk` 记录进度、失败位置和恢复状态；每完成一个 chunk 就会回写一次 checkpoint
 
@@ -288,9 +288,9 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 如果缺少 scene structure 产物，接口会直接返回 `400`
 - `continuity_review_mode` 可选 `off / auto / on`
-- `auto` 只在更值得花成本的 run 上触发 `V2`，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或 `V1` 已发现中高风险
-- 如果不传，后端会继承当前 run 上次使用的模式，默认回退为 `auto`
-- `seedream_watermark / seedance_watermark` 如果不传，后端会继承当前 run 根任务上的设置
+- `auto` 只在更值得花成本的 run 上触发 LLM 软审校，例如多角色同框、同 scene 多 segment、存在对白/字幕、存在连续承接，或规则审校发现中高风险
+- 如果不传，后端会继承本次 run 使用的模式，默认回退为 `auto`
+- `seedream_watermark / seedance_watermark` 如果不传，后端会继承本次 run 根任务上的设置
 - `resume_from_progress = true` 时，会复用 `segment_contract_progress.json` 里已落盘的 chunk 规划与失败位置，只继续未完成 chunk / scene / chapter，不能和 `segment_id / scene_id / master_only / merge_only` 混用
 - `resume_from_progress = true` 要求 checkpoint 包含 `scene/chunk` 级进度结构
 - 幂等去重会按 `source_task_id + story_source_revision + continuity_review_mode + watermark 组合` 复用已有 queued / running / completed 任务
@@ -313,10 +313,10 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 说明：
 
-- `Cast Analyzer` 的 `source_evidence` 仍必须能在正文中定位；当前后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
+- `Cast Analyzer` 的 `source_evidence` 必须能在正文中定位；后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 - 这一步依赖已经完成且未过期的 `project.segment_contracts`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上
-- `seedream_watermark / seedance_watermark` 可选；不传则继承当前 run 根任务上的设置
+- `seedream_watermark / seedance_watermark` 可选；不传则继承本次 run 根任务上的设置
 
 #### `POST /v1/projects/scenes`
 
@@ -557,7 +557,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 修复任务的 `result` 会额外带 `repair_execution_mode`、`media_regeneration_required` 和 `pending_media_actions`
 - `scene_id` 修复任务的 `result` 还会额外带 `selection_mode` 与 `affected_segment_ids`，用于解释本次修复是局部联动还是整 scene 方案
 - `project.continuity_repair_batch` 的 `result` 还会额外带 `processed_unit_count`、`repaired_unit_count`、`noop_unit_count`、`failed_unit_count`、`remaining_repairable_count` 与 `has_more_batches`
-- 如果任务或其根 run 开启了 `V2` 软审校，`payload` / `result` 里会带 `continuity_review_mode`
+- 如果任务或其根 run 开启了 LLM 软审校，`payload` / `result` 里会带 `continuity_review_mode`
 
 #### `GET /v1/tasks/{task_id}/artifacts`
 
@@ -584,7 +584,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `image_kind`
 - `error`
 
-其中 `planned_segments` 会优先来自 `scene_plan.json`，并回落到 `segment_plan.json`。接口会带上每个 segment 当前对应的：
+其中 `planned_segments` 会优先来自 `scene_plan.json`，并回落到 `segment_plan.json`。接口会带上每个 segment 对应的：
 
 - `scene_id`
 - `scene_title`
@@ -622,17 +622,17 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 说明：
 
 - `video_prompt` 是分段合同阶段落盘的基础视频 prompt；画面推进会消费 `motion_plan` 并绑定 `图片1 / 图片2 / 图片3`
-- `motion_plan` 返回当前 segment 的画面推进合同，`seedance_motion_prompt` 返回最终 Seedance prompt 中的参考图绑定与画面推进摘录
+- `motion_plan` 返回目标 segment 的画面推进合同，`seedance_motion_prompt` 返回最终 Seedance prompt 中的参考图绑定与画面推进摘录
 - `submitted_video_prompt`、`submitted_prompt_variant`、`submitted_reference_bindings` 只有该段真正提交过视频后才会有值
-- `mid_frame_mode` 当前取值为 `continuous` 或 `insert_cut`；当前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
-- `submitted_reference_bindings` 会返回当前实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的首帧 / 中段帧 / 尾帧
+- `mid_frame_mode` 取值为 `continuous` 或 `insert_cut`；前者表示中段仍是主镜头推进，后者表示中段是从主镜头短促切入的单人 / 局部插入镜头
+- `submitted_reference_bindings` 会返回实际送往 Seedance 的时间锚点图绑定顺序和用途说明，也就是 `图片1 / 图片2 / 图片3` 对应的首帧 / 中段帧 / 尾帧
 - `scene_master_frame_request / start_frame_request / mid_frame_request / end_frame_request / video_request` 会返回真实提交时的 `provider / endpoint / variant / payload / reference_bindings`
 - 如果某段首帧没有重新调用 Seedream，而是直接复用上一段尾帧，`start_frame_request.payload.mode` 会标成 `reuse_previous_end_frame`
 - 如果某段是非首个 scene 的首段，且上一场尾帧已经可用，`start_frame_request.reference_bindings` 里还会多一张 `temporal` 参考图，对应上一场最后一段尾帧
-- 接口返回 manifest 中记录的请求视图；当 manifest 只包含产物文件时，会基于当前 manifest 和产物文件提供 `derived_from_manifest` 请求视图
+- 接口返回 manifest 中记录的请求视图；当 manifest 只包含产物文件时，会基于 manifest 和产物文件提供 `derived_from_manifest` 请求视图
 - `diagnostics` 由后端统一生成，用于前端展示规划状态，包含 `status / risk_type / risk_types / action_node_count / action_node_budget / duration_auto_expanded_from / duration_seconds / timed_beat_count / timed_beat_end_seconds / missing_tail_seconds / requires_mid_frame / mid_frame_mode / subsegment_index / subsegment_count / repair_source / planner_warning_source`
 - `duration_auto_expanded_from` 只有源计划真实记录扩秒前时长时才有值，否则为 `null`；接口不会推断或伪造扩秒前时长
-- `planner_warning_source` 当前可能为 `action_capacity / timed_beats / mid_frame / subsegment_split` 或空字符串
+- `planner_warning_source` 可能为 `action_capacity / timed_beats / mid_frame / subsegment_split` 或空字符串
 
 前端会根据这份索引直接渲染逐段时间线，即使某个片段还没有实际产物，也会先展示出来等待单独触发。
 
@@ -641,7 +641,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `continuity_repair_{segment_id}.json`
 - `continuity_repair_{scene_id}.json`
 
-`continuity_summary` 当前会返回：
+`continuity_summary` 会返回：
 
 - `status`
 - `report_version`
@@ -660,7 +660,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - `recommended_actions`
 - `top_issues`
 
-`continuity_scene_groups` 与 `continuity_segment_groups` 会把 `continuity_report.json` 里的问题明细按 `scene` / `segment` 聚合后返回。每组当前包含：
+`continuity_scene_groups` 与 `continuity_segment_groups` 会把 `continuity_report.json` 里的问题明细按 `scene` / `segment` 聚合后返回。每组包含：
 
 - `scope`
 - `scene_id`
@@ -693,7 +693,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 服务启动时会扫描上次残留的 `running` 任务，并把它们重新放回 `queued` 等待执行；不会因为一次服务重启直接写成失败。
 
-## 当前约束
+## 运行约束
 
 这里仅保留和 API 行为直接相关的运行约束：
 
@@ -701,7 +701,7 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 服务重启后，残留 `running` 任务会重新排回 `queued`
 - 重启后的重新排队不是生产级幂等队列；真实生产环境仍应替换成 Redis / Celery / Arq / TaskIQ 等持久化队列
 
-更完整的系统限制与生产路线图见：[status.md](status.md)
+更完整的系统限制见：[status.md](status.md)
 
 ## 相关文档
 

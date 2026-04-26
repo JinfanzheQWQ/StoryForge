@@ -1,403 +1,167 @@
 # 开发文档
 
-这份文档面向维护 StoryForge 代码库的开发者。  
-它关注“代码应该怎么改、改到哪里、如何验证”，而不是业务使用方法。
-
-这里不重复系统分层图、接口示例或路线图：
-
-- 模块边界：看 [architecture.md](architecture.md)
-- HTTP 接口：看 [api.md](api.md)
-- 当前状态与下一步：看 [status.md](status.md)
+这份文档说明 StoryForge 的代码维护边界、prompt 维护方式、测试要求和目录卫生。产品使用看 [usage.md](usage.md)，接口字段看 [api.md](api.md)，系统结构看 [architecture.md](architecture.md)。
 
 ## 开发原则
 
-### 业务对象优先放 `domains/`
+- 业务规则优先放在 `domains/`，API 层只做请求解析、响应组装和任务入口。
+- 外部 provider 访问必须通过 `integrations/`，不要把 HTTP 细节散落到业务层。
+- pipeline 负责阶段编排，domain service 负责领域判断和结构化合同。
+- artifacts API 返回页面需要的事实字段，前端不做业务推断。
+- prompt、validator、schema 必须围绕同一套当前生产结构维护。
+- 删除冗余代码时优先删无引用包装、重复文档和失效字段，不删除当前流程需要的失败保护。
 
-小说和视频的核心规则、schema、领域服务都应放在 `domains/`，不要直接依赖 FastAPI。
-
-### 外部系统必须通过 `integrations/`
-
-DeepSeek、Seedream、Seedance、ffmpeg、MySQL 等外部系统都应通过适配层接入，避免把网络调用散落到领域逻辑中。
-
-### API 不承载业务规则
-
-`api/` 只负责：
-
-- 解析请求
-- 调用应用层
-- 返回响应
-
-长任务、状态传播和结果合并都不应直接写进 router。
-
-### 对外入口稳定，内部实现可以继续拆
-
-如果某个 service / pipeline 变大，优先在内部继续拆模块，而不是先改公开入口。  
-当前 `NovelGeneratorService` 和 `NovelToVideoService` 都采用了这个策略。
-
-## 当前代码组织
+## 代码边界
 
 ### 应用层
 
-- [`../src/storyforge/application/container.py`](../src/storyforge/application/container.py)
-- [`../src/storyforge/application/tasks.py`](../src/storyforge/application/tasks.py)
-- [`../src/storyforge/application/task_runtime.py`](../src/storyforge/application/task_runtime.py)
-- [`../src/storyforge/application/task_handlers.py`](../src/storyforge/application/task_handlers.py)
-- [`../src/storyforge/application/task_support.py`](../src/storyforge/application/task_support.py)
+- `application/container.py`：装配配置、存储、队列和任务处理器。
+- `application/task_runtime.py`：任务执行上下文与 handler 构建。
+- `application/task_handlers.py`：项目阶段任务入口。
+- `application/tasks.py`：任务记录、队列和任务状态。
+- `application/projects.py`：项目记录和项目存储。
 
-职责：
+### API 层
 
-- 容器装配
-- 任务分发
-- 状态切换
-- 结果传播
-- 项目 / 任务存储
+- `api/main.py`：FastAPI 应用入口。
+- `api/routers/projects.py`：项目、阶段任务、prompt 保存和重置接口。
+- `api/routers/tasks.py`：任务查询接口。
+- `api/artifacts.py`：产物索引、planned segment 展示数据、请求视图和 diagnostics 组装。
+- `api/schemas.py`：HTTP 请求与响应模型。
+- `api/static/app/`：Web 工作台前端模块。
 
 ### 小说域
 
-- [`../src/storyforge/domains/novel/service.py`](../src/storyforge/domains/novel/service.py)
-- [`../src/storyforge/domains/novel/prompts.py`](../src/storyforge/domains/novel/prompts.py)
-- [`../src/storyforge/domains/novel/schemas.py`](../src/storyforge/domains/novel/schemas.py)
-- [`../src/storyforge/domains/novel/repair.py`](../src/storyforge/domains/novel/repair.py)
-- [`../src/storyforge/domains/novel/rules.py`](../src/storyforge/domains/novel/rules.py)
-- [`../tests/_deterministic_novel_builders.py`](../tests/_deterministic_novel_builders.py)
-
-维护约定：
-
-- 小说链路先走 `Story Drafter`，再走 `Cast Analyzer`
-- 角色结构不要再直接从 brief 主分析，优先基于已生成小说草稿解析
-- prompt 模板统一放 `prompts.py`
-- 结构化输出 schema 统一放 `schemas.py`
-- 角色卡必须显式保留 `cast_slot_id`，不要只靠数组顺序猜测主角和配角对应关系
-- 新的 deterministic 测试夹具放 `tests/_deterministic_novel_builders.py`
-- 新的纠偏逻辑放 `repair.py`
-- 新的 brief 启发规则放 `rules.py`，但它们只做 repair / 规则判断，不做主分析
-- deterministic builders / repair / heuristics 与 `service.py` 分离维护
-
-### 小说 Prompt 维护约定
-
-当前小说 prompt 采用统一分层：
-
-1. `system_prompt`
-   只定义该 Agent 的角色和职责，不堆具体业务细则
-2. `user_prompt`
-   携带项目上下文、上游结构化结果和当前阶段硬约束
-3. `schema`
-   约束返回结构
-4. `repair`
-   负责字段规整、顺序校正、名称归一化和轻量修补
-
-当前小说链路的顺序是：
-
-1. `Story Architect`
-2. `Story Drafter`
-3. `Cast Analyzer`
-4. `Character Designer`
-5. `Chapter Planner`
-6. `Editorial Reviewer`
-
-如果要改“角色层级”“角色数量判断”“前两位角色顺序”“主配角关系图”这类行为，优先顺序必须是：
-
-1. 先改 `Story Drafter` 是否把关键角色真实写进小说草稿
-2. 再改 `Cast Analyzer` prompt 和 schema
-3. 再改消费它的角色 / 章节 prompt
-4. 最后才考虑是否补 heuristic 或 repair
-
-不要反过来先堆关键词规则。
-
-当前小说链路的默认约定是：
-
-1. `Story Architect` 只负责项目底稿，不负责钉死最终角色结构
-2. `Story Drafter` 先生成完整小说草稿
-3. `Cast Analyzer` 再从小说草稿中抽取不可替代的角色指代，而不是直接靠 brief 主分析
-4. 每个 slot 都必须保留 `brief_label`
-5. 每个 slot 都应尽量保留 `source_evidence`，并优先写正文里可直接定位的裸名或稳定称呼
-6. `Character Designer` 必须一一消费这些 slot，并回填 `cast_slot_id`
-7. 角色正式名字必须全表唯一；该约束由 `CharacterRosterSchema` 强制校验
-8. 如果 LLM 输出同名角色，必须直接触发 structured retry；重试仍失败就显式报错，并由模型重新生成有效角色名
-9. `Chapter Planner` 必须以小说草稿的真实章节事件为事实基础，不要重新发明章节顺序
-10. 当前 `story_source` 就是正文真源；结构化分析阶段直接分析这份正文
-11. 一旦 repair 后的 `story_shape` 已明确为 `single_lead_with_supporting_cast` 或 `ensemble`，不要再让 heuristics 把它强行改回双主角
-12. live LLM 模式下，结构化输出如果坏 JSON、缺失 structured parsed 结果、返回空结构或 schema 校验失败，最多重试 3 次；仍失败就直接抛错
-13. 运行时要求真实 provider 配置；测试如需 deterministic backend，必须在测试代码里显式 patch 注入
-
-如果未来再遇到“明明是多角色故事，却只被压成一个或两个人”的问题，优先检查：
-
-1. `build_story_drafter_user_prompt`
-2. `build_cast_user_prompt`
-3. `CastAnalysisSchema`
-4. `_repair_cast_analysis`
-5. `tests/_deterministic_novel_builders.py::build_cast_analysis`
-
-不要先在角色生成阶段偷偷补角色，也不要先在 brief 层堆关键词硬修。
+- `domains/novel/service.py`：小说生成与结构化分析入口。
+- `domains/novel/contracts.py`：小说结构化数据合同。
+- `domains/novel/prompts.py`：小说阶段 prompt。
+- `domains/novel/repair.py`：小说结构化结果修补。
+- `domains/novel/rules.py`：小说结构化规则。
 
 ### 视频域
 
-代码结构：
+- `domains/video/service.py`：视频领域公开入口与主服务装配。
+- `domains/video/chapter_orchestration.py`：章节事件与章节 scene 规划编排。
+- `domains/video/chunk_orchestration.py`：scene chunk 和 segment contract 编排。
+- `domains/video/chapter_event_validation.py`：章节事件覆盖和粒度校验。
+- `domains/video/structure_validation.py`：scene、chunk、transition 结构校验。
+- `domains/video/segment_validation.py`：segment 合同、动作容量、时长、关键帧和多人镜头校验。
+- `domains/video/structured_generation.py`：结构化 LLM 调用与重试循环。
+- `domains/video/structured_retry_prompts.py`：结构化重试提示构造。
+- `domains/video/prompting.py`：视频 planner、media、repair prompt 和共享规则块。
+- `domains/video/repair.py`：连续性修复入口和修复报告。
+- `domains/video/materialization.py`：规划结果物化和 frame character 校验。
+- `domains/video/planning.py`：媒体任务构建、默认值推导和规划产物读取。
+- `domains/video/text_rules.py`：文本相似度、推进点、边界词、方向词等规则。
 
-- [`../src/storyforge/domains/video/service.py`](../src/storyforge/domains/video/service.py)
-- [`../src/storyforge/domains/video/chapter_event_validation.py`](../src/storyforge/domains/video/chapter_event_validation.py)
-- [`../src/storyforge/domains/video/chapter_orchestration.py`](../src/storyforge/domains/video/chapter_orchestration.py)
-- [`../src/storyforge/domains/video/chunk_orchestration.py`](../src/storyforge/domains/video/chunk_orchestration.py)
-- [`../src/storyforge/domains/video/segment_validation.py`](../src/storyforge/domains/video/segment_validation.py)
-- [`../src/storyforge/domains/video/structure_validation.py`](../src/storyforge/domains/video/structure_validation.py)
-- [`../src/storyforge/domains/video/structured_generation.py`](../src/storyforge/domains/video/structured_generation.py)
-- [`../src/storyforge/domains/video/structured_retry_prompts.py`](../src/storyforge/domains/video/structured_retry_prompts.py)
-- [`../src/storyforge/domains/video/text_rules.py`](../src/storyforge/domains/video/text_rules.py)
-- [`../src/storyforge/domains/video/prompting.py`](../src/storyforge/domains/video/prompting.py)
-- [`../src/storyforge/domains/video/repair.py`](../src/storyforge/domains/video/repair.py)
-- [`../src/storyforge/domains/video/enrichment.py`](../src/storyforge/domains/video/enrichment.py)
-- [`../src/storyforge/domains/video/materialization.py`](../src/storyforge/domains/video/materialization.py)
-- [`../src/storyforge/domains/video/planning.py`](../src/storyforge/domains/video/planning.py)
-- [`../src/storyforge/pipelines/video_pipeline.py`](../src/storyforge/pipelines/video_pipeline.py)
-- [`../src/storyforge/pipelines/video_planning.py`](../src/storyforge/pipelines/video_planning.py)
-- [`../src/storyforge/pipelines/video_support.py`](../src/storyforge/pipelines/video_support.py)
-- [`../src/storyforge/pipelines/video_models.py`](../src/storyforge/pipelines/video_models.py)
+### Pipeline 层
 
-模块职责：
+- `pipelines/story_pipeline.py`：小说阶段 pipeline。
+- `pipelines/video_planning.py`：场景结构和分段合同 pipeline。
+- `pipelines/video_pipeline.py`：角色图、场景图、视频和合并 pipeline。
 
-- `service.py` 负责初始化、公开入口、主流程编排、逐章规划调度和 plan 后处理。
-- `chapter_orchestration.py` 负责 `Chapter Event Planner`、`Chapter Scene Planner` 与 `chapter -> scene` 展开编排。
-- `chunk_orchestration.py` 负责 `Scene Chunk Planner`、`Scene Segment Planner`、合同归一化、跨 chunk 承接状态和定向 chunk / segment repair 编排。
-- `chapter_event_validation.py` 负责 chapter event coverage、事件粒度、正文定位、章节正文读取 helper 与 targeted split 校验。
-- `structure_validation.py` 负责 scene / chunk / transition 结构校验、角色视觉表校验、软放行与重复 / 落点 / 边界判定。
-- `segment_validation.py` 负责 segment contract 与 segment plan 总体验证，包括时长预算、`timed_beats` 覆盖、关键帧语义距离、方向一致性和多人特写冲突。
-- `structured_generation.py` 负责结构化 LLM 调用、重试循环、prompt metrics 注入和 response coercion。
-- `structured_retry_prompts.py` 负责结构化 retry 文案 builder 与按错误类型追加的修复提示。
-- `prompting.py` 负责 planner prompt、media prompt、repair prompt 和共享规则块。
-- `repair.py` 负责 LLM 输出修补、continuity repair 入口、repair report 组装、repair 结果校验和 plan 重建。
-- `enrichment.py` 负责首帧 / 尾帧本地 prompt、音效与音乐方向补全。
-- `materialization.py` 负责 chapter scene、scene segment、帧角色校验、角色 profile、voice map、runtime scene / segment 与修复结果回写物化。
-- `planning.py` 负责默认推导、story memory、媒体任务构建、规划产物路径 / 读取与任务装配。
-- `text_rules.py` 负责文本相似度、推进点、边界词、方向词等共用规则。
+## Prompt 维护
 
-维护约定：
+### 小说 Prompt
 
-- `service.py` 只承载入口和总编排，新增校验、structured 执行基建、retry 文案、repair 编排、prompt 组装和媒体任务构建都放到对应模块。
-- pipeline facade 只做阶段入口协调，不堆积视频域 helper。
-- 运行时默认规划 helper 与测试静态构造逻辑分开维护；测试夹具放 `tests/`。
-- 普通 structured retry 与 strict repair retry 共用同一套结构化执行和 retry request builder。
+小说 prompt 按阶段维护：
 
-### 视频 Prompt 维护约定
+- 故事架构
+- 正文生成
+- 角色解析
+- 角色设计
+- 章节规划
+- 审稿
 
-当前视频 prompt 不是一坨总 prompt，而是分层维护：
+维护要求：
 
-1. 结构化规划 prompt
-2. 本地富化 / 媒体 prompt
-3. 连续性修复 prompt
-4. 共享规则块
+- `story_source.json` 是正文真源，结构化分析必须以它为准。
+- 角色分析需要保留可定位的 `source_evidence`。
+- 角色名和 `cast_slot_id` 必须唯一。
+- 角色视觉设计必须覆盖目标 cast slot，不从 brief 直接猜主角。
 
-核心文件：
+### 视频 Prompt
 
-- [`../src/storyforge/domains/video/prompting.py`](../src/storyforge/domains/video/prompting.py)
+视频 prompt 分为三类：
 
-当前运行时主链路真正使用的规划 prompt 只有这 3 个：
+- planner prompt：生成 scene、chunk、segment 合同。
+- media prompt：生成角色图、场景母图、关键帧和视频。
+- repair prompt：修复 scene 或 segment 合同。
 
-1. `_build_chapter_scene_planner_user_prompt`
-   只产出当前章节的 `scenes`
-2. `_build_scene_chunk_planner_user_prompt`
-   只产出当前 `scene` 的 `chunks`
-3. `_build_scene_segment_contract_user_prompt`
-   只产出当前 `chunk` 的 `segment contracts`
+维护要求：
 
-这 3 个 prompt 的边界不要混：
+- planner 只输出当前阶段 schema 需要的字段。
+- media prompt 只描述当前图片或视频真正需要的信息。
+- frame prompt 只服务当前帧实际出镜角色。
+- scene master frame 必须是无角色空场景参考图。
+- Seedance prompt 必须按本次真实提交图片顺序写 `图片1 / 图片2 / 图片3`。
+- 视频阶段不提交场景母图和角色图给 Seedance。
+- 有对白、旁白和字幕时保留音频 / 字幕指令；无口播片段明确禁止字幕和念白。
 
-- `chapter scene planner` 不要输出 `segments`
-- `scene chunk planner` 不要输出任何图片 / 视频 prompt
-- `scene segment contract planner` 不要输出 `start_frame_prompt / mid_frame_prompt / end_frame_prompt`
-- 关键帧 prompt、Seedance prompt、角色定妆 prompt 应由后面的本地富化阶段生成，不要重新塞回 segment contract planner
+## 前端维护
 
-当前本地富化 / 媒体 prompt 主要包括：
+前端模块位于 `src/storyforge/api/static/app/`。
 
-1. `_build_character_sheet_prompt`
-   角色三视图定妆图 prompt
-2. `_build_scene_master_frame_prompt`
-   无角色空场景母图 prompt
-3. `_build_seedance_clip_prompt`
-   单段视频 prompt
+主要 render 模块：
 
-当前修复类 prompt 主要包括：
+- `render/detail.js`：项目详情入口。
+- `render/detail_assets.js`：详情页 tab 路由和 helper 注入。
+- `render/story_structure.js`：小说和结构页。
+- `render/scene_workbench.js`：场景工作台。
+- `render/segment_review.js`：分段审片台。
+- `render/prompt_tools.js`：Prompt Editor、Request Inspector 和 prompt 展示工具。
+- `render/timeline.js`：时间线界面。
+- `render/timeline_data.js`：时间线数据归一化。
+- `render/request_debug.js`：请求与调试页。
+- `render/task_state.js`：阶段状态和按钮文案。
+- `render/continuity_ui.js`：连续性风险展示。
+- `render/document_assets.js`：文档和总片预览。
+- `render/detail_common.js`：详情页通用展示 helper。
 
-1. `_build_segment_continuity_repair_user_prompt`
-   单段连续性合同修复
-2. `_build_scene_continuity_repair_user_prompt`
-   单 scene 场景基线修复
+维护要求：
 
-当前共享规则块主要包括：
+- 新 UI 优先落到对应模块，不把逻辑继续堆进 `detail_assets.js`。
+- 按当前选中的单个 asset 展示 prompt 和请求参数，不同时展开多个无关点。
+- 保存 prompt 与重做动作要区分清楚，避免普通生成事件截获“保存并重做”。
+- Request Inspector 展示后端返回的真实请求视图，不在前端拼业务字段。
 
-1. `_scene_bible_rule_block`
-   统一约束 `scene_bible` 只写环境基线，不写剧情分析
-2. `_frame_character_rule_block`
-   统一约束帧级出镜角色必须是 `involved_characters` 子集
-3. `_segment_audio_budget_rule_block`
-   统一约束时长、对白、字幕和 `timed_beats`
-4. `_segment_continuity_rule_block`
-   统一约束相邻 segment 承接推进
-5. `_structured_output_guardrail_line`
-   统一约束“只返回结构化结果，不要解释，不要 Markdown”
+## 测试
 
-如果你要改视频 prompt，优先顺序必须是：
-
-1. 先判断改动属于哪一层：
-   - 场景拆分：改 `chapter scene planner`
-   - scene 内切段：改 `scene chunk planner`
-   - 单段合同：改 `scene segment contract planner`
-   - 图片 / 视频生成文案：改本地富化 prompt
-   - 连续性补救：改 repair prompt
-2. 再判断是否应该改共享规则块，而不是在 3 个 planner prompt 里各复制一份
-3. 最后才考虑补 validator、repair 或后处理
-
-当前视频 prompt 的硬约定是：
-
-1. planner prompt 只保留任务语义、少量硬约束和紧凑上下文 JSON，字段清单交给 schema 与 validator
-2. 字段契约优先交给 structured schema、validator 和 repair 层
-3. `story memory`、`scene`、`chunk`、`exit state` 上下文统一走紧凑 JSON，不要再随手 `indent=2` 拉长 prompt
-4. `scene -> chunk -> segment` 的信息边界不能回退成“大一统全章总规划”
-5. 同一规则不要同时写在 prompt 正文、retry note、repair prompt 和 post-process 里各一份
-
-当前与控长直接相关的 helper 包括：
-
-1. `_prompt_json`
-   把上下文压成紧凑 JSON，减少 token 浪费
-2. `_build_story_memory_prompt_context`
-   只挑当前阶段真正需要的 `story_memory` 视图
-3. `_build_chapter_segment_directive`
-   生成章节目标、摘要、正文摘录
-4. `_build_scene_focus_terms`
-   从当前 `scene / chunk` 抽焦点词，避免整章长摘录直接灌入
-5. `_excerpt_relevant_text`
-   只截与当前焦点相关的正文片段
-
-如果未来再遇到这些问题，优先检查位置如下：
-
-1. `finish_reason='length'`
-   先看 `_build_story_memory_prompt_context`、`_build_chapter_segment_directive`、`_prompt_json`
-2. scene / segment 顺序乱
-   先看 `_build_scene_chunk_planner_user_prompt`、`_build_scene_segment_contract_user_prompt`
-3. 相邻片段重复、像重新开演
-   先看 `_segment_continuity_rule_block`，再看 `repair.py`、`segment_validation.py` 和 `structure_validation.py` 里的 validator
-4. 对白 / 字幕说不完
-   先看 `_segment_audio_budget_rule_block`，再看 `segment_validation.py` 的时长校验和 `repair.py` 的 repair retry
-5. 帧里塞了没出镜的人
-   先看 `_frame_character_rule_block`，再看 schema 和 validator
-6. 帧角色字段空了但系统还在往下跑
-   先看 `materialization.py` 的 `start_frame_characters / mid_frame_characters / end_frame_characters` validator；当前运行时按帧级角色字段严格校验，缺失会直接触发 structured retry / fail-fast
-
-当前运行时使用的 planner 主链路就是这 3 个活跃 prompt。新需求直接改这 3 个 planner prompt，不要额外再开一套并行总规划写法。
-
-### 任务阶段处理维护约定
-
-- [`../src/storyforge/application/task_handlers.py`](../src/storyforge/application/task_handlers.py) 负责阶段入口编排，不要在每个 handler 里重复拼装相同的 `partial_response`
-- 阶段启动、阶段中途进度持久化、阶段完成后的关联任务同步，优先复用 `task_handlers.py` 内部共享 helper
-- 关联任务同步要明确区分两类语义：
-  - 全量结果传播：使用共享结果回写
-  - 局部重跑后的产物版本刷新：只刷新 `artifact_revision`
-- 如果以后再新增 `project.*` 阶段任务，优先复用现有阶段 helper，而不是再复制一份 handler 模板
-
-## 文档维护原则
-
-- `README.md`
-  只保留 GitHub 首页必需内容
-- `docs/usage.md`
-  保留安装、配置和实际使用方式
-- `docs/api.md`
-  保留 HTTP 接口
-- `docs/architecture.md`
-  保留分层和模块关系
-- `docs/development.md`
-  保留 prompt、schema、deterministic test builders、repair 的维护约定
-- `docs/status.md`
-  保留当前状态、限制和路线图
-- “技术栈 / Agent 定位”这类信息统一收敛到 `README.md` 与对应正式文档中
-
-新增功能时，至少要同步：
-
-1. `README.md` 中的能力边界
-2. 对应子文档
-3. 必要的测试
-
-## 测试与校验
-
-静态检查：
+常用检查：
 
 ```bash
 uv run ruff check src/storyforge tests
-```
-
-运行全部测试：
-
-```bash
 uv run pytest
 ```
 
-只跑关键测试：
+前端模块测试：
 
 ```bash
-uv run pytest tests/test_api.py tests/test_pipelines.py
+for test_file in tests/js/*.test.mjs tests/frontend/*.test.mjs; do node "$test_file"; done
 ```
 
-测试维护约定：
-
-- 跨 `segment` 的连续性修复、局部重跑、合并保留类测试，不要依赖 deterministic planner “默认刚好产出几段”
-- 这类测试应显式构造所需的 `segment_plan / scene_plan / scene_image_manifest / seedance_manifest` 夹具，只验证目标行为本身
-- 可复用的视频产物夹具优先收敛到 [`../tests/_video_test_artifacts.py`](../tests/_video_test_artifacts.py)，不要继续把长段 JSON 改写逻辑堆回 `tests/test_pipelines.py`
-- 常用状态流转优先抽成命名明确的 helper，例如：`补第二段执行合同`、`scene image 完成态`、`seedance clip 完成态 / 可合并态`、`首个 scene+video 失败态`
-- 运行态对象的状态流转也按同样规则处理；不要在测试里零散手写 `generated_url / scene_master_frame_url / downloaded_path / submit_status / remote_status` 这类回写
-
-## 本地开发命令
-
-启动 Web / API：
-
-```bash
-uv run storyforge api serve
-```
-
-需要调前端样式或接口热加载时，可以临时使用 `--reload`。不要在真实图片 / 视频长任务执行时使用 `--reload`，否则保存文件会触发服务重启，导致任务被中断并重新排队。
-
-如果 DeepSeek 走自定义 OpenAI 风格网关，也可以只在 `.env` 里配置：
-
-```bash
-DEEPSEEK_BASE_URL=...
-```
+针对性开发时优先跑受影响测试，再跑全量检查。
 
 ## 提交前检查
 
-推荐顺序：
-
-1. `uv run ruff check src/storyforge tests`
-2. `uv run pytest`
-3. 检查 README 和对应文档是否同步
-
-也可以直接运行：
-
-```bash
-scripts/check.sh
-```
+- `git status --short` 确认改动范围。
+- `git diff --check` 检查空白和补丁格式。
+- 跑相关 Python / Node 测试。
+- 文档只写系统事实、操作方式和维护约定。
+- 不提交 `outputs/`、`.env`、缓存文件或本地开发日志。
 
 ## 目录卫生
 
-清理本地产物：
-
-```bash
-scripts/clean-local-artifacts.sh --dry-run
-scripts/clean-local-artifacts.sh
-```
-
-深度清理：
-
-```bash
-scripts/clean-local-artifacts.sh --deep
-```
-
-## 已知实现约定
-
-- 结构化 LLM 输出仍然通过 LangChain 实现，但这里说的是生产主链路，不是整个 backend 都不用 `create_agent`。当前小说结构化阶段按 provider 区分：`DeepSeek` 使用 `ChatModel.with_structured_output(method="function_calling", include_raw=True)`，`OpenAI / ChatGPT 5.4` 使用 `ChatModel.with_structured_output(method="json_schema", include_raw=True)`；优先消费 parsed 结果，必要时回收 raw JSON 文本，由 StoryForge 外层负责 3 次 structured retry；`create_agent()` 只保留给普通文本生成实现。
-- 阶段接口应尽量具备幂等保护；当前 `project.scene_structure` 与 `project.segment_contracts` 都会按 `source_task_id + story_source_revision` 复用已有 queued / running / completed 任务，避免重复结构化。
-- `SeedanceManifest.title` 只能表示故事标题，不能写成 `segment_video_manifest` 这类文件用途名；读取产物时应优先从 `novel_package.json` / `story_source.json` 恢复标题。
-- 任务失败原因必须写入 `TaskRecord.error` / MySQL `error_text`，前端依赖该字段展示失败信息。
-- 服务启动时会把残留 `running` 任务重新排回 `queued`；这只是开发期恢复策略，不等价于生产级幂等队列。
+- 生产输出放在配置的 output root。
+- 示例输入放 `examples/`。
+- 文档图片放 `docs/assets/`。
+- 测试 fixture 放 `tests/`。
+- 不新增临时调试脚本；需要时放到临时目录并在提交前删除。
 
 ## 相关文档
 
 - [README](../README.md)
+- [使用文档](usage.md)
+- [API 文档](api.md)
 - [架构文档](architecture.md)
-- [工程状态](status.md)
+- [产品状态](status.md)

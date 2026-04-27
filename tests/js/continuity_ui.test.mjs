@@ -38,14 +38,14 @@ const issueHtml = renderContinuityIssueList({
   issues: [
     {
       severity: "high",
-      message: "首帧跳变 <danger>",
+      message: "场景母图空间漂移 <danger>",
       recommended_action_label: "重生成视频",
     },
   ],
 });
 assert.match(issueHtml, /高风险/);
 assert.match(issueHtml, /重生成视频/);
-assert.match(issueHtml, /首帧跳变 &lt;danger&gt;/);
+assert.match(issueHtml, /场景母图空间漂移 &lt;danger&gt;/);
 
 const repairTask = {
   status: "completed",
@@ -74,12 +74,12 @@ const overviewHtml = renderContinuityOverview({
   v2_review_status: "completed",
   v2_issue_count: 2,
   v2_note: "软审校发现问题",
-  top_issues: [{ severity: "medium", message: "中段丢人" }],
+  top_issues: [{ severity: "medium", message: "角色图引用缺失" }],
 });
 assert.match(overviewHtml, /状态：高风险/);
 assert.match(overviewHtml, /V2 状态 已完成/);
 assert.match(overviewHtml, /V2 问题 2/);
 assert.match(overviewHtml, /中风险/);
-assert.match(overviewHtml, /中段丢人/);
+assert.match(overviewHtml, /角色图引用缺失/);
 
 console.log("continuity_ui tests passed");

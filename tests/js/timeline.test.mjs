@@ -15,16 +15,14 @@ const segment = {
   sceneId: "ch01-sc01",
   durationSeconds: 6,
   summary: "林屿等待苏晚。",
-  startFrame: { url: "/start.png", kind: "image" },
-  midFrame: null,
-  endFrame: { url: "/end.png", kind: "image" },
+  sceneMasterFrame: { url: "/scene.png", kind: "image" },
+  characterReferences: [{ url: "/linyu.png", kind: "image" }],
   clip: null,
-  requiresMidFrame: false,
   sceneReady: true,
   videoReady: false,
-  startFramePrompt: "计划首帧",
-  endFramePrompt: "计划尾帧",
   videoPrompt: "计划视频",
+  seedanceMotionPrompt: "林屿从场景母图中的入口位置走入并停下等待。",
+  motionPlan: { scene_motion: "从入口站定到望向小径深处。" },
 };
 
 const sceneGroup = {
@@ -49,7 +47,7 @@ const helpers = {
   buildSegmentRepairButtonLabel: () => "修复 segment",
   buildSegmentSceneButtonLabel: () => "生成场景图",
   buildSegmentVideoButtonLabel: () => "生成视频",
-  buildTimelineGalleryItems: () => [sceneGroup.sceneMasterFrame, segment.startFrame, segment.endFrame],
+  buildTimelineGalleryItems: () => [sceneGroup.sceneMasterFrame, ...segment.characterReferences],
   buildTimelineSegments: () => [segment],
   buildContinuityLookup: (groups, keyField) => new Map((groups || []).map((item) => [item[keyField], item])),
   getLatestBatchRepairTask: () => null,
@@ -112,7 +110,7 @@ assert.match(html, /data-auto-repair-segment="ch01-sc01-seg01"/);
 assert.match(html, /data-generate-scene-segment="ch01-sc01-seg01"/);
 assert.match(html, /data-generate-video-segment="ch01-sc01-seg01"/);
 assert.match(html, /场景母图 prompt/);
-assert.match(html, /计划首帧/);
+assert.match(html, /计划视频/);
 assert.match(html, /recommended-action/);
 
 const pendingHtml = renderTimelineTab({

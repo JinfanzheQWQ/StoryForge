@@ -104,7 +104,7 @@ function renderCharacterVersionPanel({ task, item, index, galleryId, characterNa
         <strong>角色图版本</strong>
         ${hasCandidate ? `<span class="asset-note">新图已生成但尚未替换当前图，请确认是否使用。</span>` : `<span class="asset-note">当前没有待确认的新图。</span>`}
       </div>
-      <div class="character-version-grid ${hasCandidate ? "has-previous" : ""}">
+      <div class="character-version-grid ${hasCandidate ? "has-candidate" : ""}">
         <article class="character-version-card is-current">
           <button
             type="button"

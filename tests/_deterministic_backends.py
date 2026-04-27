@@ -525,7 +525,6 @@ class DeterministicVideoBackend:
         allowed_names = self._allowed_names(request.user_prompt)
         focus_characters = allowed_names[:2] or ["主角"]
         first_character = focus_characters[0]
-        requires_mid_frame = len(focus_characters) >= 2
         summary = f"{scene_id} 的核心事件。"
         return SceneSegmentContractBatchSchema.model_validate(
             {
@@ -539,15 +538,11 @@ class DeterministicVideoBackend:
                         "title": f"{scene_id} / 片段 1",
                         "summary": summary,
                         "involved_characters": focus_characters,
-                        "start_frame_characters": [first_character],
-                        "mid_frame_characters": focus_characters if requires_mid_frame else [],
-                        "end_frame_characters": [first_character],
                         "narration": summary,
                         "dialogue_lines": [],
                         "subtitle_lines": [summary],
                         "timed_beats": [f"0-6秒：{summary}"],
                         "duration_seconds": 6,
-                        "requires_mid_frame": requires_mid_frame,
                         "transition_hint": "auto",
                         "shot_state": {
                             "framing": "中景",
@@ -566,6 +561,13 @@ class DeterministicVideoBackend:
                             "carry_over_elements": [],
                             "allowed_changes": "建立新的场景与动作基线",
                             "transition_reason": "场景起始段",
+                        },
+                        "motion_plan": {
+                            "scene_motion": f"{first_character} 在当前场景母图空间里站定后完成核心动作。",
+                            "beat_progression": f"0-6秒持续拍出：{summary}",
+                            "camera_path": "缓慢推进",
+                            "character_motion": f"{first_character} 位于画面中心并保持向右推进。",
+                            "continuity_guard": "保持同一场景母图空间、同一角色身份和同一运动方向。",
                         },
                     }
                 ],
@@ -605,7 +607,6 @@ class DeterministicVideoBackend:
             segment_id = f"{scene_id}-seg01"
             summary = chapter_summary or f"{chapter_title} 的核心事件。"
             first_character = focus_characters[0]
-            requires_mid_frame = len(focus_characters) >= 2
             scenes.append(
                 {
                     "scene_id": scene_id,
@@ -656,25 +657,21 @@ class DeterministicVideoBackend:
                             "title": f"{scene_title} / 片段 1",
                             "summary": summary,
                             "involved_characters": focus_characters,
-                            "start_frame_characters": [first_character],
-                            "mid_frame_characters": focus_characters if requires_mid_frame else [],
-                            "end_frame_characters": [first_character],
                             "narration": summary,
                             "dialogue_lines": [],
                             "subtitle_lines": [summary],
                             "sound_effects": ["环境底噪"],
                             "music_direction": "轻度氛围音乐",
                             "timed_beats": [f"0-6秒：{summary}"],
-                            "start_frame_prompt": f"{first_character} 在场景中开场入镜",
-                            "mid_frame_prompt": (
-                                f"{'、'.join(focus_characters)} 在中段形成明确关系推进"
-                                if requires_mid_frame
-                                else ""
-                            ),
-                            "end_frame_prompt": f"{first_character} 在尾部完成动作定格",
                             "duration_seconds": 6,
-                            "requires_mid_frame": requires_mid_frame,
                             "transition_hint": "auto",
+                            "motion_plan": {
+                                "scene_motion": f"{first_character} 在统一测试场景中开场入镜并完成核心事件。",
+                                "beat_progression": f"0-6秒持续拍出：{summary}",
+                                "camera_path": "缓慢推进",
+                                "character_motion": f"{first_character} 位于画面中心，主要角色保持向右推进。",
+                                "continuity_guard": "保持同一场景母图空间、同一角色身份和同一运动方向。",
+                            },
                         }
                     ],
                 }
@@ -699,19 +696,21 @@ class DeterministicVideoBackend:
         return SegmentContinuityRepairSchema(
             segment_id=segment_id,
             repair_summary="deterministic repair",
-            start_frame_prompt="修复后的首帧",
-            mid_frame_prompt="",
-            end_frame_prompt="修复后的尾帧",
-            start_frame_characters=[],
-            mid_frame_characters=[],
-            end_frame_characters=[],
+            summary="修复后的片段摘要",
+            involved_characters=[],
             narration="修复后的旁白",
             dialogue_lines=[],
             subtitle_lines=["修复后的旁白"],
             timed_beats=["0-6秒：修复后的旁白"],
             duration_seconds=6,
-            requires_mid_frame=False,
             transition_hint="auto",
+            motion_plan={
+                "scene_motion": "角色在当前场景母图空间里完成修复后的动作推进。",
+                "beat_progression": "0-6秒持续拍出修复后的旁白对应动作。",
+                "camera_path": "稳定镜头轻微推进。",
+                "character_motion": "角色动作连续，不跳切到未建立状态。",
+                "continuity_guard": "保持同一场景、同一角色身份和同一运动方向。",
+            },
         )
 
     def _build_scene_repair(self, request: PromptRequest):

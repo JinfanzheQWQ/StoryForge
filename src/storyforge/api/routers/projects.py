@@ -85,11 +85,9 @@ def _load_character_prompt_target(
 
 def _update_character_prompt(output_dir: Path, character_name: str, prompt: str) -> list[str]:
     items, target = _load_character_prompt_target(output_dir, character_name)
-    _delete_character_candidate_file(target.get("candidate_output_path", target.get("previous_output_path", "")))
+    _delete_character_candidate_file(target.get("candidate_output_path", ""))
     target["candidate_generated_url"] = ""
     target["candidate_output_path"] = ""
-    target["previous_generated_url"] = ""
-    target["previous_output_path"] = ""
     target["prompt"] = prompt
     target["status"] = "planned"
     target["error"] = ""
@@ -136,8 +134,6 @@ def _select_character_image_version(
     _delete_character_candidate_file(candidate_path)
     target["candidate_generated_url"] = ""
     target["candidate_output_path"] = ""
-    target["previous_generated_url"] = ""
-    target["previous_output_path"] = ""
     target["status"] = "completed"
     target["error"] = ""
     write_json(output_dir / "character_image_manifest.json", items)

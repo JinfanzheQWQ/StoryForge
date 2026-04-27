@@ -144,26 +144,6 @@ class SeedreamClient:
             note=note,
         )
 
-    def generate_project_images(
-        self,
-        project_package: VideoProjectPackage,
-        force_submit: bool = False,
-    ) -> SeedreamExecutionReport:
-        """
-        Execute the actual Seedream image-generation API for both character portraits
-        and scene start/end frames, then write the returned URLs back onto the task
-        objects so later steps can consume them.
-        """
-        character_report = self.generate_character_images(
-            project_package=project_package,
-            force_submit=force_submit,
-        )
-        scene_report = self.generate_scene_images(
-            project_package=project_package,
-            force_submit=force_submit,
-        )
-        return self._merge_execution_reports(character_report, scene_report)
-
     def _select_scene_tasks(
         self,
         project_package: VideoProjectPackage,

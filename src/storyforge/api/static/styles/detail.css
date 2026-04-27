@@ -1174,7 +1174,7 @@
   gap: 12px;
 }
 
-.character-version-grid.has-previous {
+.character-version-grid.has-candidate {
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 

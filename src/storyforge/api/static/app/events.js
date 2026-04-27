@@ -678,7 +678,7 @@ function applyCharacterVersionSelection(button, { useCandidate }) {
   }
   const versionGrid = panel.querySelector(".character-version-grid");
   if (versionGrid) {
-    versionGrid.classList.remove("has-previous");
+    versionGrid.classList.remove("has-candidate");
   }
   const versionNote = panel.querySelector(".character-version-head .asset-note");
   if (versionNote) {

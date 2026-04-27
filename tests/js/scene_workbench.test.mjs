@@ -31,10 +31,8 @@ const sceneGroup = {
   segments: [
     {
       segmentId: "ch01-sc01-seg01",
-      startFrame: { url: "/start.png" },
-      midFrame: null,
-      endFrame: { url: "/end.png" },
-      requiresMidFrame: true,
+      sceneMasterFrame: { url: "/scene.png" },
+      characterReferences: [{ url: "/linyu.png" }],
       videoReady: false,
     },
   ],

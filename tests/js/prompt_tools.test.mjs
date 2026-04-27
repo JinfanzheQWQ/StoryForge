@@ -14,30 +14,25 @@ const rootTask = {
 
 const segment = {
   segmentId: "ch01-sc01-seg01",
-  startFramePrompt: "计划首帧",
-  midFramePrompt: "计划中段",
-  endFramePrompt: "计划尾帧",
+  sceneMasterFramePrompt: "计划场景母图",
   videoPrompt: "计划视频",
   submittedVideoPrompt: "实际视频",
   submittedPromptVariant: "full_context",
-  requiresMidFrame: true,
-  startFrame: { name: "start" },
-  midFrame: { name: "mid" },
-  endFrame: { name: "end" },
+  sceneMasterFrame: { name: "scene-master" },
+  characterReferences: [{ name: "role-a" }],
   videoReady: true,
-  startFrameRequest: {
+  sceneMasterFrameRequest: {
     provider: "seedream",
-    payload: { prompt: "实际首帧" },
-    referenceBindings: [{ label: "图片1", kind: "scene" }],
+    payload: { prompt: "实际场景母图" },
+    referenceBindings: [],
   },
-  midFrameRequest: null,
-  endFrameRequest: null,
   videoRequest: {
     provider: "seedance",
     payload: { content: [{ type: "text", text: "实际视频" }] },
-    referenceBindings: [{ label: "图片1", kind: "start" }],
+    referenceBindings: [{ label: "图片1", kind: "scene_master" }],
   },
-  motionPlan: {},
+  motionPlan: { scene_motion: "角色在场景母图中移动" },
+  motionContract: { scene_master_url: "/scene.png" },
   submittedReferenceBindings: [],
   diagnostics: {
     status: "warning",
@@ -49,8 +44,6 @@ const segment = {
     timed_beat_count: 3,
     timed_beat_end_seconds: 10,
     missing_tail_seconds: 0,
-    requires_mid_frame: true,
-    mid_frame_mode: "continuous",
     subsegment_index: 1,
     subsegment_count: 2,
     repair_source: "timeline_repair",
@@ -66,7 +59,7 @@ assert.match(videoEditorHtml, /保存并重做视频/);
 assert.doesNotMatch(videoEditorHtml, /data-frame-kind=/);
 assert.doesNotMatch(videoEditorHtml, /data-generate-video-segment=/);
 assert.match(videoEditorHtml, /计划视频/);
-assert.doesNotMatch(videoEditorHtml, /计划首帧/);
+assert.doesNotMatch(videoEditorHtml, /计划场景母图/);
 
 const missingVideoEditorHtml = renderPromptEditorPanel({ ...segment, videoReady: false }, rootTask, videoOption);
 assert.match(missingVideoEditorHtml, /保存并生成视频/);

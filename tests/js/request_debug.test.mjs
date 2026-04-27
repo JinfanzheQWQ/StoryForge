@@ -25,17 +25,17 @@ const task = {
 const segment = {
   segmentId: "ch01-sc01-seg01",
   title: "入口等待",
-  startFramePrompt: "计划首帧",
+  sceneMasterFramePrompt: "计划场景母图",
   videoPrompt: "计划视频",
-  startFrameRequest: {
+  sceneMasterFrameRequest: {
     provider: "seedream",
-    payload: { prompt: "实际首帧 payload" },
-    referenceBindings: [{ label: "图片1", kind: "scene_master" }],
+    payload: { prompt: "实际场景母图 payload" },
+    referenceBindings: [],
   },
   videoRequest: {
     provider: "seedance",
     payload: { content: [{ type: "text", text: "实际视频 payload" }] },
-    referenceBindings: [{ label: "图片1", kind: "start_frame" }],
+    referenceBindings: [{ label: "图片1", kind: "scene_master" }],
   },
   submittedVideoPrompt: "实际视频 payload",
   submittedReferenceBindings: [],
@@ -62,8 +62,8 @@ const html = renderRequestDebugTab({
 assert.match(html, /请求与调试/);
 assert.match(html, /ch01-sc01-seg01/);
 assert.match(html, /入口等待/);
-assert.match(html, /首帧实际提交参数/);
-assert.match(html, /实际首帧 payload/);
+assert.match(html, /视频实际提交参数/);
+assert.match(html, /实际视频 payload/);
 assert.match(html, /图片1/);
 assert.match(html, /seedance_manifest\.json/);
 assert.match(html, /continuity_report\.json/);

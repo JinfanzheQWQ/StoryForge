@@ -26,16 +26,20 @@ def ensure_secondary_segment_execution_contract(story_result) -> None:
     other_segment["narration"] = other_segment["summary"]
     other_segment["subtitle_lines"] = [other_segment["summary"]]
     other_segment["timed_beats"] = [f"0-6秒：{other_segment['summary']}"]
-    other_segment["start_frame_prompt"] = f"{target_segment['end_frame_prompt']}，承接上一段继续推进"
-    other_segment["end_frame_prompt"] = f"{target_segment['end_frame_prompt']}，动作在第二段尾部完成"
     other_segment["source_segment_id"] = other_segment_id
     other_segment["subsegment_index"] = 2
     other_segment["subsegment_count"] = 2
-    other_segment["reuse_previous_end_frame"] = True
+    other_segment["motion_plan"] = {
+        "scene_motion": f"承接 {target_segment['summary']} 后继续在同一场景母图空间里推进。",
+        "beat_progression": f"0-6秒持续拍出：{other_segment['summary']}",
+        "camera_path": "延续上一段镜头方向，保持稳定推进。",
+        "character_motion": "角色动作连续承接，不跳切到未建立状态。",
+        "continuity_guard": "保持同一场景母图空间、同一角色身份和同一运动方向。",
+    }
     other_segment["continuity_link"] = {
         "previous_segment_id": target_segment_id,
         "transition_mode": "continue",
-        "opening_match": "承接上一段尾帧动作",
+        "opening_match": "承接上一段尾部动作状态",
         "carry_over_elements": ["角色动作延续", "场景空间基线"],
         "allowed_changes": "只推进当前片段内部动作，不改变场景基线",
         "transition_reason": "测试夹具追加的第二段执行合同",
@@ -55,26 +59,6 @@ def ensure_secondary_segment_execution_contract(story_result) -> None:
     if not any(item["segment_id"] == other_segment_id for item in scene_image_payload):
         target_scene_task = deepcopy(scene_image_payload[0])
         target_scene_task["segment_id"] = other_segment_id
-        target_scene_task["start_frame_prompt"] = other_segment["start_frame_prompt"]
-        target_scene_task["mid_frame_prompt"] = other_segment.get("mid_frame_prompt", "")
-        target_scene_task["end_frame_prompt"] = other_segment["end_frame_prompt"]
-        target_scene_task["start_frame_path"] = str(
-            Path(target_scene_task["start_frame_path"]).with_name(f"{other_segment_id}_start.png")
-        )
-        target_scene_task["mid_frame_path"] = str(
-            Path(target_scene_task.get("mid_frame_path") or f"{other_segment_id}_mid.png").with_name(
-                f"{other_segment_id}_mid.png"
-            )
-        )
-        target_scene_task["end_frame_path"] = str(
-            Path(target_scene_task["end_frame_path"]).with_name(f"{other_segment_id}_end.png")
-        )
-        target_scene_task["start_frame_characters"] = list(other_segment["start_frame_characters"])
-        target_scene_task["mid_frame_characters"] = list(other_segment.get("mid_frame_characters", []))
-        target_scene_task["end_frame_characters"] = list(other_segment["end_frame_characters"])
-        target_scene_task["requires_mid_frame"] = bool(other_segment.get("requires_mid_frame", False))
-        target_scene_task["reuse_previous_end_frame"] = True
-        target_scene_task["continuity_source_segment_id"] = target_segment_id
         scene_image_payload.append(target_scene_task)
     _write_json(story_result.scene_images_path, scene_image_payload)
 
@@ -87,17 +71,7 @@ def ensure_secondary_segment_execution_contract(story_result) -> None:
         target_clip["dialogue_lines"] = list(other_segment.get("dialogue_lines", []))
         target_clip["subtitle_lines"] = list(other_segment.get("subtitle_lines", []))
         target_clip["timed_beats"] = list(other_segment.get("timed_beats", []))
-        target_clip["start_frame_path"] = str(
-            Path(target_clip["start_frame_path"]).with_name(f"{other_segment_id}_start.png")
-        )
-        target_clip["mid_frame_path"] = str(
-            Path(target_clip.get("mid_frame_path") or f"{other_segment_id}_mid.png").with_name(
-                f"{other_segment_id}_mid.png"
-            )
-        )
-        target_clip["end_frame_path"] = str(
-            Path(target_clip["end_frame_path"]).with_name(f"{other_segment_id}_end.png")
-        )
+        target_clip["motion_contract"] = deepcopy(other_segment.get("motion_plan", {}))
         target_clip["output_path"] = str(
             Path(target_clip["output_path"]).with_name(f"{other_segment_id}.mp4")
         )
@@ -117,9 +91,8 @@ def mark_scene_images_completed(
         if segment_ids is not None and segment_id not in segment_ids:
             continue
         item["status"] = "completed"
-        item["start_frame_url"] = f"{base_url}/{segment_id}_start.png"
-        item["mid_frame_url"] = f"{base_url}/{segment_id}_mid.png"
-        item["end_frame_url"] = f"{base_url}/{segment_id}_end.png"
+        item["scene_master_frame_url"] = f"{base_url}/{Path(item['scene_master_frame_path']).name}"
+        item["scene_master_frame_status"] = "completed"
     _write_json(story_result.scene_images_path, scene_image_payload)
     return scene_image_payload
 
@@ -215,19 +188,14 @@ def mark_runtime_scene_images_completed(
     for task in project_package.scene_images:
         if not _matches_target(task.segment_id, segment_ids):
             continue
-        task.start_frame_url = f"{base_url}/{Path(task.start_frame_path).name}"
-        if getattr(task, "mid_frame_path", ""):
-            task.mid_frame_url = f"{base_url}/{Path(task.mid_frame_path).name}"
-        task.end_frame_url = f"{base_url}/{Path(task.end_frame_path).name}"
+        task.scene_master_frame_url = f"{base_url}/{Path(task.scene_master_frame_path).name}"
+        task.scene_master_frame_status = "completed"
         task.status = "completed"
 
     for clip in project_package.seedance_manifest.clips:
         if not _matches_target(clip.segment_id, segment_ids):
             continue
-        clip.start_frame_url = f"{base_url}/{Path(clip.start_frame_path).name}"
-        if getattr(clip, "mid_frame_path", ""):
-            clip.mid_frame_url = f"{base_url}/{Path(clip.mid_frame_path).name}"
-        clip.end_frame_url = f"{base_url}/{Path(clip.end_frame_path).name}"
+        clip.scene_master_url = clip.scene_master_url or f"{base_url}/{Path(clip.scene_master_path).name}"
 
 
 def mark_runtime_scene_master_frames_completed(

@@ -2293,101 +2293,6 @@ story memory JSON：
             return "这是一个纯室内环境参考图，只展示当前房间或室内公共空间的真实结构，不切换到室外。"
         return "这是一个纯环境参考图，只展示当前地点的稳定空间、光线和固定布景。"
 
-    def _stylize_frame_prompt(
-        self,
-        prompt: str,
-        frame_characters: list[str],
-        frame_type: str,
-        *,
-        involved_characters: list[str] | None = None,
-        scene_bible: object | None = None,
-        shot_state: object | None = None,
-        continuity_link: object | None = None,
-    ) -> str:
-        effective_involved_characters = list(involved_characters or frame_characters)
-        sanitized_prompt = self._sanitize_frame_prompt_text(
-            prompt,
-            frame_characters,
-            effective_involved_characters,
-        )
-        # Keep frame prompts short: scene and character consistency are carried by
-        # reference images, while text only describes the current frame action.
-        action_prompt = self._frame_action_prompt(
-            sanitized_prompt,
-            frame_characters,
-            frame_type=frame_type,
-        )
-        parts = [
-            f"{frame_type}。",
-            self._frame_reference_binding_prompt(frame_characters),
-            action_prompt,
-            self._frame_character_presence_prompt(frame_characters),
-            self.FRAME_PURE_IMAGE_PROMPT,
-        ]
-        return "".join(part for part in parts if part)
-
-    def _frame_reference_binding_prompt(self, frame_characters: list[str]) -> str:
-        unique_characters = self._merge_unique_character_names(frame_characters)
-        parts = ["图片1是空场景参考图"]
-        for index, name in enumerate(unique_characters[:2], start=2):
-            parts.append(f"图片{index}是{name}角色参考图")
-        if len(unique_characters) > 2:
-            parts.append("其余当前帧角色也按对应参考图还原")
-        return "，".join(parts) + "。只使用这些参考图，不新增其他角色或文字元素。"
-
-    def _frame_action_prompt(
-        self,
-        prompt: str,
-        frame_characters: list[str],
-        *,
-        frame_type: str,
-    ) -> str:
-        unique_characters = self._merge_unique_character_names(frame_characters)
-        if not unique_characters:
-            return "只保留图片1里的空场景，不要出现人物。"
-        subject = self._frame_reference_subject_prompt(unique_characters)
-        normalized_action = self._trim_frame_action_subject_prefix(prompt, unique_characters)
-        if not normalized_action:
-            normalized_action = "只保留当前这一拍真正可见的动作停点和空间关系"
-        connector = "继续在图片1的场景里" if "首" not in frame_type else "出现在图片1的场景里"
-        return f"{subject}{connector}，{normalized_action}。"
-
-    def _frame_reference_subject_prompt(self, frame_characters: list[str]) -> str:
-        if len(frame_characters) == 1:
-            return f"让图片2中的{frame_characters[0]}"
-        if len(frame_characters) == 2:
-            return f"让图片2和图片3中的{frame_characters[0]}、{frame_characters[1]}"
-        return "让当前帧角色"
-
-    def _trim_frame_action_subject_prefix(
-        self,
-        prompt: str,
-        frame_characters: list[str],
-    ) -> str:
-        cleaned = str(prompt or "").strip(" ，。；;")
-        if not cleaned:
-            return ""
-        if len(frame_characters) == 1:
-            patterns = (
-                rf"^{re.escape(frame_characters[0])}(?:独自|一个人)?(?:正在|继续|仍然)?",
-            )
-        else:
-            joined_names = "、".join(frame_characters[:2])
-            patterns = (
-                rf"^{re.escape(joined_names)}(?:一起|并肩|相对)?",
-                rf"^{re.escape(frame_characters[0])}(?:和|与|、){re.escape(frame_characters[1])}(?:一起|并肩|相对)?",
-                rf"^{re.escape(frame_characters[1])}(?:和|与|、){re.escape(frame_characters[0])}(?:一起|并肩|相对)?",
-            )
-        for pattern in patterns:
-            cleaned = re.sub(pattern, "", cleaned, count=1).strip(" ，。；;")
-        return cleaned
-
-    def _frame_character_presence_prompt(self, frame_characters: list[str]) -> str:
-        unique_characters = self._merge_unique_character_names(frame_characters)
-        if not unique_characters:
-            return "不要出现人物。"
-        return "只画当前帧真正出镜的角色，不要多画、少画或重复同一角色。"
-
     def _sanitize_image_prompt_text(self, prompt: str) -> str:
         sanitized = prompt.strip()
         if not sanitized:
@@ -2447,37 +2352,6 @@ story memory JSON：
             clause.strip(" ，。；;")
             for clause in re.split(r"[，。；;]+", str(text or ""))
             if clause.strip(" ，。；;")
-        ]
-
-    def _sanitize_frame_context_value(
-        self,
-        text: str,
-        frame_characters: list[str],
-        involved_characters: list[str],
-    ) -> str:
-        cleaned = self._strip_character_style_overrides(text)
-        if not cleaned:
-            return ""
-        if self._contains_off_frame_character_name(
-            cleaned,
-            frame_characters,
-            involved_characters,
-        ):
-            return ""
-        if self._has_multi_character_single_subject_focus(cleaned, frame_characters):
-            return ""
-        return cleaned
-
-    def _sanitize_frame_context_list(
-        self,
-        values: list[str],
-        frame_characters: list[str],
-        involved_characters: list[str],
-    ) -> list[str]:
-        return [
-            cleaned
-            for item in values
-            if (cleaned := self._sanitize_frame_context_value(item, frame_characters, involved_characters))
         ]
 
     def _sanitize_frame_prompt_text(
@@ -2630,140 +2504,6 @@ story memory JSON：
                 "摇到",
             )
         )
-
-    def _frame_scene_bible_prompt_context(
-        self,
-        scene_bible: object | None,
-        frame_characters: list[str],
-        involved_characters: list[str],
-    ) -> str:
-        if scene_bible is None:
-            return ""
-        parts: list[str] = []
-        for value in (
-            self._scene_bible_value(scene_bible, "location"),
-            self._scene_bible_value(scene_bible, "lighting"),
-        ):
-            normalized = self._sanitize_frame_context_value(
-                value,
-                frame_characters,
-                involved_characters,
-            )
-            if normalized and normalized not in parts:
-                parts.append(normalized)
-        anchor_values = self._sanitize_frame_context_list(
-            self._scene_bible_list(scene_bible, "background_anchors"),
-            frame_characters,
-            involved_characters,
-        )
-        prop_values = self._sanitize_frame_context_list(
-            self._scene_bible_environment_fixed_props(scene_bible),
-            frame_characters,
-            involved_characters,
-        )
-        time_window = self._sanitize_frame_context_value(
-            self._scene_bible_value(scene_bible, "time_window"),
-            frame_characters,
-            involved_characters,
-        )
-        ordered_details = [
-            *anchor_values[:1],
-            *prop_values[:1],
-            *anchor_values[1:2],
-            time_window,
-        ]
-        for value in ordered_details:
-            if value and value not in parts:
-                parts.append(value)
-        if not parts:
-            return ""
-        return f"保持图片1里的{'、'.join(parts[:4])}。"
-
-    def _scene_master_baseline_lock_context(
-        self,
-        scene_bible: object,
-        involved_characters: list[str],
-    ) -> str:
-        line = self._scene_master_baseline_prompt_line(scene_bible, involved_characters)
-        if not line:
-            return ""
-        return (
-            "场景基线锁定："
-            f"{line}。后续视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
-        )
-
-    def _scene_master_frame_prompt_context(
-        self,
-        scene_bible: object,
-        involved_characters: list[str],
-    ) -> str:
-        line = self._scene_master_frame_prompt_line(scene_bible, involved_characters)
-        if not line:
-            return ""
-        return f"空场景环境约束：{line}。"
-
-    def _frame_shot_state_prompt_context(
-        self,
-        shot_state: object | None,
-        frame_characters: list[str],
-        involved_characters: list[str],
-        *,
-        frame_type: str,
-    ) -> str:
-        if shot_state is None:
-            return ""
-        normalized_frame_type = "mid"
-        if "首" in frame_type:
-            normalized_frame_type = "start"
-        elif "尾" in frame_type:
-            normalized_frame_type = "end"
-        if normalized_frame_type == "end":
-            candidate_keys = ("end_state_lock", "blocking", "framing")
-            prefix = "尾部收在"
-        elif normalized_frame_type == "mid":
-            candidate_keys = ("blocking", "framing")
-            prefix = "推进停在"
-        else:
-            candidate_keys = ("blocking", "framing")
-            prefix = "开场落在"
-        for key in candidate_keys:
-            normalized = self._sanitize_frame_context_value(
-                self._shot_state_value(shot_state, key),
-                frame_characters,
-                involved_characters,
-            )
-            if self._contains_single_character_frame_multi_subject_signal(
-                normalized,
-                frame_characters,
-                involved_characters,
-            ):
-                continue
-            if normalized:
-                return f"{prefix}{normalized}。"
-        return ""
-
-    def _frame_continuity_link_prompt_context(
-        self,
-        continuity_link: object | None,
-        frame_characters: list[str],
-        involved_characters: list[str],
-        *,
-        frame_type: str,
-    ) -> str:
-        if continuity_link is None:
-            return ""
-        if "首" in frame_type:
-            opening_match = self._sanitize_frame_context_value(
-                self._continuity_link_value(continuity_link, "opening_match"),
-                frame_characters,
-                involved_characters,
-            )
-            if opening_match:
-                return f"开场先承接{opening_match}。"
-            return ""
-        if "尾" in frame_type:
-            return "保持前一拍已经建立的机位、朝向和动作方向，在当前尾部停点自然收束。"
-        return "延续当前场景中已经建立的机位、朝向和动作方向。"
 
     def _derive_scene_master_spatial_contract(
         self,
@@ -3154,14 +2894,6 @@ story memory JSON：
         right_names = {str(name).strip() for name in right if str(name).strip()}
         return left_names == right_names
 
-    def _segment_uses_mid_insert_cut(self, segment: VideoSegment) -> bool:
-        del segment
-        return False
-
-    def _segment_has_mid_anchor(self, segment: VideoSegment) -> bool:
-        del segment
-        return False
-
     def _segment_stage_time_labels(
         self,
         duration_seconds: int,
@@ -3352,10 +3084,9 @@ story memory JSON：
 
     def _seedance_transition_guard_lines(self, segment: VideoSegment) -> list[str]:
         lines: list[str] = []
-        has_mid_anchor = self._segment_has_mid_anchor(segment)
         stage_beat_specs = self._segment_stage_beat_specs(
             segment,
-            3 if has_mid_anchor else 2,
+            2,
         )
         stage_spoken_notes = self._segment_stage_spoken_notes(
             segment=segment,

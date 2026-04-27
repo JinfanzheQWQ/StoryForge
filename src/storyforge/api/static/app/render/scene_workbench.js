@@ -41,7 +41,7 @@ function renderSceneBaselinePanel(sceneGroup) {
     <section class="scene-info-panel">
       <div class="prompt-section-head">
         <strong>场景基准</strong>
-        <span>后续关键帧必须沿用</span>
+        <span>后续视频必须沿用</span>
       </div>
       ${sceneGroup.sceneAnchor ? `<p class="asset-note">${escapeHtml(sceneGroup.sceneAnchor)}</p>` : ""}
       ${renderSceneInfoRows([
@@ -128,15 +128,14 @@ export function renderSceneSegmentMatrix({ sceneGroup, segmentContinuityLookup =
     <div class="scene-segment-matrix">
       <div class="scene-segment-matrix-head">
         <span>Segment</span>
-        <span>首帧</span>
-        <span>中段</span>
-        <span>尾帧</span>
+        <span>场景母图</span>
+        <span>角色图</span>
         <span>视频</span>
         <span>风险</span>
       </div>
       ${sceneGroup.segments.map((segment) => {
         const issue = segmentContinuityLookup.get(segment.segmentId) || null;
-        const midState = segment.requiresMidFrame ? (segment.midFrame ? "OK" : "缺") : "无";
+        const characterRefCount = Array.isArray(segment.characterReferences) ? segment.characterReferences.length : 0;
         const riskText = Number(issue?.high_risk_count || 0)
           ? `高 ${issue.high_risk_count}`
           : Number(issue?.medium_risk_count || 0)
@@ -147,9 +146,8 @@ export function renderSceneSegmentMatrix({ sceneGroup, segmentContinuityLookup =
         return `
           <article class="scene-segment-matrix-row">
             <strong>${escapeHtml(segment.segmentId)}</strong>
-            <span class="matrix-state ${segment.startFrame ? "ok" : "missing"}">${segment.startFrame ? "OK" : "缺"}</span>
-            <span class="matrix-state ${midState === "OK" || midState === "无" ? "ok" : "missing"}">${escapeHtml(midState)}</span>
-            <span class="matrix-state ${segment.endFrame ? "ok" : "missing"}">${segment.endFrame ? "OK" : "缺"}</span>
+            <span class="matrix-state ${segment.sceneMasterFrame ? "ok" : "missing"}">${segment.sceneMasterFrame ? "OK" : "缺"}</span>
+            <span class="matrix-state ${characterRefCount ? "ok" : "missing"}">${characterRefCount ? `${characterRefCount} 张` : "缺"}</span>
             <span class="matrix-state ${segment.videoReady ? "ok" : "missing"}">${segment.videoReady ? "OK" : "缺"}</span>
             <span class="matrix-risk ${issue?.high_risk_count ? "high" : issue?.medium_risk_count ? "medium" : ""}">${escapeHtml(riskText)}</span>
           </article>
@@ -223,7 +221,7 @@ export function renderSceneWorkbenchTab({ task, artifacts, context, run = null, 
     <section class="scene-workbench-shell">
       ${helpers.renderAssetSectionIntro(
         "场景工作台",
-        "这里按 scene 管理空场景母图、场景风险和同场景下的片段关键帧。场景母图应优先作为无角色环境基准图。",
+        "这里按 scene 管理空场景母图、场景风险和同场景下的视频运动合同。场景母图应优先作为无角色环境基准图。",
         [chip(`Scene ${sceneGroups.length}`), chip(`Segment ${segments.length}`)].join(""),
       )}
       <div class="scene-workbench-grid">

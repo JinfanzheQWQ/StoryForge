@@ -97,7 +97,7 @@ function renderCharacterPromptCard({ task, item, index, galleryId, run }) {
 }
 
 function renderCharacterVersionPanel({ task, item, index, galleryId, characterName, isBusy = false }) {
-  const hasCandidate = Boolean(item.candidate_url);
+  const hasCandidate = Boolean(item.candidate_url) && !isBusy;
   return `
     <section class="character-version-panel">
       <div class="character-version-head">

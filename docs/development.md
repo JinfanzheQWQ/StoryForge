@@ -45,7 +45,7 @@
 - `domains/video/chunk_orchestration.py`：scene chunk 和 segment contract 编排。
 - `domains/video/chapter_event_validation.py`：章节事件覆盖和粒度校验。
 - `domains/video/structure_validation.py`：scene、chunk、transition 结构校验。
-- `domains/video/segment_validation.py`：segment 合同、动作容量、时长、关键帧和多人镜头校验。
+- `domains/video/segment_validation.py`：segment 合同、动作容量、时长、运动合同和多人镜头校验。
 - `domains/video/structured_generation.py`：结构化 LLM 调用与重试循环。
 - `domains/video/structured_retry_prompts.py`：结构化重试提示构造。
 - `domains/video/prompting.py`：视频 planner、media、repair prompt 和共享规则块。
@@ -85,14 +85,14 @@
 视频 prompt 分为三类：
 
 - planner prompt：生成 scene、chunk、segment 合同。
-- media prompt：生成角色图、场景母图、关键帧和视频。
+- media prompt：生成角色图、场景母图和视频。
 - repair prompt：修复 scene 或 segment 合同。
 
 维护要求：
 
 - planner 只输出当前阶段 schema 需要的字段。
 - media prompt 只描述当前图片或视频真正需要的信息。
-- frame prompt 只服务当前帧实际出镜角色。
+- 视频 prompt 只描述当前 segment 的场景运动、角色调度和音频。
 - scene master frame 必须是无角色空场景参考图。
 - Seedance prompt 必须按本次真实提交图片顺序写 `图片1 / 图片2 / 图片3`。
 - 视频阶段不提交场景母图和角色图给 Seedance。

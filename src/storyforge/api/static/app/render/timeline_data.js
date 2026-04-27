@@ -40,30 +40,20 @@ export function buildTimelineSegments(artifacts) {
       summary: segment.summary || "",
       chapterNumber: segment.chapter_number,
       durationSeconds: segment.duration_seconds || 0,
-      requiresMidFrame: Boolean(segment.requires_mid_frame),
       sceneMasterFrame: segment.scene_master_frame ? { ...segment.scene_master_frame, kind: "image" } : null,
-      startFrame: segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
-      midFrame: segment.requires_mid_frame && segment.mid_frame
-        ? { ...segment.mid_frame, kind: "image" }
-        : null,
-      endFrame: segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
       clip: segment.rendered_clip ? { ...segment.rendered_clip, kind: "video" } : null,
       sceneMasterFramePrompt: segment.scene_master_frame_prompt || "",
-      startFramePrompt: segment.start_frame_prompt || "",
-      midFramePrompt: segment.requires_mid_frame ? (segment.mid_frame_prompt || "") : "",
-      endFramePrompt: segment.end_frame_prompt || "",
       videoPrompt: segment.video_prompt || "",
       submittedVideoPrompt: segment.submitted_video_prompt || "",
       seedanceMotionPrompt: segment.seedance_motion_prompt || "",
       motionPlan: segment.motion_plan && typeof segment.motion_plan === "object" ? segment.motion_plan : {},
+      motionContract: segment.motion_contract && typeof segment.motion_contract === "object" ? segment.motion_contract : {},
+      characterReferences: Array.isArray(segment.character_references)
+        ? segment.character_references.map((item) => ({ ...item, kind: "image" }))
+        : [],
       diagnostics: segment.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {},
       submittedPromptVariant: segment.submitted_prompt_variant || "",
       sceneMasterFrameRequest: normalizeSubmittedRequest(segment.scene_master_frame_request),
-      startFrameRequest: normalizeSubmittedRequest(segment.start_frame_request),
-      midFrameRequest: segment.requires_mid_frame
-        ? normalizeSubmittedRequest(segment.mid_frame_request)
-        : null,
-      endFrameRequest: normalizeSubmittedRequest(segment.end_frame_request),
       videoRequest: normalizeSubmittedRequest(segment.video_request),
       submittedReferenceBindings: Array.isArray(segment.submitted_reference_bindings)
         ? segment.submitted_reference_bindings
@@ -93,10 +83,6 @@ export function buildTimelineSegments(artifacts) {
         chapterNumber: 0,
         sceneMasterFrame: null,
         durationSeconds: 0,
-        requiresMidFrame: false,
-        startFrame: null,
-        midFrame: null,
-        endFrame: null,
         clip: null,
         seedanceMotionPrompt: "",
         motionPlan: {},
@@ -108,18 +94,6 @@ export function buildTimelineSegments(artifacts) {
     return segmentMap.get(segmentId);
   };
 
-  for (const frame of artifacts?.scene_frames || []) {
-    const segmentId = segmentIdFromAssetName(frame.name);
-    const segment = ensureSegment(segmentId);
-    if (String(frame.name).includes("_end")) {
-      segment.endFrame = frame;
-    } else if (String(frame.name).includes("_mid")) {
-      segment.midFrame = frame;
-    } else {
-      segment.startFrame = frame;
-    }
-  }
-
   for (const clip of artifacts?.rendered_clips || []) {
     const segment = ensureSegment(segmentIdFromAssetName(clip.name));
     segment.clip = clip;
@@ -130,11 +104,7 @@ export function buildTimelineSegments(artifacts) {
     .map((segment, index) => ({
       ...segment,
       title: segment.title || segmentLabel(segment.segmentId, index),
-      sceneReady: Boolean(
-        segment.startFrame
-        && segment.endFrame
-        && (!segment.requiresMidFrame || segment.midFrame),
-      ),
+      sceneReady: Boolean(segment.sceneMasterFrame),
       videoReady: Boolean(segment.clip),
     }));
 }
@@ -200,9 +170,6 @@ export function buildSceneGroups(segments) {
 export function buildTimelineGalleryItems(artifacts) {
   const plannedItems = (artifacts?.planned_segments || []).flatMap((segment) => ([
     segment.scene_master_frame ? { ...segment.scene_master_frame, kind: "image" } : null,
-    segment.start_frame ? { ...segment.start_frame, kind: "image" } : null,
-    segment.requires_mid_frame && segment.mid_frame ? { ...segment.mid_frame, kind: "image" } : null,
-    segment.end_frame ? { ...segment.end_frame, kind: "image" } : null,
     segment.rendered_clip ? { ...segment.rendered_clip, kind: "video" } : null,
   ])).filter(Boolean);
   if (plannedItems.length) {

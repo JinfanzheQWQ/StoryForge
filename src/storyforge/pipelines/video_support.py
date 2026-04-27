@@ -81,13 +81,22 @@ def validate_manifest_ready_for_video(
     missing_segments = [
         clip.segment_id
         for clip in clip_tasks
-        if not clip.start_frame_url or not clip.end_frame_url
+        if not _clip_has_v2_video_references(clip)
     ]
     if missing_segments:
         raise ValueError(
-            "Scene frames are not ready for video generation. Generate scene images first. "
+            "Scene references are not ready for video generation. Generate scene images first. "
             f"Missing segments: {', '.join(missing_segments)}"
         )
+
+
+def _clip_has_v2_video_references(clip: SeedanceClipTask) -> bool:
+    if not clip.scene_master_url:
+        return False
+    expected_character_count = len([name for name in clip.visible_characters if str(name).strip()])
+    if expected_character_count <= 0:
+        return True
+    return len([url for url in clip.character_image_urls if str(url).strip()]) >= expected_character_count
 
 
 def resolve_selected_manifest_clips(

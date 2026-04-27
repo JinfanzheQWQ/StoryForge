@@ -8,7 +8,7 @@ export async function selectProject(projectId) {
   state.projectDetailTab = "overview";
   state.selectedSegmentId = "";
   state.segmentReviewFilter = "all";
-  state.selectedSegmentAssetKind = "start";
+  state.selectedSegmentAssetKind = "video";
   state.currentPage = "project-detail";
   await refreshSelectedProjectDetail();
   await refreshSelectedStorySources();

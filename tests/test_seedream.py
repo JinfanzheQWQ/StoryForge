@@ -1178,6 +1178,42 @@ class SeedreamClientTestCase(unittest.TestCase):
         )
 
 
+    def test_generate_character_image_writes_current_on_first_generation(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "林屿_sheet.png"
+            task = CharacterImageTask(
+                character_name="林屿",
+                prompt="角色图",
+                output_path=str(output_path),
+                provider="seedream-4.5",
+            )
+
+            def fake_create_image(http_client, prompt, reference_images=None):
+                client._last_request_info = {
+                    "provider": "seedream",
+                    "endpoint": "https://example.invalid/images/generations",
+                    "variant": "text_only; refs=0",
+                    "payload": {"prompt": prompt, "watermark": False},
+                }
+                return "https://example.com/first.png"
+
+            with patch.object(client, "_create_image", side_effect=fake_create_image):
+                success = client._generate_character_image(Mock(), task)
+
+            self.assertTrue(success)
+            self.assertEqual(task.status, "completed")
+            self.assertEqual(task.generated_url, "https://example.com/first.png")
+            self.assertEqual(task.candidate_generated_url, "")
+            self.assertEqual(task.candidate_output_path, "")
+            self.assertEqual(task.request_info["payload"]["prompt"], "角色图")
+            self.assertEqual(task.request_info["reference_bindings"], [])
+
     def test_generate_character_image_writes_candidate_without_replacing_current(self) -> None:
         client = SeedreamClient(
             SeedreamConfig(

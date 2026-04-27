@@ -130,23 +130,25 @@ async function submitCurrentSegmentAssetTask(button, { afterSave = false, allowD
     || button.dataset.generateSceneSegment
     || button.dataset.saveSegmentPrompts
     || button.dataset.saveAndRerunSegmentPrompt;
-  const frameKind = button.dataset.frameKind || "";
+  const sceneId = button.dataset.sceneId || "";
   const isVideo = Boolean(button.dataset.generateVideoSegment) || button.dataset.assetKind === "video";
+  const scopePayload = isVideo
+    ? { segment_id: segmentId }
+    : { scene_id: sceneId, master_only: true };
   await submitStageFromButton(
     button,
     isVideo ? "/v1/projects/videos" : "/v1/projects/scenes",
     withContinuityReviewMode(sourceTaskId, {
       project_id: button.dataset.projectId || state.selectedProjectId,
       source_task_id: sourceTaskId,
-      segment_id: segmentId,
-      ...(!isVideo && frameKind ? { frame_kind: frameKind } : {}),
+      ...scopePayload,
     }),
     afterSave
-      ? (isVideo ? "Prompt 已保存，片段视频任务已创建" : "Prompt 已保存，单图重做任务已创建")
-      : (isVideo ? "片段视频任务已创建" : (frameKind ? "单图重做任务已创建" : "片段场景图任务已创建")),
+      ? (isVideo ? "Prompt 已保存，片段视频任务已创建" : "Prompt 已保存，场景母图任务已创建")
+      : (isVideo ? "片段视频任务已创建" : "场景母图任务已创建"),
     isVideo
       ? "片段视频任务提交失败。"
-      : (frameKind ? "单图重做任务提交失败。" : "片段场景图任务提交失败。"),
+      : "场景母图任务提交失败。",
     { allowDisabled },
   );
 }
@@ -302,7 +304,7 @@ async function handleProjectDetailClick(event) {
   const segmentReviewButton = event.target.closest("[data-select-review-segment]");
   if (segmentReviewButton) {
     state.selectedSegmentId = segmentReviewButton.dataset.selectReviewSegment || "";
-    state.selectedSegmentAssetKind = "start";
+    state.selectedSegmentAssetKind = "video";
     renderProjectDetail();
     return;
   }
@@ -318,7 +320,7 @@ async function handleProjectDetailClick(event) {
   if (segmentReviewFilterButton) {
     state.segmentReviewFilter = segmentReviewFilterButton.dataset.segmentReviewFilter || "all";
     state.selectedSegmentId = "";
-    state.selectedSegmentAssetKind = "start";
+    state.selectedSegmentAssetKind = "video";
     renderProjectDetail();
     return;
   }
@@ -632,7 +634,7 @@ async function selectCharacterVersion(button) {
     return;
   }
   const originalLabel = button.textContent;
-  const useCandidate = button.dataset.selectCharacterVersion === "candidate" || button.dataset.selectCharacterVersion === "previous";
+  const useCandidate = button.dataset.selectCharacterVersion === "candidate";
   const releaseBusy = setCharacterCardBusy(button, useCandidate ? "正在使用新候选图..." : "正在放弃新候选图...");
   button.disabled = true;
   button.textContent = useCandidate ? "替换中..." : "放弃中...";
@@ -704,6 +706,7 @@ async function saveCharacterPrompt(button, { rerunAfterSave = false } = {}) {
     const characterName = button.dataset.saveCharacterPrompt || button.dataset.saveAndRerunCharacterPrompt;
     await updateCharacterPrompt(projectId, sourceTaskId, characterName, { prompt: promptField.value });
     if (rerunAfterSave) {
+      applyCharacterVersionSelection(button, { useCandidate: false });
       setSubmitStatus(elements.pollIndicator, "角色图 Prompt 已保存，正在重做该角色图...");
       await submitStageFromButton(
         button,

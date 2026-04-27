@@ -59,7 +59,6 @@ function diagnosticsRows(segment) {
     ["节拍", `${diagnostics.timed_beat_count ?? 0} 拍`],
     ["节拍覆盖", formatDiagnosticsSeconds(diagnostics.timed_beat_end_seconds, "未解析")],
     ["尾部留空", formatDiagnosticsSeconds(diagnostics.missing_tail_seconds)],
-    ["中段", (diagnostics.requires_mid_frame ?? segment?.requiresMidFrame) ? `需要 · ${diagnostics.mid_frame_mode || "continuous"}` : "不需要"],
     ["子段", `${diagnostics.subsegment_index || 1}/${diagnostics.subsegment_count || 1}`],
     ["来源", diagnostics.repair_source || diagnostics.planner_warning_source || "planner"],
   ];
@@ -176,8 +175,8 @@ function renderMotionPlanSection(motionPlan) {
     return "";
   }
   const rows = [
-    ["图片1 -> 图片2", motionPlan.start_to_mid || motionPlan.startToMid || ""],
-    ["图片2 -> 图片3", motionPlan.mid_to_end || motionPlan.midToEnd || ""],
+    ["场景内运动", motionPlan.scene_motion || motionPlan.sceneMotion || ""],
+    ["节拍推进", motionPlan.beat_progression || motionPlan.beatProgression || ""],
     ["镜头路径", motionPlan.camera_path || motionPlan.cameraPath || ""],
     ["角色运动", motionPlan.character_motion || motionPlan.characterMotion || ""],
     ["连续性防跳", motionPlan.continuity_guard || motionPlan.continuityGuard || ""],
@@ -197,6 +196,40 @@ function renderMotionPlanSection(motionPlan) {
             <div>
               <strong>${escapeHtml(label)}</strong>
             </div>
+            <p>${escapeHtml(value)}</p>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMotionContractSection(motionContract) {
+  if (!motionContract || typeof motionContract !== "object") {
+    return "";
+  }
+  const rows = [
+    ["开场状态", motionContract.entry_state || motionContract.entryState || ""],
+    ["运动轨迹", motionContract.motion_trajectory || motionContract.motionTrajectory || ""],
+    ["收束状态", motionContract.exit_state || motionContract.exitState || ""],
+    ["镜头调度", motionContract.camera_plan || motionContract.cameraPlan || ""],
+    ["景别", motionContract.framing || ""],
+    ["角色调度", motionContract.staging || ""],
+    ["空间规则", motionContract.spatial_rules || motionContract.spatialRules || ""],
+  ].filter(([, value]) => String(value || "").trim());
+  if (!rows.length) {
+    return "";
+  }
+  return `
+    <section class="prompt-section">
+      <div class="prompt-section-head">
+        <strong>运动轨迹合同 motion_contract</strong>
+        <span>场景母图 + 角色图驱动</span>
+      </div>
+      <div class="prompt-binding-list prompt-motion-list">
+        ${rows.map(([label, value]) => `
+          <article class="prompt-binding-item">
+            <div><strong>${escapeHtml(label)}</strong></div>
             <p>${escapeHtml(value)}</p>
           </article>
         `).join("")}
@@ -356,6 +389,15 @@ export function renderScenePromptPanel(sceneGroup, rootTask) {
               data-project-id="${escapeAttr(projectId)}"
               data-source-task="${escapeAttr(sourceTaskId)}"
             >保存场景母图 Prompt</button>
+            <button
+              type="button"
+              class="primary-button"
+              data-save-and-rerun-segment-prompt="${escapeAttr(firstSegment.segmentId)}"
+              data-project-id="${escapeAttr(projectId)}"
+              data-source-task="${escapeAttr(sourceTaskId)}"
+              data-scene-id="${escapeAttr(sceneGroup.sceneId)}"
+              data-asset-kind="scene_master"
+            >保存并重做场景母图</button>
             <span class="asset-note">同步到同一 scene 的场景图任务，不会自动开始生成。</span>
           </div>
         ` : ""}
@@ -366,39 +408,6 @@ export function renderScenePromptPanel(sceneGroup, rootTask) {
 
 export function getSegmentAssetOptions(segment) {
   return [
-    {
-      kind: "start",
-      label: "首帧",
-      promptTitle: "首帧 Prompt",
-      promptField: "start_frame_prompt",
-      promptText: segment.startFramePrompt,
-      requestTitle: "首帧实际提交参数",
-      request: segment.startFrameRequest,
-      frameKind: "start",
-      ready: Boolean(segment.startFrame),
-    },
-    ...(segment.requiresMidFrame ? [{
-      kind: "mid",
-      label: "中段",
-      promptTitle: "中段 Prompt",
-      promptField: "mid_frame_prompt",
-      promptText: segment.midFramePrompt,
-      requestTitle: "中段实际提交参数",
-      request: segment.midFrameRequest,
-      frameKind: "mid",
-      ready: Boolean(segment.midFrame),
-    }] : []),
-    {
-      kind: "end",
-      label: "尾帧",
-      promptTitle: "尾帧 Prompt",
-      promptField: "end_frame_prompt",
-      promptText: segment.endFramePrompt,
-      requestTitle: "尾帧实际提交参数",
-      request: segment.endFrameRequest,
-      frameKind: "end",
-      ready: Boolean(segment.endFrame),
-    },
     {
       kind: "video",
       label: "视频",
@@ -450,6 +459,7 @@ function buildSegmentEditablePromptSections(segment, option = resolveSelectedSeg
 function buildSegmentRequestInspectorSections(segment, option = resolveSelectedSegmentAssetOption(segment)) {
   if (option.kind === "video") {
     return [
+      renderMotionContractSection(segment.motionContract),
       renderMotionPlanSection(segment.motionPlan),
       renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
       renderPromptSection(
@@ -466,7 +476,7 @@ function buildSegmentRequestInspectorSections(segment, option = resolveSelectedS
   return [renderSubmittedRequest(option.requestTitle, option.request, `${option.label}提交后可见`)].filter(Boolean);
 }
 
-export function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegmentAssetOption(segment)) {
+export function renderPromptEditorPanel(segment, rootTask, option = resolveSelectedSegmentAssetOption(segment), { locked = false } = {}) {
   const sections = buildSegmentEditablePromptSections(segment, option);
   if (!sections.length) {
     return "";
@@ -474,7 +484,9 @@ export function renderPromptEditorPanel(segment, rootTask, option = resolveSelec
   const projectId = rootTask?.project_id || state.selectedProjectId || "";
   const sourceTaskId = rootTask?.task_id || "";
   const isVideo = option.kind === "video";
-  const rerunLabel = isVideo ? "保存并重做视频" : `保存并重做${option.label}`;
+  const rerunLabel = isVideo
+    ? (segment.videoReady ? "保存并重做视频" : "保存并生成视频")
+    : `保存并重做${option.label}`;
   return `
     <section class="prompt-editor-panel" data-segment-prompt-panel="${escapeAttr(segment.segmentId)}">
       <div class="prompt-editor-panel-head">
@@ -491,6 +503,7 @@ export function renderPromptEditorPanel(segment, rootTask, option = resolveSelec
             data-prompt-field="${escapeAttr(option.promptField)}"
             data-project-id="${escapeAttr(projectId)}"
             data-source-task="${escapeAttr(sourceTaskId)}"
+            ${locked ? "disabled" : ""}
           >重置当前点 Prompt</button>
           <button
             type="button"
@@ -498,6 +511,7 @@ export function renderPromptEditorPanel(segment, rootTask, option = resolveSelec
             data-save-segment-prompts="${escapeAttr(segment.segmentId)}"
             data-project-id="${escapeAttr(projectId)}"
             data-source-task="${escapeAttr(sourceTaskId)}"
+            ${locked ? "disabled" : ""}
           >保存${escapeHtml(option.label)} Prompt</button>
           <button
             type="button"
@@ -506,7 +520,8 @@ export function renderPromptEditorPanel(segment, rootTask, option = resolveSelec
             data-project-id="${escapeAttr(projectId)}"
             data-source-task="${escapeAttr(sourceTaskId)}"
             data-asset-kind="${escapeAttr(option.kind)}"
-            ${isVideo ? "" : `data-frame-kind="${escapeAttr(option.frameKind)}"`}
+            ${isVideo ? "" : `data-scene-id="${escapeAttr(segment.sceneId)}"`}
+            ${locked ? "disabled" : ""}
           >${escapeHtml(rerunLabel)}</button>
         </div>
       </div>

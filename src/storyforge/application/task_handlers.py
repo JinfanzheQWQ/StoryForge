@@ -374,7 +374,6 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     )
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
-    frame_kind = str(task.payload.get("frame_kind", "")).strip() or None
     master_only = bool(task.payload.get("master_only", False))
     runtime_config = _build_runtime_config(
         context.config,
@@ -386,12 +385,8 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         task,
         source_task=source_task,
         output_dir=output_dir,
-        task_stage="scene_master_frames" if master_only else "scenes",
-        pipeline_stage=(
-            "scene_master_frame_generation_started"
-            if master_only
-            else "scene_generation_started"
-        ),
+        task_stage="scene_master_frames",
+        pipeline_stage="scene_master_frame_generation_started",
         pipeline_root_task_id=pipeline_root_task_id,
         continuity_review_mode=continuity_review_mode,
         seedream_watermark=seedream_watermark,
@@ -405,7 +400,6 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         submit_scenes=True,
         segment_id=segment_id,
         scene_id=scene_id,
-        frame_kind=frame_kind,
         master_only=master_only,
         continuity_review_mode=continuity_review_mode,
         llm_provider=llm_provider,
@@ -424,7 +418,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "character_seedream_execution_path": str(scene_result.character_seedream_execution_path),
         "scene_seedream_execution_path": str(scene_result.scene_seedream_execution_path),
         "seedream_execution_path": str(scene_result.seedream_execution_path),
-        "pipeline_stage": "scene_master_frame_completed" if master_only else "scenes_completed",
+        "pipeline_stage": "scene_master_frame_completed",
     }
     response = _build_completed_stage_response(response)
     _store_stage_result(context, task, response)
@@ -1016,9 +1010,6 @@ def _build_stage_response(
     segment_id = str(task.payload.get("segment_id", "")).strip()
     if segment_id:
         response["segment_id"] = segment_id
-    frame_kind = str(task.payload.get("frame_kind", "")).strip()
-    if frame_kind:
-        response["frame_kind"] = frame_kind
     scene_id = str(task.payload.get("scene_id", "")).strip()
     if scene_id:
         response["scene_id"] = scene_id

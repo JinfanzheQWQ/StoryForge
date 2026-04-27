@@ -394,26 +394,13 @@ class SeedanceClient:
     def build_payload(
         self,
         clip: SeedanceClipTask,
-        *,
-        include_mid_frame_reference: bool = True,
-        include_start_frame: bool = True,
-        include_end_frame: bool = True,
     ) -> dict[str, Any]:
-        payload, _, _ = self._build_payload_with_metadata(
-            clip,
-            include_mid_frame_reference=include_mid_frame_reference,
-            include_start_frame=include_start_frame,
-            include_end_frame=include_end_frame,
-        )
+        payload, _, _ = self._build_payload_with_metadata(clip)
         return payload
 
     def _build_payload_with_metadata(
         self,
         clip: SeedanceClipTask,
-        *,
-        include_mid_frame_reference: bool = True,
-        include_start_frame: bool = True,
-        include_end_frame: bool = True,
     ) -> tuple[dict[str, Any], str, list[dict[str, str]]]:
         if not SEEDANCE_MIN_DURATION_SECONDS <= clip.duration_seconds <= SEEDANCE_MAX_DURATION_SECONDS:
             raise ValueError(
@@ -421,12 +408,7 @@ class SeedanceClient:
                 f"{SEEDANCE_MIN_DURATION_SECONDS} and {SEEDANCE_MAX_DURATION_SECONDS} seconds, "
                 f"got {clip.duration_seconds} for segment {clip.segment_id}."
             )
-        reference_bindings = self._resolve_reference_bindings(
-            clip,
-            include_mid_frame_reference=include_mid_frame_reference,
-            include_start_frame=include_start_frame,
-            include_end_frame=include_end_frame,
-        )
+        reference_bindings = self._resolve_reference_bindings(clip)
         resolved_prompt = self._build_multimodal_reference_prompt(
             clip,
             reference_bindings,
@@ -459,19 +441,19 @@ class SeedanceClient:
     def _resolve_reference_bindings(
         self,
         clip: SeedanceClipTask,
-        *,
-        include_mid_frame_reference: bool,
-        include_start_frame: bool,
-        include_end_frame: bool,
     ) -> list[tuple[str, str]]:
         ordered_sources: list[tuple[str, str]] = []
-        if include_start_frame and clip.start_frame_url:
-            ordered_sources.append(("start", clip.start_frame_url))
-        if include_mid_frame_reference and clip.mid_frame_url:
-            ordered_sources.append(("mid", clip.mid_frame_url))
-        if include_end_frame and clip.end_frame_url:
-            ordered_sources.append(("end", clip.end_frame_url))
+        if clip.scene_master_url:
+            ordered_sources.append(("scene_master", clip.scene_master_url))
+        for index, url in enumerate(clip.character_image_urls, start=1):
+            character_name = ""
+            if index <= len(clip.visible_characters):
+                character_name = str(clip.visible_characters[index - 1]).strip()
+            kind = f"character:{character_name}" if character_name else "character"
+            ordered_sources.append((kind, url))
+        return self._dedupe_reference_bindings(ordered_sources)
 
+    def _dedupe_reference_bindings(self, ordered_sources: list[tuple[str, str]]) -> list[tuple[str, str]]:
         deduped: list[tuple[str, str]] = []
         seen_urls: set[str] = set()
         for kind, url in ordered_sources:
@@ -494,36 +476,14 @@ class SeedanceClient:
         lines: list[str] = [base_prompt, "", "提交素材绑定："]
         for index, (kind, _) in enumerate(reference_bindings, start=1):
             label = f"图片{index}"
-            if kind == "start":
-                lines.append(f"- {label}：首帧。")
-            elif kind == "mid":
-                lines.append(f"- {label}：中段。")
-            elif kind == "end":
-                lines.append(f"- {label}：尾帧。")
-        timeline_indexes = [
-            index
-            for index, (kind, _) in enumerate(reference_bindings, start=1)
-            if kind in {"start", "mid", "end"}
-        ]
-        if len(timeline_indexes) >= 3:
-            first_label = f"图片{timeline_indexes[0]}"
-            middle_labels = " -> ".join(f"图片{index}" for index in timeline_indexes[1:-1])
-            final_label = f"图片{timeline_indexes[-1]}"
-            lines.append(
-                f"- 严格按 {first_label} -> {middle_labels} -> {final_label} 的顺序推进画面，不要跳帧。"
-            )
-        elif len(timeline_indexes) == 2:
-            first_label = f"图片{timeline_indexes[0]}"
-            final_label = f"图片{timeline_indexes[1]}"
-            lines.append(
-                f"- 严格按 {first_label} -> {final_label} 的顺序推进画面，不要片尾突然跳到收束图。"
-            )
-        elif len(timeline_indexes) == 1:
-            lines.append(
-                f"- 图片{timeline_indexes[0]} 是唯一时间锚点，整段都围绕它建立稳定构图和连续微动作。"
-            )
-        lines.append("- 相邻关键图若人数、站位或景别不同，必须拍出可见的切入、入画、靠近、让位或镜头重构过程。")
-        lines.append("- 除非文本明确要求插入镜头，否则不要丢角色、不要换装、不要改空间关系与镜头方向。")
+            if kind == "scene_master":
+                lines.append(f"- {label}：场景母图，只用于锁定环境、空间、光线和固定道具。")
+            elif kind.startswith("character"):
+                character_name = kind.partition(":")[2]
+                suffix = f"{character_name} 的角色图" if character_name else "角色图"
+                lines.append(f"- {label}：{suffix}，只用于锁定脸、发型、服装、体型和年龄感，不要复制定妆图版式。")
+        lines.append("- 视频必须在图片1的场景中拍摄，按文本中的运动轨迹推进；角色图只用于身份参考，不是视频时间帧。")
+        lines.append("- 每个实际出镜角色只能出现一次，不要复制人物、不要新增相似替身、不要把三视图或白底定妆版式带入视频。")
         return "\n".join(line for line in lines if line is not None)
 
     def _describe_reference_bindings(
@@ -532,16 +492,23 @@ class SeedanceClient:
     ) -> list[dict[str, str]]:
         descriptions: list[dict[str, str]] = []
         for index, (kind, url) in enumerate(reference_bindings, start=1):
-            if kind == "start":
-                description = "开场视觉锚点，视频必须从这张图对应的构图、角色关系与动作状态自然起步。"
-            elif kind == "mid":
-                description = "中段视觉锚点，镜头推进过程中必须自然经过这张图对应的中间状态，不要跳过或弱化。"
+            binding_kind = kind
+            if kind == "scene_master":
+                description = "场景母图参考，用于锁定当前 scene 的环境、空间、光线、背景锚点和固定道具。"
+            elif kind.startswith("character"):
+                character_name = kind.partition(":")[2]
+                description = (
+                    f"角色参考图，用于锁定 {character_name} 的脸、发型、服装、体型和年龄感。"
+                    if character_name
+                    else "角色参考图，用于锁定实际出镜角色的脸、发型、服装、体型和年龄感。"
+                )
+                binding_kind = "character"
             else:
-                description = "收束视觉锚点，片尾必须落到这张图对应的构图、角色关系与动作结果。"
+                description = "补充参考图。"
             descriptions.append(
                 {
                     "label": f"图片{index}",
-                    "kind": kind,
+                    "kind": binding_kind,
                     "description": description,
                     "url": str(url).strip(),
                 }
@@ -732,13 +699,8 @@ class SeedanceClient:
     ) -> list[tuple[str, dict[str, Any], str, list[dict[str, str]]]]:
         return [
             (
-                "timeline_only",
-                *self._build_payload_with_metadata(
-                    clip,
-                    include_mid_frame_reference=True,
-                    include_start_frame=True,
-                    include_end_frame=True,
-                ),
+                "scene_character_motion",
+                *self._build_payload_with_metadata(clip),
             )
         ]
 

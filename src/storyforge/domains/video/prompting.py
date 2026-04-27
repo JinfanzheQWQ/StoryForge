@@ -149,8 +149,7 @@ class VideoPromptingMixin:
         )
         for marker in (
             "开场重点：",
-            "中段重点：",
-            "收束重点：",
+                        "收束重点：",
             "收束状态：",
             "重点呈现：",
         ):
@@ -172,34 +171,26 @@ class VideoPromptingMixin:
             "- `scene_bible` 只写可复用环境基线：地点、时间、天气、光线、主色、背景锚点、固定道具、空间布局、角色调度、连续性说明。\n"
             "- `scene_bible` 短写：`dominant_palette` 最多 3 个词，`background_anchors` 最多 4 项，`fixed_props` 最多 3 项，其余字段尽量 1 句。\n"
             "- `background_anchors`、`fixed_props` 只能写可见实体或布景元素；`fixed_props` 优先写场景内稳定存在的环境物，例如长椅、路灯、拱门、花墙、课桌，不要把手机、书包、雨伞、花束这类人物随身或临时动作道具写进去。\n"
-            "- `scene_bible`、`shot_state`、`continuity_link` 和各帧 prompt 只能描述环境、镜头、站位、动作与承接；不得重新发明角色服装、发型、年龄感、体型或脸型。\n"
+            "- `scene_bible`、`shot_state`、`continuity_link` 和 `motion_plan` 只能描述环境、镜头、站位、动作与承接；不得重新发明角色服装、发型、年龄感、体型或脸型。\n"
             "- 不要写对白、字幕或剧情分析。"
         )
 
     def _frame_character_rule_block(self) -> str:
         return (
-            "- `involved_characters` 只包含当前段真正出镜或发声的角色；`dialogue_lines` 里出现的人也必须进入 `involved_characters`。`start_frame_characters`、`mid_frame_characters`、`end_frame_characters` 都必须是它的子集，且只写该帧真正出镜人物。\n"
-            "- 如果首帧是单人等待、独白、回头或站立，不要把尚未出镜的人物写进首帧；尾帧同理。\n"
-            "- `mid_frame_characters` 必须严格跟随片段中间那一拍真实出镜角色，不要直接照搬整个 scene cast，也不要把只在尾帧才出现的人物提前写进中段帧。\n"
-            "- `mid_frame_mode` 只能取 `continuous` 或 `insert_cut`。\n"
-            "- 二选一：如果首尾同组多人在中段仍是连续表演，就保留整组角色并写 `mid_frame_mode=continuous`；如果中段只切其中一人的反应或局部动作，才允许把 `mid_frame_characters` 缩成子集，并写 `mid_frame_mode=insert_cut`。\n"
-            "- 只要用了 `insert_cut`，`timed_beats`、`mid_frame_prompt`、`shot_state.camera_motion` 就都必须明确写成“主镜头 -> 插入镜头 -> 主镜头”的往返运镜。\n"
-            "- 非法反例：`start=[苏雨,林晨] / mid=[苏雨] / end=[苏雨,林晨] / mid_frame_mode=continuous`。\n"
-            "- 若片段时长 >= 8 秒、对白 >= 2 句，或 `timed_beats` 有 3 拍及以上，`requires_mid_frame` 必须为 true，且必须显式给出 `mid_frame_characters`；若 `requires_mid_frame = false`，`mid_frame_characters` 必须为空数组。\n"
-            "- 同一帧里同一角色只能出现一次；如果某一帧 `*_frame_characters` 有 2 人或以上，就不要在该帧 prompt、`framing` 或 `camera_motion` 里再写“某角色侧脸特写 / 大特写 / 单人近景”，避免把同一角色在单帧里重复画两次。\n"
-            "- `shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 共享镜头，不是某一帧专属说明；先检查 `start_frame_characters / mid_frame_characters / end_frame_characters`，只要其中任一帧是双人或多人，就不要在这两个字段里写指向某一人的单独特写。\n"
-            "- 非法示例：`start=[苏雨,林晨]`，却写 `shot_state.camera_motion=推向林晨侧脸特写`。\n"
+            "- `involved_characters` 只包含当前段真正出镜或发声的角色；`dialogue_lines` 里出现的人也必须进入 `involved_characters`。\n"
+            "- 不要为了未来动作提前加入未出镜角色；如果某人只在后续 segment 出现，就不要写进当前段。\n"
+            "- `shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 的共享镜头约束；多人同框时不要写指向某一人的单独特写。\n"
             "- 合法示例：`shot_state.camera_motion=轻微前推，保持苏雨、林晨同框，只通过站位和表情差异突出林晨情绪变化`。"
         )
 
     def _motion_plan_rule_block(self) -> str:
         return (
-            "- 每个 `segment` 建议输出 `motion_plan`，用于把首帧 / 中段帧 / 尾帧变成连续视频动作，不是图片 prompt。\n"
-            "- `motion_plan.start_to_mid` 写 `图片1 -> 图片2` 的具体可见运动；无中段帧时写 `图片1 -> 尾帧图片` 的运动。\n"
-            "- `motion_plan.mid_to_end` 只在有中段帧时填写，写 `图片2 -> 图片3` 如何自然收束；无中段帧可留空。\n"
-            "- `motion_plan.camera_path` 写镜头路径，例如固定机位轻微前推、跟拍、切入再切回；不要只写抽象情绪。\n"
+            "- 每个 `segment` 必须输出 `motion_plan`，用于描述角色在场景母图空间里的连续视频运动，不是图片 prompt。\n"
+            "- `motion_plan.scene_motion` 写整体运动轨迹：角色从哪里开始、如何走位/转身/靠近/停步、最后落到什么状态。\n"
+            "- `motion_plan.beat_progression` 按 timed_beats 顺序写清开场、推进、收束，不要只写抽象情绪。\n"
+            "- `motion_plan.camera_path` 写镜头路径，例如固定机位轻微前推、跟拍、横移、切入再回到关系镜头。\n"
             "- `motion_plan.character_motion` 写角色入画、靠近、转身、停步、递出物件、离场或站位变化。\n"
-            "- `motion_plan.continuity_guard` 写防硬跳要求，例如保持同一场景、同一运动方向、不要突然少人、不要片尾跳尾帧。"
+            "- `motion_plan.continuity_guard` 写防硬跳要求，例如保持同一场景、同一运动方向、不要突然少人、不要换脸或动作跳变。"
         )
 
     def _segment_audio_budget_rule_block(self) -> str:
@@ -921,7 +912,7 @@ story memory JSON：
                 "- 即使当前 scene 的首段 `transition_mode` 仍是 `start`，也允许在 `opening_match` 里明确写出“承接上一场尾部”的可拍状态；不要因为新 scene 就把承接链断掉。\n"
             )
         return f"""
-请只为目标 scene 的当前 chunk 生成片段合同，不要生成场景 prompt，不要生成首帧/中段/尾帧 prompt。
+请只为目标 scene 的当前 chunk 生成片段合同，不要生成场景 prompt，不要生成片段图片 prompt。
 
 - 小说标题：{novel_package.outline.title}
 - 当前章节：第 {chapter_number} 章
@@ -940,7 +931,6 @@ story memory JSON：
 - 最后一个 segment 的最后一条 `timed_beats` 与 `shot_state.end_state_lock` 必须写成这个结果已经发生，不要再写成“准备回应 / 即将开口 / 停在亲吻前的一刻”。
 - `narration` 只有在本段确实存在独立旁白、心声或画外音时才填写；如果本段已经有 `dialogue_lines`，不要再用 `narration` 复述动作、关系或对白内容。
 - 不要把 `summary`、动作描述或 `timed_beats` 再抄进 `narration` / `subtitle_lines`。
-- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - `segment_id` 只需在当前 chunk 内唯一，系统后续会统一重编；建议仍使用 `{scene_id}-seg01` 这类短格式。
 - 每个 `segment` 都必须带 `timed_beats`，不能为空；如果任何一段漏掉 `timed_beats`，整批合同都会判失败并重试。
@@ -1037,7 +1027,6 @@ story memory JSON：
 - 不得回放当前 chunk 之前已经发生的事件，也不得提前写入当前 chunk 之后的剧情结果。
 - 不得为了满足拆分而制造近义重复段；拆出来的每一段都必须有新增推进。
 - 如果某段文本预算仍能在 12 秒内说完，可以直接把 `duration_seconds` 提到所需秒数；只有确实超过 12 秒时才继续拆分。
-- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -1147,7 +1136,6 @@ story memory JSON：
 - 不得回放当前 chunk 之前已经发生的事件，也不得提前写入当前 chunk 之后的剧情结果。
 - 不得为了补尾部 beat 而重复前面已经发生过的同一句动作描述；新增 beat 必须承担“收束”或“落点确认”的作用。
 - 如果失败项不是首段，不要改坏 `previous_segment_id` 与承接链；如果是首段，也不要破坏 scene 级过渡承接。
-- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -1248,7 +1236,6 @@ story memory JSON：
 - 每个拆出来的新段都必须承担一段更窄的推进，不要制造近义重复段。
 - 不得回放当前 chunk 之前已经发生的事件，也不得提前写入当前 chunk 之后的剧情结果。
 - 若当前过载段本来就是开口、回应、靠近、转身、停步、递出物件、关系落点这类连续链路，应按“前一拍建立 -> 中间推进 -> 尾拍收束”拆开，而不是平均切字数。
-- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -1320,19 +1307,10 @@ story memory JSON：
         scene_id = str(scene_payload.get("scene_id", "")).strip()
         frame_names_text = "、".join(frame_characters) or "未知角色"
         focus_name = frame_characters[0] if frame_characters else "主角"
-        frame_specific_rule = ""
-        if frame_label == "mid_frame":
-            frame_specific_rule = (
-                "- 如果你坚持把 `mid_frame` 改成单人特写，只允许使用 `mid_frame_mode=insert_cut`。\n"
-                "- 一旦使用 `insert_cut`，就必须同步改对 `mid_frame_characters`、`timed_beats`、"
-                "`mid_frame_prompt`、`shot_state.framing` 和 `shot_state.camera_motion`，"
-                "写成“主镜头 -> 插入镜头 -> 主镜头”的往返结构。\n"
-            )
-        else:
-            frame_specific_rule = (
-                f"- 当前报错发生在 `{frame_label}` 主锚点。默认应保留 `{frame_names_text}` 这组角色作为该帧真实出镜角色，"
-                "不要为了绕过校验，偷偷把主锚点改成单人特写。\n"
-            )
+        frame_specific_rule = (
+            f"- 当前报错发生在 `{frame_label}` 画面约束。默认应保留 `{frame_names_text}` 这组角色同框，"
+            "不要为了绕过校验，偷偷改成单人特写。\n"
+        )
         scene_transition_contract = dict(scene_payload.get("scene_transition_contract", {}) or {})
         chunk_order_index = int((chunk_payload or {}).get("order_index", 0) or 0)
         scene_transition_rule = ""
@@ -1356,16 +1334,15 @@ story memory JSON：
 - 所有 `segment.chapter_number` 必须是 {chapter_number}；所有 `segment.scene_id` 必须是 `{scene_id}`。
 - 当前 chunk 最多只能输出 {max_segments_override} 个 segment；不要为了修镜头冲突而额外加段。
 - 上一轮失败 segment 是 `{offending_segment_id}`。
-- 当前失败字段是 `{field_name}`，冲突帧是 `{frame_label}`，该帧当前角色组是 `{frame_names_text}`。
+- 当前失败字段是 `{field_name}`，冲突画面是 `{frame_label}`，当前角色组是 `{frame_names_text}`。
 - 本次优先做“镜头一致性修复”，不要大改未报错 segment 的剧情推进、对白、承接和段数。
-- 只要 `{frame_label}` 仍要求 `{frame_names_text}` 同框，就必须把 `shot_state.framing` 与 `shot_state.camera_motion` 都改成共享镜头语言，不要再写“{focus_name} 单人近景”“推向 {focus_name} 侧脸特写”“聚焦 {focus_name} 脸部”这类单人特写句。
+- 只要当前片段仍要求 `{frame_names_text}` 同框，就必须把 `shot_state.framing` 与 `shot_state.camera_motion` 都改成共享镜头语言，不要再写“{focus_name} 单人近景”“推向 {focus_name} 侧脸特写”“聚焦 {focus_name} 脸部”这类单人特写句。
 - 合法方向示例：
   - `shot_state.framing=双人中近景，保持 {frame_names_text} 同框`
   - `shot_state.camera_motion=轻微前推，保持 {frame_names_text} 同框，只通过站位和表情差异突出 {focus_name} 情绪变化`
 - 如果当前失败字段改对了，但另一个共享字段仍保留单人特写话术，这次仍会失败；请一起检查 `shot_state.framing` 和 `shot_state.camera_motion`。
 {frame_specific_rule.rstrip()}
 - 不要改坏 `timed_beats`、`continuity_link`、scene 边界承接和对白预算；如果它们本来已合理，就尽量保持不变。
-- 不要输出 `start_frame_prompt`、`mid_frame_prompt`、`end_frame_prompt`。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -1895,19 +1872,13 @@ story memory JSON：
 - 不能修改：`segment_id`、`scene_id`、`scene_title`、`scene_summary`、`scene_anchor`、`involved_characters`
 - 不能新增角色、改名、换 scene、换章节
 - 你只能调整这些字段：
-  - `start_frame_prompt`
-  - `mid_frame_prompt`
-  - `end_frame_prompt`
-  - `start_frame_characters`
-  - `mid_frame_characters`
-  - `mid_frame_mode`
-  - `end_frame_characters`
+  - `summary`
+  - `involved_characters`
   - `narration`
   - `dialogue_lines`
   - `subtitle_lines`
   - `timed_beats`
   - `duration_seconds`
-  - `requires_mid_frame`
   - `transition_hint`
   - `shot_state`
   - `continuity_link`
@@ -1919,14 +1890,10 @@ story memory JSON：
 - `timed_beats` 必须写出具体秒数，不要只写抽象节奏
 - 如果本段存在 `dialogue_lines` 或 `narration`，`timed_beats` 必须直接写出哪一秒谁说了哪句，不能只写“他开口”“她回应”
 - 修复对白相关问题时，优先把真实口播句子准确挂回 `timed_beats`，让后续视频 prompt 能直接看到“哪一秒谁说什么”
-- `start_frame_characters` / `mid_frame_characters` / `end_frame_characters` 必须是 `involved_characters` 的子集
-- 先判断中段属于哪一类：如果首尾是同一组双人 / 多人，而中段仍是这组角色的连续表演，就保留整组角色并写 `mid_frame_mode=continuous`
-- 如果首尾是同一组双人 / 多人，而中段只保留其中一人的单人特写或反应镜头，才允许把 `mid_frame_characters` 缩成子集；这时必须把 `mid_frame_mode=insert_cut`，并把运镜写成“从主镜头切入，再切回主镜头收束”
-- 不要输出这种非法结构：`start=[苏雨,林晨] / mid=[苏雨] / end=[苏雨,林晨] / mid_frame_mode=continuous`
-- 如果不需要中段帧，`requires_mid_frame=false`，并把 `mid_frame_prompt` 置空、`mid_frame_characters` 置空数组
+- `involved_characters` 只能保留目标片段真实出镜或发声的角色，不能新增角色或提前引入后续片段角色
 - 如果问题主要是对白超时，就优先缩短对白、拆短字幕、压缩旁白，而不是盲目拉满 12 秒
 - 如果 `speech_budget_context.required_duration_seconds` 已经大于 12，说明原文本本身塞不进单段视频；你必须主动删减或改写对白、旁白和字幕，让修复后的文本能在 12 秒内说完，不能试图保留原长文本
-- 如果问题主要是动作或站位不连贯，就优先修 `motion_plan`、`shot_state`、`continuity_link` 和帧 prompt
+- 如果问题主要是动作或站位不连贯，就优先修 `motion_plan`、`shot_state` 和 `continuity_link`
 - 如果目标片段承接上一段，`continuity_link.opening_match` 必须明确写出上一段尾部在当前段开场如何被复现
 - `continuity_link.allowed_changes` 必须明确写出这一段比上一段新增推进的动作或关系变化，不能只是重复上一段
 - 不要输出解释，不要输出 Markdown，只返回结构化结果
@@ -2185,8 +2152,6 @@ story memory JSON：
             f"内部造型约束：性别 {gender_text}，只用于稳定生理特征和服装轮廓，不写进画面。"
             f"外观：{appearance_text}。服装：{outfit_text}。"
             "只画同一角色的正面、左侧面、背面；保持同一张脸、发型、服装、年龄感和身材比例。"
-            "肤色自然均匀，手部与脸部同一自然肤色；不要红手、红掌、红斑、受伤、过敏、局部色块。"
-            "只表现稳定常态外观，不把紧张、害羞、出汗、脸红、哭泣、受伤、脏污、湿衣服等剧情瞬间状态画成固定特征。"
         )
 
     def _build_character_consistency_notes(
@@ -2200,26 +2165,133 @@ story memory JSON：
         )
 
     def _build_scene_master_frame_prompt(self, scene: VideoScene) -> str:
-        scene_master_baseline_lock = self._scene_master_baseline_lock_context(
+        sections = self._scene_master_structured_prompt_sections(
             scene.scene_bible,
             scene.involved_characters,
         )
-        scene_master_context = self._scene_master_frame_prompt_context(
-            scene.scene_bible,
-            scene.involved_characters,
+        return "\n\n".join(section for section in sections if section)
+
+    def _scene_master_structured_prompt_sections(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> list[str]:
+        baseline_lines = self._scene_master_baseline_lines(scene_bible, involved_characters)
+        spatial_layout = self._scene_master_spatial_layout_line(scene_bible, involved_characters)
+        palette = self._scene_master_filtered_list_line(scene_bible, "dominant_palette", involved_characters)
+        anchors = self._scene_master_filtered_list_line(scene_bible, "background_anchors", involved_characters)
+        props = self._scene_master_filtered_list_line(
+            scene_bible,
+            "fixed_props",
+            involved_characters,
+            environment_props=True,
         )
-        return (
-            "原创虚构场景母图，风格化概念插画，非真人摄影，"
-            "这是同一 scene 所有片段共用的环境与空间基准图，不是具体分镜终稿。"
-            "优先稳定锁定地点、时间、天气、光线、背景锚点、固定道具和空间布局，"
-            "不要把它画成情绪过满、动作过强或表演瞬间过于具体的剧情镜头。"
-            "尽量以环境和空间关系为主体，生成无角色的空场景板。"
-            f"{scene_master_baseline_lock}"
-            f"{scene_master_context}"
-            f"{self.SCENE_MASTER_FRAME_NO_PEOPLE_PROMPT}"
-            f"{self.SCENE_NO_TEXT_PROMPT}"
-            "目标：生成稳定、可复用、可供后续首帧/中段/尾帧继续派生的场景母图。"
+        environment_constraint = self._scene_master_environment_constraint(scene_bible, anchors)
+        no_people_text = (
+            "画面必须为无人物空场景，不包含任何角色、人物、人脸、背影、剪影、人体局部、"
+            "人物倒影、人物海报、人物雕像、可见文字、字幕、水印、Logo 或说明性排版。"
         )
+        sections = [
+            "原创虚构场景母图，风格化概念插画，非真人摄影。",
+            environment_constraint,
+            "场景基线锁定：\n" + "\n".join(baseline_lines) if baseline_lines else "",
+            "空间布局：\n" + spatial_layout if spatial_layout else "",
+            f"主色调：{palette}" if palette else "",
+            f"背景锚点：{anchors}" if anchors else "",
+            f"固定道具：{props}" if props else "",
+            no_people_text,
+        ]
+        return sections
+
+    def _scene_master_baseline_lines(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> list[str]:
+        lines: list[str] = []
+        for label, key in (
+            ("地点", "location"),
+            ("时间", "time_window"),
+            ("天气", "weather"),
+            ("光线", "lighting"),
+        ):
+            value = self._scene_master_filtered_text(
+                self._scene_bible_value(scene_bible, key),
+                involved_characters,
+            )
+            if value:
+                lines.append(f"{label}：{value}")
+        return lines
+
+    def _scene_master_spatial_layout_line(
+        self,
+        scene_bible: object,
+        involved_characters: list[str],
+    ) -> str:
+        raw_spatial_layout = self._scene_master_filtered_text(
+            self._scene_bible_value(scene_bible, "spatial_layout"),
+            involved_characters,
+        )
+        spatial_layout = self._derive_scene_master_spatial_contract(
+            self._scene_bible_value(scene_bible, "spatial_layout"),
+            self._scene_bible_value(scene_bible, "character_blocking"),
+            involved_characters=involved_characters,
+            max_clauses=4,
+        ) or self._scene_bible_value(scene_bible, "spatial_layout")
+        derived_spatial_layout = self._scene_master_filtered_text(spatial_layout, involved_characters)
+        if raw_spatial_layout and len(raw_spatial_layout) >= len(derived_spatial_layout):
+            return raw_spatial_layout
+        return derived_spatial_layout
+
+    def _scene_master_filtered_list_line(
+        self,
+        scene_bible: object,
+        key: str,
+        involved_characters: list[str],
+        *,
+        environment_props: bool = False,
+    ) -> str:
+        values = (
+            self._scene_bible_environment_fixed_props(scene_bible)
+            if environment_props
+            else self._scene_bible_list(scene_bible, key)
+        )
+        normalized_values: list[str] = []
+        for item in values:
+            cleaned = self._scene_master_filtered_text(str(item or ""), involved_characters)
+            if cleaned and cleaned not in normalized_values:
+                normalized_values.append(cleaned)
+        return "、".join(normalized_values[:5])
+
+    def _scene_master_filtered_text(self, value: str, involved_characters: list[str]) -> str:
+        normalized = self._strip_character_style_overrides(str(value or "").strip(" ，。；;\n\t"))
+        if not normalized:
+            return ""
+        if self._contains_scene_master_human_signal(normalized, involved_characters):
+            return ""
+        return normalized
+
+    def _scene_master_environment_constraint(self, scene_bible: object, anchors: str) -> str:
+        combined = " ".join(
+            item
+            for item in (
+                self._scene_bible_value(scene_bible, "location"),
+                self._scene_bible_value(scene_bible, "spatial_layout"),
+                anchors,
+            )
+            if item
+        )
+        outdoor_tokens = ("室外", "户外", "公园", "花田", "花园", "操场", "广场", "街", "路", "海边", "湖边", "树下", "栈道")
+        indoor_tokens = ("室内", "教室", "图书馆内", "房间", "餐厅", "走廊", "礼堂", "宿舍", "办公室")
+        building_tokens = ("图书馆", "教学楼", "校舍", "建筑", "楼", "馆")
+        if any(token in combined for token in outdoor_tokens):
+            text = "这是一个纯室外环境参考图。"
+            if any(token in combined for token in building_tokens):
+                text += "远景建筑只作为背景建筑外立面出现，不展示任何室内结构、分层开放架构或内部空间。"
+            return text
+        if any(token in combined for token in indoor_tokens):
+            return "这是一个纯室内环境参考图，只展示当前房间或室内公共空间的真实结构，不切换到室外。"
+        return "这是一个纯环境参考图，只展示当前地点的稳定空间、光线和固定布景。"
 
     def _stylize_frame_prompt(
         self,
@@ -2617,7 +2689,7 @@ story memory JSON：
             return ""
         return (
             "场景基线锁定："
-            f"{line}。后续关键帧与视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
+            f"{line}。后续视频必须复用同一地点、时间、光线、主色、背景锚点、固定道具和空间透视，不要漂移成新场景。"
         )
 
     def _scene_master_frame_prompt_context(
@@ -2647,10 +2719,10 @@ story memory JSON：
             normalized_frame_type = "end"
         if normalized_frame_type == "end":
             candidate_keys = ("end_state_lock", "blocking", "framing")
-            prefix = "尾帧收在"
+            prefix = "尾部收在"
         elif normalized_frame_type == "mid":
             candidate_keys = ("blocking", "framing")
-            prefix = "中段停在"
+            prefix = "推进停在"
         else:
             candidate_keys = ("blocking", "framing")
             prefix = "开场落在"
@@ -2691,7 +2763,7 @@ story memory JSON：
             return ""
         if "尾" in frame_type:
             return "保持前一拍已经建立的机位、朝向和动作方向，在当前尾部停点自然收束。"
-        return "延续前后关键帧之间已经建立的机位、朝向和动作方向。"
+        return "延续当前场景中已经建立的机位、朝向和动作方向。"
 
     def _derive_scene_master_spatial_contract(
         self,
@@ -3082,17 +3154,13 @@ story memory JSON：
         right_names = {str(name).strip() for name in right if str(name).strip()}
         return left_names == right_names
 
-    def _normalized_mid_frame_mode(self, value: object) -> str:
-        return "insert_cut" if str(value or "").strip().lower() == "insert_cut" else "continuous"
-
     def _segment_uses_mid_insert_cut(self, segment: VideoSegment) -> bool:
-        return (
-            segment.requires_mid_frame
-            and self._normalized_mid_frame_mode(getattr(segment, "mid_frame_mode", "continuous")) == "insert_cut"
-        )
+        del segment
+        return False
 
     def _segment_has_mid_anchor(self, segment: VideoSegment) -> bool:
-        return bool(segment.requires_mid_frame and str(segment.mid_frame_prompt or "").strip())
+        del segment
+        return False
 
     def _segment_stage_time_labels(
         self,
@@ -3280,17 +3348,6 @@ story memory JSON：
         return stage_detail or common_detail
 
     def _segment_visible_characters(self, segment: VideoSegment) -> list[str]:
-        ordered: list[str] = []
-        frame_groups = [segment.start_frame_characters, segment.end_frame_characters]
-        if segment.requires_mid_frame:
-            frame_groups.insert(1, segment.mid_frame_characters)
-        for group in frame_groups:
-            for name in group or []:
-                normalized = str(name).strip()
-                if normalized and normalized not in ordered:
-                    ordered.append(normalized)
-        if ordered:
-            return ordered
         return [str(name).strip() for name in segment.involved_characters if str(name).strip()]
 
     def _seedance_transition_guard_lines(self, segment: VideoSegment) -> list[str]:
@@ -3304,204 +3361,37 @@ story memory JSON：
             segment=segment,
             stage_beat_specs=stage_beat_specs,
         )
-        start_chars = segment.start_frame_characters
-        mid_chars = segment.mid_frame_characters
-        end_chars = segment.end_frame_characters
-        start_anchor_line = self._seedance_frame_prompt_text(
-            segment.start_frame_prompt,
-            start_chars,
-            segment.involved_characters,
-        )
-        mid_anchor_line = (
-            self._seedance_frame_prompt_text(
-                segment.mid_frame_prompt,
-                mid_chars,
-                segment.involved_characters,
-            )
-            if has_mid_anchor
-            else ""
-        )
-        end_anchor_line = self._seedance_frame_prompt_text(
-            segment.end_frame_prompt,
-            end_chars,
-            segment.involved_characters,
-        )
-
-        if has_mid_anchor and self._segment_uses_mid_insert_cut(segment):
-            start_stage_label, start_stage_focus = stage_beat_specs[0]
-            mid_stage_label, mid_stage_focus = stage_beat_specs[1]
-            end_stage_label, end_stage_focus = stage_beat_specs[2]
+        visible_characters = self._character_set_label(self._segment_visible_characters(segment))
+        entry_state = self._continuity_link_value(segment.continuity_link, "opening_match") or segment.summary
+        exit_state = self._shot_state_value(segment.shot_state, "end_state_lock") or segment.summary
+        for index, (time_label, beat_focus) in enumerate(stage_beat_specs):
+            is_first = index == 0
+            is_last = index == len(stage_beat_specs) - 1
+            if is_first:
+                base = f"先在图片1的场景母图空间里建立开场状态：{entry_state}。角色参考来自图片2及之后，保持 {visible_characters} 的身份、服装和体型稳定"
+                motion_key = "scene_motion"
+                anchor_text = entry_state
+            elif is_last:
+                base = f"最后在同一场景空间里自然收束到：{exit_state}。不要突然换景、换人或跳到未建立的画面状态"
+                motion_key = "beat_progression"
+                anchor_text = exit_state
+            else:
+                base = "中间过程持续推进角色走位、动作和镜头调度，必须拍出可见运动过程，不要停成静态图"
+                motion_key = "character_motion"
+                anchor_text = segment.summary
             lines.append(
                 self._build_motion_stage_line(
-                    time_label=start_stage_label,
-                    base=f"先按图片1建立“{start_anchor_line}”的主镜头关系，先把 {self._character_set_label(start_chars)} 的同框关系拍稳，不要刚开场就跳图",
-                    beat_focus=start_stage_focus,
-                    anchor_text=start_anchor_line,
-                    spoken_note=stage_spoken_notes[0],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
+                    time_label=time_label,
+                    base=base,
+                    beat_focus=beat_focus,
+                    anchor_text=anchor_text,
+                    spoken_note=stage_spoken_notes[index] if index < len(stage_spoken_notes) else "",
+                    motion_detail=self._motion_plan_stage_detail(segment, motion_key),
                 )
             )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=mid_stage_label,
-                    base=f"再短促切到图片2，对应“{mid_anchor_line}”，这里只拍 {self._character_set_label(mid_chars)} 的反应或局部动作，不要把它拍成少人版主镜头",
-                    beat_focus=mid_stage_focus,
-                    anchor_text=mid_anchor_line,
-                    spoken_note=stage_spoken_notes[1],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=end_stage_label,
-                    base=f"最后明确切回图片3，对应“{end_anchor_line}”，恢复 {self._character_set_label(end_chars)} 的主镜头关系并自然收束，不要到片尾最后一瞬间才跳回收束图",
-                    beat_focus=end_stage_focus,
-                    anchor_text=end_anchor_line,
-                    spoken_note=stage_spoken_notes[2],
-                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
-                )
-            )
-        elif has_mid_anchor and self._same_character_set(start_chars, mid_chars) and self._same_character_set(mid_chars, end_chars):
-            start_stage_label, start_stage_focus = stage_beat_specs[0]
-            mid_stage_label, mid_stage_focus = stage_beat_specs[1]
-            end_stage_label, end_stage_focus = stage_beat_specs[2]
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=start_stage_label,
-                    base=f"先按图片1建立“{start_anchor_line}”的开场状态，把当前角色关系、站位和空间方向先拍稳",
-                    beat_focus=start_stage_focus,
-                    anchor_text=start_anchor_line,
-                    spoken_note=stage_spoken_notes[0],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=mid_stage_label,
-                    base=f"镜头继续自然推进到图片2，对应“{mid_anchor_line}”，中间要拍出可见的动作推进、走位变化或镜头推进，不要停成静帧",
-                    beat_focus=mid_stage_focus,
-                    anchor_text=mid_anchor_line,
-                    spoken_note=stage_spoken_notes[1],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=end_stage_label,
-                    base=f"最后稳定落到图片3，对应“{end_anchor_line}”，尾部要顺着前面的运动自然收束，不要临近片尾才突然跳图",
-                    beat_focus=end_stage_focus,
-                    anchor_text=end_anchor_line,
-                    spoken_note=stage_spoken_notes[2],
-                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
-                )
-            )
-        elif has_mid_anchor:
-            start_stage_label, start_stage_focus = stage_beat_specs[0]
-            mid_stage_label, mid_stage_focus = stage_beat_specs[1]
-            end_stage_label, end_stage_focus = stage_beat_specs[2]
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=start_stage_label,
-                    base=f"先按图片1建立“{start_anchor_line}”的起步状态，把开场构图和角色起始关系拍清楚",
-                    beat_focus=start_stage_focus,
-                    anchor_text=start_anchor_line,
-                    spoken_note=stage_spoken_notes[0],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=mid_stage_label,
-                    base=f"再推进到图片2，对应“{mid_anchor_line}”，要把 {self._character_set_label(start_chars)} 到 {self._character_set_label(mid_chars)} 的入画、靠近、让位、转身或镜头重构过程拍清楚",
-                    beat_focus=mid_stage_focus,
-                    anchor_text=mid_anchor_line,
-                    spoken_note=stage_spoken_notes[1],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=end_stage_label,
-                    base=f"最后稳定落到图片3，对应“{end_anchor_line}”，收束前先完成 {self._character_set_label(mid_chars)} 到 {self._character_set_label(end_chars)} 的站位与构图变化",
-                    beat_focus=end_stage_focus,
-                    anchor_text=end_anchor_line,
-                    spoken_note=stage_spoken_notes[2],
-                    motion_detail=self._motion_plan_stage_detail(segment, "mid_to_end"),
-                )
-            )
-        elif self._same_character_set(start_chars, end_chars):
-            start_stage_label, start_stage_focus = stage_beat_specs[0]
-            end_stage_label, end_stage_focus = stage_beat_specs[1]
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=start_stage_label,
-                    base=f"先按图片1建立“{start_anchor_line}”的开场状态，把当前角色和空间关系先拍稳",
-                    beat_focus=start_stage_focus,
-                    anchor_text=start_anchor_line,
-                    spoken_note=stage_spoken_notes[0],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=end_stage_label,
-                    base=f"在同一组角色和空间里连续推进，最后落到图片2的“{end_anchor_line}”，中间要拍出可见动作推进，不要在片尾突然跳变",
-                    beat_focus=end_stage_focus,
-                    anchor_text=end_anchor_line,
-                    spoken_note=stage_spoken_notes[1],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-        else:
-            start_stage_label, start_stage_focus = stage_beat_specs[0]
-            end_stage_label, end_stage_focus = stage_beat_specs[1]
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=start_stage_label,
-                    base=f"先按图片1建立“{start_anchor_line}”的开场状态，把起步构图和角色初始位置拍清楚",
-                    beat_focus=start_stage_focus,
-                    anchor_text=start_anchor_line,
-                    spoken_note=stage_spoken_notes[0],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-            lines.append(
-                self._build_motion_stage_line(
-                    time_label=end_stage_label,
-                    base=f"再把角色增减、入画、靠近或构图变化拍成连续过程，最后落到图片2的“{end_anchor_line}”，不要片尾突然换人或换构图",
-                    beat_focus=end_stage_focus,
-                    anchor_text=end_anchor_line,
-                    spoken_note=stage_spoken_notes[1],
-                    motion_detail=self._motion_plan_stage_detail(segment, "start_to_mid"),
-                )
-            )
-        if (
-            has_mid_anchor
-            and self._segment_uses_mid_insert_cut(segment)
-            and self._same_character_set(start_chars, end_chars)
-            and not self._same_character_set(start_chars, mid_chars)
-        ):
-            lines.append(
-                f"插入镜头：图片2 只切 {self._character_set_label(mid_chars)} 的反应或局部动作，切完必须回到图片3 的主镜头关系。"
-            )
-        if has_mid_anchor and not self._same_character_set(start_chars, mid_chars):
-            lines.append(
-                "角色变化：图片1 为 "
-                f"{self._character_set_label(start_chars)}，图片2 为 {self._character_set_label(mid_chars)}。"
-                "人数或角色集合变化时，必须拍出真实入画、切入、靠近或让位过程。"
-            )
-        if has_mid_anchor and not self._same_character_set(mid_chars, end_chars):
-            lines.append(
-                "角色变化：图片2 为 "
-                f"{self._character_set_label(mid_chars)}，图片3 为 {self._character_set_label(end_chars)}。"
-                "尾部收束前先完成站位与构图变化，再稳定落到图片3。"
-            )
-        if not has_mid_anchor and not self._same_character_set(start_chars, end_chars):
-            lines.append(
-                "角色变化：图片1 为 "
-                f"{self._character_set_label(start_chars)}，图片2 为 {self._character_set_label(end_chars)}。"
-                "必须把角色增减、站位变化和景别变化拍成连续过程。"
-            )
+        guard = self._motion_plan_value(segment, "continuity_guard").strip(" ，。；;")
+        if guard:
+            lines.append(f"连续性保护：{guard}")
         return lines
 
     def _seedance_scene_transition_lines(
@@ -3583,7 +3473,6 @@ story memory JSON：
             prop_continuity=self._shot_state_value(segment.shot_state, "prop_continuity"),
         )
         has_spoken_content = bool(narration or dialogue_lines or subtitle_lines)
-        has_mid_anchor = self._segment_has_mid_anchor(segment)
         lines = [
             f"请生成带原生音频的中文剧情短视频片段，时长 {segment.duration_seconds} 秒。",
         ]
@@ -3595,32 +3484,13 @@ story memory JSON：
             lines.append("本段无对白、无旁白、无字幕，只保留环境音、拟音和音乐。")
 
         lines.append("参考图绑定：")
-        start_anchor_line = self._seedance_frame_prompt_text(
-            segment.start_frame_prompt,
-            segment.start_frame_characters,
-            segment.involved_characters,
-        )
-        if start_anchor_line:
-            lines.append(f"- 图片1 是首帧：{start_anchor_line}")
-        if has_mid_anchor:
-            mid_anchor_line = self._seedance_frame_prompt_text(
-                segment.mid_frame_prompt,
-                segment.mid_frame_characters,
-                segment.involved_characters,
+        lines.append("- 图片1 是当前 scene 的场景母图，只用于锁定地点、光线、空间透视、背景锚点和固定道具，不是视频时间帧。")
+        visible_characters = self._segment_visible_characters(segment)
+        if visible_characters:
+            lines.append(
+                "- 图片2 及之后是实际出镜角色定妆图，只用于锁定角色身份、脸、发型、服装、体型和比例，不是视频时间锚点。"
             )
-            lines.append(f"- 图片2 是中段帧：{mid_anchor_line}")
-        end_anchor_line = self._seedance_frame_prompt_text(
-            segment.end_frame_prompt,
-            segment.end_frame_characters,
-            segment.involved_characters,
-        )
-        if end_anchor_line:
-            end_image_label = "图片3" if has_mid_anchor else "图片2"
-            lines.append(f"- {end_image_label} 是尾帧：{end_anchor_line}")
-        if has_mid_anchor:
-            lines.append("画面必须按 图片1 -> 图片2 -> 图片3 自然推进。")
-        else:
-            lines.append("画面必须按 图片1 -> 图片2 自然推进。")
+        lines.append("画面推进：在图片1的同一场景空间里，根据角色参考图生成连续表演；不要生成分镜跳图或把参考图当作时间帧。")
         lines.extend(self._seedance_transition_guard_lines(segment))
         lines.extend(self._seedance_scene_transition_lines(segment, scene))
         if narration:

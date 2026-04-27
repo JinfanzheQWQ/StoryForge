@@ -1,6 +1,6 @@
 # StoryForge
 
-StoryForge 是一套“故事到视频”的分步生产工作台。它把一个故事想法拆成可审阅、可修改、可重试的生产流程：先生成小说正文，再生成视频结构规划、角色图、场景关键帧和分段视频。
+StoryForge 是一套“故事到视频”的分步生产工作台。它把一个故事想法拆成可审阅、可修改、可重试的生产流程：先生成小说正文，再生成视频结构规划、角色图、场景母图和分段视频。
 
 StoryForge 不把整条链路包装成不可检查的一键黑盒。每个阶段都会落盘结构化产物，页面可以查看 prompt、真实请求参数、参考图片顺序、诊断信息和失败原因，方便你在继续消耗图片 / 视频生成成本前先判断结果是否合理。
 
@@ -9,11 +9,11 @@ StoryForge 不把整条链路包装成不可检查的一键黑盒。每个阶段
 - 根据 brief 生成小说正文。
 - 在页面修改并保存正文真源 `story_source.json`。
 - 基于正文生成 `chapter -> scene -> chunk -> segment` 视频规划。
-- 生成角色定妆图、场景母图、片段首帧 / 中段 / 尾帧。
+- 生成角色定妆图和 scene 级场景母图。
 - 角色定妆图 Prompt 可在页面中直接修改；单角色重做会先生成候选图，确认后才替换当前图。
-- 使用 Seedance 按 `图片1 / 图片2 / 图片3` 的时间锚点生成中文剧情视频。
-- 展示单个 segment 的图片 prompt、视频 prompt、真实 provider 请求参数和参考图绑定。
-- 支持按 frame、segment、scene、stage 粒度重做，不强制整项目重跑。
+- 使用 Seedance 按 `图片1=场景母图，图片2+=角色定妆图` 生成中文剧情视频。
+- 展示单个 segment 的场景母图 prompt、视频 prompt、真实 provider 请求参数和参考图绑定。
+- 支持按角色、scene、segment、stage 粒度重做，不强制整项目重跑。
 - 使用 MySQL 保存项目、任务、run 历史和产物索引。
 
 ## 生产流程
@@ -23,7 +23,7 @@ StoryForge 不把整条链路包装成不可检查的一键黑盒。每个阶段
 3. 生成场景结构。
 4. 生成分段合同。
 5. 生成角色图。
-6. 生成场景母图和片段关键帧。
+6. 生成场景母图。
 7. 按 segment 生成视频。
 8. 按需合并已完成视频片段。
 
@@ -102,8 +102,8 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 - 小说页：查看、修改并保存正文真源。
 - 场景工作台：查看 scene 分组、场景母图状态、过渡合同和 scene 级风险。
 - 角色页：查看角色定妆图、编辑角色 Prompt、查看真实 Seedream 提交请求；单角色重做先生成候选图，确认后替换或放弃。
-- 分段审片台：查看关键帧、视频、prompt、请求参数、诊断信息和重做入口。
-- Prompt Editor：修改首帧、中段、尾帧和视频 prompt。
+- 分段审片台：查看场景母图、角色图、视频、prompt、请求参数、诊断信息和重做入口。
+- Prompt Editor：修改场景母图 prompt 和视频 prompt。
 - Request Inspector：查看真实提交 payload、Prompt Diff、参考图绑定和 provider 请求摘要。
 - 时间线 / 资产区：查看图片、视频、文档和合并总片。
 
@@ -148,37 +148,20 @@ StoryForge/
 │   ├── api/                 # FastAPI、router、schema、静态工作台
 │   ├── application/         # 任务队列、运行时、持久化、项目存储
 │   ├── core/                # 配置、IO、环境变量工具
-│   ├── domains/             # 小说与视频领域服务
-│   ├── integrations/        # provider client 与 ffmpeg 工具
-│   ├── pipelines/           # story / video pipeline 编排
-│   └── cli.py               # CLI 入口
-├── tests/
-├── .env.example
-├── pyproject.toml
-└── uv.lock
+│   ├── domains/             # 小说域和视频域业务逻辑
+│   ├── integrations/        # Seedream / Seedance / ffmpeg 等外部集成
+│   └── pipelines/           # 阶段 pipeline
+└── tests/                   # Python 与前端轻量测试
 ```
 
-## 检查
+## 验证
+
+常用检查：
 
 ```bash
-uv run ruff check src/storyforge tests
-uv run pytest
+uv run ruff check src tests
+uv run python -m unittest
+node tests/js/frontend_module_contract.test.mjs
+node tests/js/detail_assets_integration.test.mjs
+node tests/js/run_stage_actions.test.mjs
 ```
-
-前端模块测试使用 Node：
-
-```bash
-for test_file in tests/js/*.test.mjs tests/frontend/*.test.mjs; do node "$test_file"; done
-```
-
-## 文档
-
-- [使用文档](docs/usage.md)
-- [API 文档](docs/api.md)
-- [架构文档](docs/architecture.md)
-- [开发文档](docs/development.md)
-- [产品状态](docs/status.md)
-
-## License
-
-MIT

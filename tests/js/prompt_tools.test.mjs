@@ -57,30 +57,6 @@ const segment = {
   },
 };
 
-state.selectedSegmentAssetKind = "start";
-const startOption = resolveSelectedSegmentAssetOption(segment);
-assert.equal(startOption.kind, "start");
-
-const startEditorHtml = renderPromptEditorPanel(segment, rootTask, startOption);
-assert.match(startEditorHtml, /data-save-and-rerun-segment-prompt="ch01-sc01-seg01"/);
-assert.match(startEditorHtml, /data-frame-kind="start"/);
-assert.doesNotMatch(startEditorHtml, /data-generate-scene-segment=/);
-assert.doesNotMatch(startEditorHtml, /data-generate-video-segment=/);
-assert.match(startEditorHtml, /计划首帧/);
-assert.doesNotMatch(startEditorHtml, /计划尾帧/);
-assert.doesNotMatch(startEditorHtml, /计划视频/);
-
-const startInspectorHtml = renderRequestInspectorPanel(segment, startOption);
-assert.match(startInspectorHtml, /Prompt Diff/);
-assert.match(startInspectorHtml, /规划诊断/);
-assert.match(startInspectorHtml, /动作点/);
-assert.match(startInspectorHtml, /4 \/ 3/);
-assert.match(startInspectorHtml, /8s -&gt; 10s/);
-assert.match(startInspectorHtml, /完整诊断 JSON/);
-assert.match(startInspectorHtml, /timeline_repair/);
-assert.match(startInspectorHtml, /实际首帧/);
-assert.doesNotMatch(startInspectorHtml, /视频实际提交 Prompt/);
-
 state.selectedSegmentAssetKind = "video";
 const videoOption = resolveSelectedSegmentAssetOption(segment);
 assert.equal(videoOption.kind, "video");
@@ -92,9 +68,18 @@ assert.doesNotMatch(videoEditorHtml, /data-generate-video-segment=/);
 assert.match(videoEditorHtml, /计划视频/);
 assert.doesNotMatch(videoEditorHtml, /计划首帧/);
 
+const missingVideoEditorHtml = renderPromptEditorPanel({ ...segment, videoReady: false }, rootTask, videoOption);
+assert.match(missingVideoEditorHtml, /保存并生成视频/);
+assert.doesNotMatch(missingVideoEditorHtml, /保存并重做视频/);
+
 const videoInspectorHtml = renderRequestInspectorPanel(segment, videoOption);
 assert.match(videoInspectorHtml, /视频实际提交 Prompt/);
 assert.match(videoInspectorHtml, /实际视频/);
-assert.doesNotMatch(videoInspectorHtml, /首帧实际提交参数/);
+assert.match(videoInspectorHtml, /规划诊断/);
+assert.match(videoInspectorHtml, /动作点/);
+assert.match(videoInspectorHtml, /4 \/ 3/);
+assert.match(videoInspectorHtml, /8s -&gt; 10s/);
+assert.match(videoInspectorHtml, /完整诊断 JSON/);
+assert.match(videoInspectorHtml, /timeline_repair/);
 
 console.log("prompt_tools render tests passed");

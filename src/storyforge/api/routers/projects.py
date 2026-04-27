@@ -45,13 +45,7 @@ from storyforge.pipelines.story_files import (
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
 
-PROMPT_UPDATE_FIELDS = {
-    "scene_master_frame_prompt",
-    "start_frame_prompt",
-    "mid_frame_prompt",
-    "end_frame_prompt",
-    "video_prompt",
-}
+PROMPT_UPDATE_FIELDS = {"scene_master_frame_prompt", "video_prompt"}
 
 
 def _load_json_file(path: Path, fallback):
@@ -125,11 +119,11 @@ def _select_character_image_version(
     version: str,
 ) -> tuple[str, str]:
     items, target = _load_character_prompt_target(output_dir, character_name)
-    if version not in {"current", "candidate", "previous"}:
+    if version not in {"current", "candidate"}:
         raise HTTPException(status_code=422, detail="version 只能是 current 或 candidate。")
-    candidate_url = str(target.get("candidate_generated_url", target.get("previous_generated_url", "")) or "").strip()
-    candidate_path = str(target.get("candidate_output_path", target.get("previous_output_path", "")) or "").strip()
-    if version in {"candidate", "previous"}:
+    candidate_url = str(target.get("candidate_generated_url", "") or "").strip()
+    candidate_path = str(target.get("candidate_output_path", "") or "").strip()
+    if version == "candidate":
         current_path = str(target.get("output_path", "") or "").strip()
         if candidate_url:
             target["generated_url"] = candidate_url
@@ -192,39 +186,10 @@ def _build_default_segment_prompt(output_dir: Path, segment_id: str, field: str,
     if field == "video_prompt":
         scene = _load_scene_prompt_target(output_dir, segment.scene_id)
         return service._build_seedance_clip_prompt(segment, scene=scene), segment.scene_id
-
-    frame_specs = {
-        "start_frame_prompt": (
-            segment.start_frame_prompt,
-            service._normalize_frame_character_list(segment.start_frame_characters, segment.involved_characters),
-            "首帧",
-        ),
-        "mid_frame_prompt": (
-            segment.mid_frame_prompt or service._build_default_mid_frame_prompt(segment),
-            service._normalize_frame_character_list(segment.mid_frame_characters, segment.involved_characters),
-            "中段锚点帧",
-        ),
-        "end_frame_prompt": (
-            segment.end_frame_prompt,
-            service._normalize_frame_character_list(segment.end_frame_characters, segment.involved_characters),
-            "尾帧",
-        ),
-    }
-    prompt, frame_characters, frame_type = frame_specs[field]
-    if field == "mid_frame_prompt" and not segment.requires_mid_frame:
-        raise HTTPException(status_code=422, detail="当前 segment 不需要中段 Prompt。")
-    return (
-        service._stylize_frame_prompt(
-            prompt,
-            frame_characters,
-            frame_type,
-            involved_characters=segment.involved_characters,
-            scene_bible=segment.scene_bible,
-            shot_state=segment.shot_state,
-            continuity_link=segment.continuity_link,
-        ),
-        segment.scene_id,
-    )
+    if field == "scene_master_frame_prompt":
+        scene = _load_scene_prompt_target(output_dir, segment.scene_id)
+        return service._build_scene_master_frame_prompt(scene), segment.scene_id
+    raise HTTPException(status_code=422, detail=f"不支持重置字段：{field}")
 
 
 def _update_segment_plan_prompts(output_dir: Path, segment_id: str, updates: dict[str, str]) -> tuple[set[str], str]:
@@ -243,7 +208,7 @@ def _update_segment_plan_prompts(output_dir: Path, segment_id: str, updates: dic
 
     scene_id = str(matched_segment.get("scene_id", "") or "")
     changed: set[str] = set()
-    for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt", "video_prompt"):
+    for field in ("video_prompt",):
         if field in updates and matched_segment.get(field) != updates[field]:
             matched_segment[field] = updates[field]
             changed.add(field)
@@ -267,6 +232,12 @@ def _update_scene_plan_master_prompt(output_dir: Path, scene_id: str, prompt: st
             if scene.get("scene_master_frame_prompt") != prompt:
                 scene["scene_master_frame_prompt"] = prompt
                 changed.add("scene_master_frame_prompt")
+            if changed:
+                _delete_output_file(scene.get("scene_master_frame_path"))
+                scene["scene_master_frame_url"] = ""
+                scene["scene_master_frame_status"] = "planned"
+                scene["scene_master_frame_error"] = ""
+                scene["scene_master_request_info"] = {}
             break
     if changed:
         write_json(path, plan)
@@ -283,18 +254,15 @@ def _update_scene_image_manifest_prompts(output_dir: Path, segment_id: str, scen
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        is_target_segment = str(task.get("segment_id", "")) == segment_id
         is_target_scene = scene_id and str(task.get("scene_id", "")) == scene_id
         if "scene_master_frame_prompt" in updates and is_target_scene:
             if task.get("scene_master_frame_prompt") != updates["scene_master_frame_prompt"]:
                 task["scene_master_frame_prompt"] = updates["scene_master_frame_prompt"]
                 changed.add("scene_master_frame_prompt")
-        if not is_target_segment:
-            continue
-        for field in ("start_frame_prompt", "mid_frame_prompt", "end_frame_prompt"):
-            if field in updates and task.get(field) != updates[field]:
-                task[field] = updates[field]
-                changed.add(field)
+                _delete_output_file(task.get("scene_master_frame_path"))
+                task["scene_master_frame_url"] = ""
+                task["scene_master_frame_status"] = "planned"
+                task["scene_master_frame_error"] = ""
     if changed:
         write_json(path, tasks)
     return changed
@@ -344,6 +312,33 @@ def _update_seedance_manifest_prompt(output_dir: Path, segment_id: str, prompt: 
     if changed:
         write_json(path, manifest)
     return changed
+
+
+def _invalidate_seedance_scene_master_references(output_dir: Path, scene_id: str, *, enabled: bool) -> set[str]:
+    if not enabled or not scene_id:
+        return set()
+    path = output_dir / "seedance_manifest.json"
+    manifest = _load_json_file(path, {"clips": []})
+    clips = manifest.get("clips") if isinstance(manifest, dict) else None
+    if not isinstance(clips, list):
+        return set()
+
+    changed = False
+    for clip in clips:
+        if not isinstance(clip, dict):
+            continue
+        if str(clip.get("scene_id", "") or "") != scene_id:
+            continue
+        if clip.get("scene_master_url"):
+            clip["scene_master_url"] = ""
+            changed = True
+        if clip.get("submit_status") not in {"", "planned"} or clip.get("remote_status") not in {"", "planned"}:
+            _reset_seedance_clip_after_prompt_change(clip)
+            changed = True
+    if changed:
+        write_json(path, manifest)
+        return {"video_prompt"}
+    return set()
 
 
 def _ensure_live_llm_requested(use_llm: bool | None) -> None:
@@ -811,7 +806,6 @@ def _find_existing_stage_task(
     source_task_id: str,
     segment_id: str | None,
     scene_id: str | None = None,
-    frame_kind: str | None = None,
     master_only: bool = False,
     merge_only: bool = False,
     continuity_review_mode: str | None = None,
@@ -820,7 +814,6 @@ def _find_existing_stage_task(
 ):
     expected_segment_id = segment_id or ""
     expected_scene_id = scene_id or ""
-    expected_frame_kind = frame_kind or ""
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     expected_seedream_watermark = _normalize_optional_bool(seedream_watermark)
     expected_seedance_watermark = _normalize_optional_bool(seedance_watermark)
@@ -832,8 +825,6 @@ def _find_existing_stage_task(
         if str(task.payload.get("segment_id", "")) != expected_segment_id:
             continue
         if str(task.payload.get("scene_id", "")) != expected_scene_id:
-            continue
-        if str(task.payload.get("frame_kind", "")) != expected_frame_kind:
             continue
         if bool(task.payload.get("master_only", False)) != master_only:
             continue
@@ -885,6 +876,13 @@ async def create_character_job(
     )
     character_name = str(payload.character_name or "").strip()
     if character_name:
+        source_task = _resolve_story_source_task(container, payload.project_id, payload.source_task_id)
+        output_dir = _output_dir(source_task)
+        items, target = _load_character_prompt_target(output_dir, character_name)
+        _delete_character_candidate_file(target.get("candidate_output_path", ""))
+        target["candidate_generated_url"] = ""
+        target["candidate_output_path"] = ""
+        write_json(output_dir / "character_image_manifest.json", items)
         task_payload["character_name"] = character_name
 
     record = await container.task_queue.submit(
@@ -949,14 +947,14 @@ async def select_character_image_version(
     resolved_character_name = str(character_name or "").strip()
     if not resolved_character_name:
         raise HTTPException(status_code=422, detail="character_name 不能为空。")
-    current_url, previous_url = _select_character_image_version(output_dir, resolved_character_name, payload.version)
+    current_url, candidate_url = _select_character_image_version(output_dir, resolved_character_name, payload.version)
     return CharacterImageVersionSelectionResponse(
         project_id=project_id,
         source_task_id=source_task_id,
         character_name=resolved_character_name,
         selected_version=payload.version,
         current_url=current_url,
-        previous_url=previous_url,
+        candidate_url=candidate_url,
     )
 
 
@@ -977,7 +975,6 @@ async def create_scene_job(
         source_task_id=payload.source_task_id,
         segment_id=payload.segment_id,
         scene_id=payload.scene_id,
-        frame_kind=payload.frame_kind,
         master_only=payload.master_only,
         merge_only=False,
         continuity_review_mode=payload.continuity_review_mode,
@@ -1003,8 +1000,6 @@ async def create_scene_job(
     )
     if payload.segment_id:
         task_payload["segment_id"] = payload.segment_id
-    if payload.frame_kind:
-        task_payload["frame_kind"] = payload.frame_kind
     if payload.scene_id:
         task_payload["scene_id"] = payload.scene_id
     if payload.master_only:
@@ -1122,6 +1117,13 @@ async def update_segment_prompts(
     )
     updated_fields.update(_update_scene_image_manifest_prompts(output_dir, segment_id, scene_id, updates))
     updated_fields.update(_update_seedance_manifest_prompt(output_dir, segment_id, updates.get("video_prompt")))
+    updated_fields.update(
+        _invalidate_seedance_scene_master_references(
+            output_dir,
+            scene_id,
+            enabled="scene_master_frame_prompt" in updated_fields,
+        )
+    )
 
     return SegmentPromptUpdateResponse(
         project_id=project_id,

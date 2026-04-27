@@ -74,49 +74,19 @@ class VideoSegmentValidationMixin:
             chapter_coverage[segment.chapter_number] = chapter_coverage.get(segment.chapter_number, 0) + 1
             if not segment.involved_characters:
                 raise ValueError(f"segment {segment.segment_id} 缺少 involved_characters。")
-            if not segment.start_frame_characters:
-                raise ValueError(f"segment {segment.segment_id} 缺少 start_frame_characters。")
-            if not segment.end_frame_characters:
-                raise ValueError(f"segment {segment.segment_id} 缺少 end_frame_characters。")
-            if segment.requires_mid_frame and not segment.mid_frame_characters:
-                raise ValueError(
-                    f"segment {segment.segment_id} requires_mid_frame=true 时缺少 mid_frame_characters。"
-                )
             self._validate_segment_direction_consistency(
                 segment_id=segment.segment_id,
                 screen_direction=segment.shot_state.screen_direction,
                 end_state_lock=segment.shot_state.end_state_lock,
-                end_frame_prompt=segment.end_frame_prompt,
+                tail_state_prompt=segment.shot_state.end_state_lock,
                 timed_beats=segment.timed_beats,
-            )
-            self._validate_single_frame_focus_conflict(
-                segment_id=segment.segment_id,
-                field_name="start_frame_prompt",
-                prompt_text=segment.start_frame_prompt,
-                frame_characters=segment.start_frame_characters,
-                frame_label="start_frame",
-            )
-            if segment.requires_mid_frame:
-                self._validate_single_frame_focus_conflict(
-                    segment_id=segment.segment_id,
-                    field_name="mid_frame_prompt",
-                    prompt_text=segment.mid_frame_prompt,
-                    frame_characters=segment.mid_frame_characters,
-                    frame_label="mid_frame",
-                )
-            self._validate_single_frame_focus_conflict(
-                segment_id=segment.segment_id,
-                field_name="end_frame_prompt",
-                prompt_text=segment.end_frame_prompt,
-                frame_characters=segment.end_frame_characters,
-                frame_label="end_frame",
             )
             fields_to_check = [
                 segment.summary,
                 segment.narration,
-                segment.start_frame_prompt,
-                segment.mid_frame_prompt,
-                segment.end_frame_prompt,
+                segment.shot_state.action_progression,
+                segment.shot_state.end_state_lock,
+                segment.motion_plan.character_motion,
                 *segment.dialogue_lines,
                 *segment.subtitle_lines,
                 *segment.timed_beats,
@@ -326,94 +296,6 @@ class VideoSegmentValidationMixin:
             return self.SEGMENT_ACTION_NODE_BUDGET_LONG
         return self.SEGMENT_ACTION_NODE_BUDGET_LONG + 1
 
-    def _validate_keyframe_semantic_distance(
-        self,
-        *,
-        segment_id: str,
-        summary: str,
-        timed_beats: list[str],
-        start_frame_characters: list[str],
-        mid_frame_characters: list[str],
-        end_frame_characters: list[str],
-        requires_mid_frame: bool,
-        mid_frame_mode: str,
-        continuity_link,
-        shot_state,
-    ) -> None:
-        anchor_specs = [
-            (
-                "start_frame",
-                self._normalize_anchor_characters(start_frame_characters),
-                self._build_start_anchor_state_text(
-                    summary=summary,
-                    timed_beats=timed_beats,
-                    continuity_link=continuity_link,
-                    shot_state=shot_state,
-                ),
-            ),
-        ]
-        if requires_mid_frame:
-            if self._normalize_mid_frame_mode(mid_frame_mode) == "insert_cut":
-                return
-            anchor_specs.append(
-                (
-                    "mid_frame",
-                    self._normalize_anchor_characters(mid_frame_characters),
-                    self._build_mid_anchor_state_text(
-                        summary=summary,
-                        timed_beats=timed_beats,
-                        shot_state=shot_state,
-                    ),
-                )
-            )
-        anchor_specs.append(
-            (
-                "end_frame",
-                self._normalize_anchor_characters(end_frame_characters),
-                self._build_end_anchor_state_text(
-                    summary=summary,
-                    timed_beats=timed_beats,
-                    shot_state=shot_state,
-                ),
-            )
-        )
-
-        for (left_label, left_chars, left_state), (right_label, right_chars, right_state) in zip(
-            anchor_specs,
-            anchor_specs[1:],
-        ):
-            if not left_chars or left_chars != right_chars:
-                continue
-            if not left_state or not right_state:
-                continue
-            if (
-                not requires_mid_frame
-                and left_label == "start_frame"
-                and right_label == "end_frame"
-            ):
-                if not self._start_end_keyframes_too_static(
-                    left_state=left_state,
-                    right_state=right_state,
-                    allowed_changes=str(continuity_link.allowed_changes or "").strip(),
-                ):
-                    continue
-            elif not self._keyframe_states_too_similar(left_state, right_state):
-                continue
-            anchor_names = "、".join(left_chars)
-            raise ValueError(
-                f"segment {segment_id} 的 {left_label} 与 {right_label} 关键帧语义距离过近。"
-                f"当前同组角色为 {anchor_names}，但两帧都在描述几乎相同的可见状态。"
-                "首中尾锚点必须体现可见的动作推进、站位变化、表情变化或收束差异，"
-                "不要只把同一句状态换个说法重复三遍。"
-            )
-
-    def _normalize_anchor_characters(self, characters: list[str]) -> list[str]:
-        return [
-            str(name).strip()
-            for name in characters
-            if str(name).strip()
-        ]
-
     def _build_start_anchor_state_text(
         self,
         *,
@@ -475,7 +357,7 @@ class VideoSegmentValidationMixin:
                 return text
         return ""
 
-    def _keyframe_states_too_similar(self, left_state: str, right_state: str) -> bool:
+    def _motion_states_too_similar(self, left_state: str, right_state: str) -> bool:
         normalized_left = self._normalize_anchor_state_for_similarity(left_state)
         normalized_right = self._normalize_anchor_state_for_similarity(right_state)
         overlap = text_overlap_ratio(normalized_left, normalized_right)
@@ -508,7 +390,7 @@ class VideoSegmentValidationMixin:
             return True
         return overlap >= 0.88 and new_signal_count <= 1
 
-    def _start_end_keyframes_too_static(
+    def _motion_states_too_static(
         self,
         *,
         left_state: str,
@@ -639,10 +521,6 @@ class VideoSegmentValidationMixin:
                 duration_seconds=segment.duration_seconds,
                 require_full_coverage=True,
             )
-            if not segment.start_frame_characters:
-                raise ValueError(f"segment {segment.segment_id} 的 start_frame_characters 不能为空。")
-            if not segment.end_frame_characters:
-                raise ValueError(f"segment {segment.segment_id} 的 end_frame_characters 不能为空。")
             transition_mode = segment.continuity_link.transition_mode.strip().lower()
             if index == 1:
                 if allow_nonstart_first_segment:
@@ -661,142 +539,19 @@ class VideoSegmentValidationMixin:
                     f"segment {segment.segment_id} 作为非首段时，"
                     "continuity_link.transition_mode 只能是 continue 或 cut。"
                 )
-            effective_requires_mid_frame = self._should_require_mid_frame(
-                involved_characters=segment.involved_characters,
-                duration_seconds=segment.duration_seconds,
-                dialogue_lines=segment.dialogue_lines,
-                timed_beats=segment.timed_beats,
-                requested=segment.requires_mid_frame,
-            )
-            mid_frame_requirement_reasons = self._mid_frame_requirement_reasons(
-                involved_characters=segment.involved_characters,
-                duration_seconds=segment.duration_seconds,
-                dialogue_lines=segment.dialogue_lines,
-                timed_beats=segment.timed_beats,
-            )
-            if effective_requires_mid_frame and not segment.requires_mid_frame:
-                reason_suffix = (
-                    " 触发条件："
-                    + "；".join(mid_frame_requirement_reasons)
-                    + "。"
-                    if mid_frame_requirement_reasons
-                    else ""
-                )
-                raise ValueError(
-                    f"segment {segment.segment_id} 满足中段锚点帧条件时，"
-                    "requires_mid_frame 必须为 true，且必须显式给出 mid_frame_characters。"
-                    + reason_suffix
-                )
-            if effective_requires_mid_frame and not segment.mid_frame_characters:
-                reason_suffix = (
-                    " 当前这段之所以必须有中段锚点帧，是因为："
-                    + "；".join(mid_frame_requirement_reasons)
-                    + "。"
-                    if mid_frame_requirement_reasons
-                    else ""
-                )
-                raise ValueError(
-                    f"segment {segment.segment_id} 的 mid_frame_characters 不能为空，"
-                    "且只能使用 involved_characters 内角色。"
-                    + reason_suffix
-                )
-            for field_name, characters in (
-                ("start_frame_characters", segment.start_frame_characters),
-                (
-                    "mid_frame_characters",
-                    segment.mid_frame_characters if effective_requires_mid_frame else [],
-                ),
-                ("end_frame_characters", segment.end_frame_characters),
-            ):
-                invalid_names = [
-                    name for name in characters
-                    if name not in segment.involved_characters
-                ]
-                if invalid_names:
-                    raise ValueError(
-                        f"{segment.segment_id} 的 {field_name} 只能使用 involved_characters 内角色："
-                        + "、".join(invalid_names)
-                    )
-            if effective_requires_mid_frame:
-                self._validate_mid_frame_anchor_group_continuity(
-                    segment_id=segment.segment_id,
-                    start_frame_characters=segment.start_frame_characters,
-                    mid_frame_characters=segment.mid_frame_characters,
-                    mid_frame_mode=segment.mid_frame_mode,
-                    end_frame_characters=segment.end_frame_characters,
-                )
-            if creative_strict:
-                self._validate_keyframe_semantic_distance(
-                    segment_id=segment.segment_id,
-                    summary=segment.summary,
-                    timed_beats=segment.timed_beats,
-                    start_frame_characters=segment.start_frame_characters,
-                    mid_frame_characters=segment.mid_frame_characters,
-                    end_frame_characters=segment.end_frame_characters,
-                    requires_mid_frame=effective_requires_mid_frame,
-                    mid_frame_mode=segment.mid_frame_mode,
-                    continuity_link=segment.continuity_link,
-                    shot_state=segment.shot_state,
-                )
-            else:
-                try:
-                    self._validate_keyframe_semantic_distance(
-                        segment_id=segment.segment_id,
-                        summary=segment.summary,
-                        timed_beats=segment.timed_beats,
-                        start_frame_characters=segment.start_frame_characters,
-                        mid_frame_characters=segment.mid_frame_characters,
-                        end_frame_characters=segment.end_frame_characters,
-                        requires_mid_frame=effective_requires_mid_frame,
-                        mid_frame_mode=segment.mid_frame_mode,
-                        continuity_link=segment.continuity_link,
-                        shot_state=segment.shot_state,
-                    )
-                except ValueError as exc:
-                    if warning_sink is not None:
-                        warning_sink.append(str(exc))
             self._validate_single_frame_focus_conflict(
                 segment_id=segment.segment_id,
                 field_name="shot_state.framing",
                 prompt_text=segment.shot_state.framing,
-                frame_characters=segment.start_frame_characters,
-                frame_label="start_frame",
+                frame_characters=segment.involved_characters,
+                frame_label="segment",
             )
             self._validate_single_frame_focus_conflict(
                 segment_id=segment.segment_id,
                 field_name="shot_state.camera_motion",
                 prompt_text=segment.shot_state.camera_motion,
-                frame_characters=segment.start_frame_characters,
-                frame_label="start_frame",
-            )
-            if effective_requires_mid_frame:
-                self._validate_single_frame_focus_conflict(
-                    segment_id=segment.segment_id,
-                    field_name="shot_state.framing",
-                    prompt_text=segment.shot_state.framing,
-                    frame_characters=segment.mid_frame_characters,
-                    frame_label="mid_frame",
-                )
-                self._validate_single_frame_focus_conflict(
-                    segment_id=segment.segment_id,
-                    field_name="shot_state.camera_motion",
-                    prompt_text=segment.shot_state.camera_motion,
-                    frame_characters=segment.mid_frame_characters,
-                    frame_label="mid_frame",
-                )
-            self._validate_single_frame_focus_conflict(
-                segment_id=segment.segment_id,
-                field_name="shot_state.framing",
-                prompt_text=segment.shot_state.framing,
-                frame_characters=segment.end_frame_characters,
-                frame_label="end_frame",
-            )
-            self._validate_single_frame_focus_conflict(
-                segment_id=segment.segment_id,
-                field_name="shot_state.camera_motion",
-                prompt_text=segment.shot_state.camera_motion,
-                frame_characters=segment.end_frame_characters,
-                frame_label="end_frame",
+                frame_characters=segment.involved_characters,
+                frame_label="segment",
             )
             self._validate_segment_action_capacity(
                 segment_id=segment.segment_id,
@@ -886,7 +641,7 @@ class VideoSegmentValidationMixin:
         raise ValueError(
             f"segment {segment_id} 的 {field_name} 在 {frame_label} "
             f"({frame_names}) 多人同帧时仍要求单人特写，"
-            "这会导致同一角色在单帧里重复出现。"
+            "这会导致同一角色在画面里重复出现。"
         )
 
     def _extract_direction_semantics(self, text: str) -> set[str]:
@@ -906,7 +661,7 @@ class VideoSegmentValidationMixin:
         segment_id: str,
         screen_direction: str,
         end_state_lock: str,
-        end_frame_prompt: str,
+        tail_state_prompt: str,
         timed_beats: list[str],
     ) -> None:
         screen_semantics = self._extract_direction_semantics(screen_direction)
@@ -914,7 +669,7 @@ class VideoSegmentValidationMixin:
             item
             for item in (
                 end_state_lock,
-                end_frame_prompt,
+                tail_state_prompt,
                 timed_beats[-1] if timed_beats else "",
             )
             if str(item or "").strip()
@@ -937,48 +692,6 @@ class VideoSegmentValidationMixin:
         raise ValueError(
             f"segment {segment_id} 的 shot_state.screen_direction 与尾部收束方向冲突。"
             f"screen_direction={screen_direction.strip()!r}；"
-            f"end_state/end_frame={tail_reference_text.strip()!r}。"
+            f"tail_state={tail_reference_text.strip()!r}。"
             "请统一为同一运动轴线，不要一边写靠近镜头，一边又写背影远去或走向深处。"
         )
-
-    def _validate_mid_frame_anchor_group_continuity(
-        self,
-        *,
-        segment_id: str,
-        start_frame_characters: list[str],
-        mid_frame_characters: list[str],
-        mid_frame_mode: str,
-        end_frame_characters: list[str],
-    ) -> None:
-        normalized_start = [str(name).strip() for name in start_frame_characters if str(name).strip()]
-        normalized_end = [str(name).strip() for name in end_frame_characters if str(name).strip()]
-        start_anchor = set(normalized_start)
-        end_anchor = set(normalized_end)
-        if len(start_anchor) < 2 or start_anchor != end_anchor:
-            return
-        mid_anchor = {str(name).strip() for name in mid_frame_characters if str(name).strip()}
-        if not mid_anchor:
-            return
-        if start_anchor.issubset(mid_anchor):
-            return
-        if start_anchor.isdisjoint(mid_anchor):
-            return
-        if self._normalize_mid_frame_mode(mid_frame_mode) == "insert_cut":
-            return
-        anchor_names = "、".join(normalized_start)
-        mid_names = "、".join(
-            str(name).strip()
-            for name in mid_frame_characters
-            if str(name).strip()
-        ) or "空"
-        raise ValueError(
-            f"segment {segment_id} 的 mid_frame_characters 不能只保留首尾同组角色的一部分。"
-            f"首尾帧固定角色组为 {anchor_names}，但中段写成了 {mid_names}。"
-            "如果中段仍是这组角色的连续表演，就必须保留整组角色；"
-            "如果中段是其中一人的插入特写，就必须把 mid_frame_mode 设为 insert_cut，"
-            "并显式写出从双人镜头切入再切回双人镜头的运镜；"
-            "否则就不要只保留其中一人。"
-        )
-
-    def _normalize_mid_frame_mode(self, value: str) -> str:
-        return "insert_cut" if str(value or "").strip().lower() == "insert_cut" else "continuous"

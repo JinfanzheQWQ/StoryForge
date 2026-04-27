@@ -12056,9 +12056,9 @@ class PipelineTestCase(unittest.TestCase):
             )
         )
 
-        self.assertIn("纯场景参考图", prompt)
+        self.assertIn("纯室外环境参考图", prompt)
         self.assertIn("场景基线锁定", prompt)
-        self.assertIn("不得出现任何人物", prompt)
+        self.assertIn("无人物空场景", prompt)
         self.assertIn("大学中心花园的紫藤花架", prompt)
         self.assertIn("紫藤花架", prompt)
         self.assertIn("木质长椅", prompt)
@@ -12066,6 +12066,50 @@ class PipelineTestCase(unittest.TestCase):
         self.assertNotIn("陈默", prompt)
         self.assertNotIn("林晚", prompt)
         self.assertNotIn("角色调度", prompt)
+
+    def test_scene_master_frame_prompt_uses_structured_environment_template(self) -> None:
+        service = NovelToVideoService()
+
+        prompt = service._build_scene_master_frame_prompt(
+            VideoScene(
+                scene_id="ch01-sc01",
+                chapter_number=1,
+                title="花田尽头",
+                summary="林屿在图书馆旁的郁金香花田等待苏晚。",
+                scene_anchor="图书馆旁的郁金香花田，尽头银杏树下",
+                involved_characters=["林屿", "苏晚"],
+                covered_event_ids=[],
+                segments=[],
+                scene_bible=SceneBible(
+                    location="图书馆旁的郁金香花田，尽头银杏树下（室外）",
+                    time_window="傍晚",
+                    weather="微风",
+                    lighting="夕阳铺满花田，金色斜阳",
+                    dominant_palette=["红色", "金色", "绿色"],
+                    background_anchors=["银杏树", "红色郁金香花田", "石板路", "远处图书馆建筑外立面"],
+                    fixed_props=["银杏树干", "石板路", "花田围栏"],
+                    spatial_layout="银杏树位于花田尽头；石板路从花田间穿过通向图书馆方向；图书馆位于远景，仅外立面可见。",
+                    character_blocking="林屿站在银杏树下，苏晚从石板路走来。",
+                    continuity_notes="保持花田、银杏树和远景图书馆外立面的空间关系稳定。",
+                ),
+            )
+        )
+
+        self.assertTrue(prompt.startswith("原创虚构场景母图，风格化概念插画，非真人摄影。"))
+        self.assertIn("这是一个纯室外环境参考图", prompt)
+        self.assertIn("远景建筑只作为背景建筑外立面出现", prompt)
+        self.assertIn("场景基线锁定：", prompt)
+        self.assertIn("地点：图书馆旁的郁金香花田，尽头银杏树下（室外）", prompt)
+        self.assertIn("空间布局：", prompt)
+        self.assertIn("银杏树位于花田尽头", prompt)
+        self.assertIn("图书馆位于远景，仅外立面可见", prompt)
+        self.assertIn("主色调：红色、金色、绿色", prompt)
+        self.assertIn("背景锚点：银杏树、红色郁金香花田、石板路、远处图书馆建筑外立面", prompt)
+        self.assertIn("固定道具：银杏树干、石板路、花田围栏", prompt)
+        self.assertIn("画面必须为无人物空场景", prompt)
+        self.assertNotIn("林屿", prompt)
+        self.assertNotIn("苏晚", prompt)
+        self.assertNotIn("走来", prompt)
 
     def test_scene_master_frame_prompt_filters_weak_human_signals(self) -> None:
         service = NovelToVideoService()

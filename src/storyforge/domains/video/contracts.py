@@ -53,8 +53,8 @@ class CharacterImageTask:
             use_as_reference=raw.get("use_as_reference", True),
             status=raw.get("status", "planned"),
             generated_url=raw.get("generated_url", ""),
-            candidate_generated_url=raw.get("candidate_generated_url", raw.get("previous_generated_url", "")),
-            candidate_output_path=raw.get("candidate_output_path", raw.get("previous_output_path", "")),
+            candidate_generated_url=raw.get("candidate_generated_url", ""),
+            candidate_output_path=raw.get("candidate_output_path", ""),
             request_info=raw.get("request_info", {}) if isinstance(raw.get("request_info"), dict) else {},
             error=raw.get("error", ""),
         )
@@ -132,8 +132,8 @@ class ShotState:
 
 @dataclass(slots=True)
 class MotionPlan:
-    start_to_mid: str = ""
-    mid_to_end: str = ""
+    scene_motion: str = ""
+    beat_progression: str = ""
     camera_path: str = ""
     character_motion: str = ""
     continuity_guard: str = ""
@@ -149,8 +149,8 @@ class MotionPlan:
         else:
             payload = {}
         return cls(
-            start_to_mid=str(payload.get("start_to_mid", "") or ""),
-            mid_to_end=str(payload.get("mid_to_end", "") or ""),
+            scene_motion=str(payload.get("scene_motion", "") or ""),
+            beat_progression=str(payload.get("beat_progression", "") or ""),
             camera_path=str(payload.get("camera_path", "") or ""),
             character_motion=str(payload.get("character_motion", "") or ""),
             continuity_guard=str(payload.get("continuity_guard", "") or ""),
@@ -240,21 +240,12 @@ class VideoSegment:
     sound_effects: list[str]
     music_direction: str
     timed_beats: list[str]
-    start_frame_prompt: str
-    end_frame_prompt: str
     duration_seconds: int
-    start_frame_characters: list[str] = field(default_factory=list)
-    mid_frame_characters: list[str] = field(default_factory=list)
-    mid_frame_mode: str = "continuous"
-    end_frame_characters: list[str] = field(default_factory=list)
     character_voice_notes: list[str] = field(default_factory=list)
-    mid_frame_prompt: str = ""
-    requires_mid_frame: bool = False
     transition_hint: str = "auto"
     source_segment_id: str = ""
     subsegment_index: int = 1
     subsegment_count: int = 1
-    reuse_previous_end_frame: bool = False
     scene_bible: SceneBible = field(default_factory=SceneBible)
     shot_state: ShotState = field(default_factory=ShotState)
     continuity_link: ContinuityLink = field(default_factory=ContinuityLink)
@@ -272,14 +263,6 @@ class VideoSegment:
             title=raw["title"],
             summary=raw["summary"],
             involved_characters=list(raw.get("involved_characters", [])),
-            start_frame_characters=list(raw.get("start_frame_characters", [])),
-            mid_frame_characters=list(raw.get("mid_frame_characters", [])),
-            mid_frame_mode=(
-                "insert_cut"
-                if str(raw.get("mid_frame_mode", "") or "").strip().lower() == "insert_cut"
-                else "continuous"
-            ),
-            end_frame_characters=list(raw.get("end_frame_characters", [])),
             narration=raw["narration"],
             dialogue_lines=list(raw.get("dialogue_lines", [])),
             subtitle_lines=list(raw.get("subtitle_lines", [])),
@@ -287,16 +270,11 @@ class VideoSegment:
             sound_effects=list(raw.get("sound_effects", [])),
             music_direction=raw.get("music_direction", ""),
             timed_beats=list(raw.get("timed_beats", [])),
-            start_frame_prompt=raw["start_frame_prompt"],
-            mid_frame_prompt=raw.get("mid_frame_prompt", ""),
-            end_frame_prompt=raw["end_frame_prompt"],
             duration_seconds=raw["duration_seconds"],
-            requires_mid_frame=raw.get("requires_mid_frame", False),
             transition_hint=raw.get("transition_hint", "auto"),
             source_segment_id=raw.get("source_segment_id", raw["segment_id"]),
             subsegment_index=raw.get("subsegment_index", 1),
             subsegment_count=raw.get("subsegment_count", 1),
-            reuse_previous_end_frame=raw.get("reuse_previous_end_frame", False),
             scene_bible=SceneBible.from_dict(raw.get("scene_bible")),
             shot_state=ShotState.from_dict(raw.get("shot_state")),
             continuity_link=ContinuityLink.from_dict(raw.get("continuity_link")),
@@ -398,33 +376,14 @@ class SceneImageTask:
     scene_title: str
     scene_master_frame_prompt: str
     scene_master_frame_path: str
-    start_frame_prompt: str
-    end_frame_prompt: str
     reference_images: list[str]
-    start_frame_path: str
-    end_frame_path: str
     provider: str
     involved_characters: list[str] = field(default_factory=list)
-    start_frame_characters: list[str] = field(default_factory=list)
-    mid_frame_characters: list[str] = field(default_factory=list)
-    end_frame_characters: list[str] = field(default_factory=list)
-    mid_frame_prompt: str = ""
-    mid_frame_path: str = ""
-    requires_mid_frame: bool = False
-    reuse_previous_end_frame: bool = False
-    continuity_source_segment_id: str = ""
-    scene_transition_source_segment_id: str = ""
     status: str = "planned"
     scene_master_frame_status: str = "planned"
     scene_master_frame_url: str = ""
-    start_frame_url: str = ""
-    mid_frame_url: str = ""
-    end_frame_url: str = ""
     scene_master_frame_error: str = ""
     error: str = ""
-    start_frame_request_info: dict[str, Any] = field(default_factory=dict)
-    mid_frame_request_info: dict[str, Any] = field(default_factory=dict)
-    end_frame_request_info: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SceneImageTask":
@@ -434,33 +393,14 @@ class SceneImageTask:
             scene_title=raw.get("scene_title", ""),
             scene_master_frame_prompt=raw.get("scene_master_frame_prompt", ""),
             scene_master_frame_path=raw.get("scene_master_frame_path", ""),
-            start_frame_prompt=raw["start_frame_prompt"],
-            mid_frame_prompt=raw.get("mid_frame_prompt", ""),
-            end_frame_prompt=raw["end_frame_prompt"],
             reference_images=list(raw.get("reference_images", [])),
             involved_characters=list(raw.get("involved_characters", [])),
-            start_frame_characters=list(raw.get("start_frame_characters", [])),
-            mid_frame_characters=list(raw.get("mid_frame_characters", [])),
-            end_frame_characters=list(raw.get("end_frame_characters", [])),
-            start_frame_path=raw["start_frame_path"],
-            mid_frame_path=raw.get("mid_frame_path", ""),
-            end_frame_path=raw["end_frame_path"],
             provider=raw["provider"],
-            requires_mid_frame=raw.get("requires_mid_frame", False),
-            reuse_previous_end_frame=raw.get("reuse_previous_end_frame", False),
-            continuity_source_segment_id=raw.get("continuity_source_segment_id", ""),
-            scene_transition_source_segment_id=raw.get("scene_transition_source_segment_id", ""),
             status=raw.get("status", "planned"),
             scene_master_frame_status=raw.get("scene_master_frame_status", "planned"),
             scene_master_frame_url=raw.get("scene_master_frame_url", ""),
-            start_frame_url=raw.get("start_frame_url", ""),
-            mid_frame_url=raw.get("mid_frame_url", ""),
-            end_frame_url=raw.get("end_frame_url", ""),
             scene_master_frame_error=raw.get("scene_master_frame_error", ""),
             error=raw.get("error", ""),
-            start_frame_request_info=dict(raw.get("start_frame_request_info", {}) or {}),
-            mid_frame_request_info=dict(raw.get("mid_frame_request_info", {}) or {}),
-            end_frame_request_info=dict(raw.get("end_frame_request_info", {}) or {}),
         )
 
 
@@ -475,16 +415,17 @@ class SeedanceClipTask:
     sound_effects: list[str]
     music_direction: str
     timed_beats: list[str]
-    start_frame_path: str
-    end_frame_path: str
     duration_seconds: int
     aspect_ratio: str
     with_audio: bool
     output_path: str
-    mid_frame_path: str = ""
-    start_frame_url: str = ""
-    mid_frame_url: str = ""
-    end_frame_url: str = ""
+    scene_id: str = ""
+    scene_master_path: str = ""
+    scene_master_url: str = ""
+    character_image_paths: list[str] = field(default_factory=list)
+    character_image_urls: list[str] = field(default_factory=list)
+    visible_characters: list[str] = field(default_factory=list)
+    motion_contract: dict[str, Any] = field(default_factory=dict)
     submitted_prompt: str = ""
     submit_variant: str = ""
     submitted_reference_bindings: list[dict[str, str]] = field(default_factory=list)
@@ -509,12 +450,13 @@ class SeedanceClipTask:
             sound_effects=list(raw.get("sound_effects", [])),
             music_direction=raw.get("music_direction", ""),
             timed_beats=list(raw.get("timed_beats", [])),
-            start_frame_path=raw["start_frame_path"],
-            end_frame_path=raw["end_frame_path"],
-            mid_frame_path=raw.get("mid_frame_path", ""),
-            start_frame_url=raw.get("start_frame_url", ""),
-            mid_frame_url=raw.get("mid_frame_url", ""),
-            end_frame_url=raw.get("end_frame_url", ""),
+            scene_id=raw.get("scene_id", ""),
+            scene_master_path=raw.get("scene_master_path", ""),
+            scene_master_url=raw.get("scene_master_url", ""),
+            character_image_paths=list(raw.get("character_image_paths", [])),
+            character_image_urls=list(raw.get("character_image_urls", [])),
+            visible_characters=list(raw.get("visible_characters", [])),
+            motion_contract=dict(raw.get("motion_contract", {}) or {}),
             submitted_prompt=raw.get("submitted_prompt", ""),
             submit_variant=raw.get("submit_variant", ""),
             submitted_reference_bindings=list(raw.get("submitted_reference_bindings", [])),

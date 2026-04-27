@@ -63,6 +63,7 @@ const busyHtml = renderCharacterWorkbenchTab({
         url: "/characters/linyu.png",
         prompt: "林屿角色 prompt",
         status: "planned",
+        candidate_url: "/characters/_candidates/old-linyu.png",
       },
     ],
   },
@@ -81,6 +82,8 @@ assert.match(busyHtml, /is-busy/);
 assert.match(busyHtml, /该角色图正在重做/);
 assert.match(busyHtml, /data-save-and-rerun-character-prompt="林屿"/);
 assert.match(busyHtml, /disabled/);
+assert.doesNotMatch(busyHtml, /<span>新候选图<\/span>/);
+assert.doesNotMatch(busyHtml, /old-linyu/);
 
 const emptyHtml = renderCharacterWorkbenchTab({
   task,

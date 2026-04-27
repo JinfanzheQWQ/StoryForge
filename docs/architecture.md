@@ -58,7 +58,7 @@ src/storyforge/
 ### Domain
 
 - 小说域负责故事结构、角色结构、正文真源、角色证据和审稿规则。
-- 视频域负责 scene / chunk / segment 规划、连续性合同、动作容量、时长预算、关键帧角色集合和修复规则。
+- 视频域负责 scene / chunk / segment 规划、连续性合同、动作容量、时长预算、运动合同和修复规则。
 
 ### Integrations
 
@@ -106,7 +106,7 @@ src/storyforge/
 - `continuity_report.json`
 - 媒体任务清单
 
-这一阶段确定每个 segment 的镜头、动作、时长、首中尾帧、对白字幕、音频方向和视频 motion plan。
+这一阶段确定每个 segment 的镜头、动作、时长、对白字幕、音频方向和视频 motion plan。
 
 ### 4. 图片阶段
 
@@ -119,11 +119,11 @@ src/storyforge/
 - `seedream_character_execution.json`
 - `seedream_scene_execution.json`
 
-图片阶段按当前帧真实出镜角色和参考图绑定生成，不让未出镜角色污染单帧 prompt。
+图片阶段生成角色定妆图和 scene 场景母图，视频阶段再用文字描述角色运动。
 
 ### 5. 视频阶段
 
-输入：关键帧、Seedance manifest 和视频 prompt。
+输入：场景母图、角色图、Seedance manifest 和视频 prompt。
 
 输出：
 
@@ -131,7 +131,7 @@ src/storyforge/
 - `seedance_execution.json`
 - `rendered/full_story.mp4`
 
-Seedance 提交使用 segment 关键帧作为时间锚点，不提交场景母图或角色图作为视频参考。
+Seedance 提交使用 scene 场景母图和当前出镜角色图作为参考图。
 
 ## 视频规划合同
 
@@ -181,15 +181,15 @@ Seedance 提交使用 segment 关键帧作为时间锚点，不提交场景母�
 
 ### `motion_plan`
 
-描述视频关键帧之间的可见推进：
+描述角色在场景母图空间里的可见推进：
 
-- `start_to_mid`
-- `mid_to_end`
+- `scene_motion`
+- `beat_progression`
 - `camera_path`
 - `character_motion`
 - `continuity_guard`
 
-视频 prompt 会优先消费 `motion_plan`，并把实际提交图片写成 `图片1 / 图片2 / 图片3`。
+视频 prompt 会优先消费 `motion_plan`，并把实际提交图片写成 `图片1=场景母图，图片2+=角色图`。
 
 ## Artifact API
 

@@ -222,20 +222,15 @@ class VideoStructuredRetryPromptMixin:
                     "不要回头大改已经合理的其他 segment。"
                 )
             retry_prompt += (
-                f" 当前冲突帧是 `{frame_label or 'unknown_frame'}`，角色组是 `{frame_names}`。"
-                f" 只要这一帧仍保持 `{frame_names}` 同框，就必须把 `shot_state.framing` 和 `shot_state.camera_motion` 一起改成共享镜头语言，"
+                f" 当前冲突画面是 `{frame_label or 'unknown_frame'}`，角色组是 `{frame_names}`。"
+                f" 只要当前画面仍保持 `{frame_names}` 同框，就必须把 `shot_state.framing` 和 `shot_state.camera_motion` 一起改成共享镜头语言，"
                 f"例如“轻微前推，保持 {frame_names} 同框，只通过站位和表情差异突出 {focus_name} 情绪变化”。"
                 " 不要再保留任何“单人近景”“侧脸特写”“聚焦某人脸部”这类单人特写话术。"
             )
-            if frame_label == "mid_frame":
-                retry_prompt += (
-                    " 如果你坚持把中段写成单人反应镜头，必须显式改成 `mid_frame_mode=insert_cut`，"
-                    "并把 `mid_frame_characters`、`timed_beats` 与 shared shot 的来回切换一起改对。"
-                )
-            else:
-                retry_prompt += (
-                    f" 当前报错不是 `mid_frame`，不要把 `{frame_label}` 主锚点偷偷改成单人特写来规避校验。"
-                )
+            retry_prompt += (
+                f" 不要把 `{frame_label}` 画面约束偷偷改成单人特写来规避校验。"
+                "多人同框时应改共享镜头语言，而不是改角色集合。"
+            )
             retry_prompt += " 不要解释，不要输出 Markdown 代码块，不要漏字段。"
             return PromptRequest(
                 system_prompt=request.system_prompt,
@@ -347,61 +342,17 @@ class VideoStructuredRetryPromptMixin:
                 "明确写出尾部的反应、停顿、走位收束或镜头停点。"
                 "不要再让片段在最后 1-3 秒处于没有合同约束的空白状态。"
             )
-        if "关键帧语义距离过近" in normalized_error:
+        if "多人同帧时仍要求单人特写" in normalized_error or "画面里重复出现" in normalized_error:
             retry_note += (
-                " 这次失败说明首帧、中段帧、尾帧里至少有两帧在描述几乎相同的状态。"
-                "本次必须把关键帧写成真正不同的可见停点："
-                "start 负责开场建立状态，mid 负责中途推进或关系变化，end 负责尾部收束。"
-                "如果是同组角色的连续主镜头，就不要把三帧都写成同一站位、同一表情、同一动作的近义改写；"
-                "至少要明确其中一项变化：动作推进、站位变化、朝向变化、距离变化、表情变化或收束结果。"
-            )
-        if "mid_frame_characters 不能为空" in normalized_error or "只能使用 involved_characters 内角色" in normalized_error:
-            retry_note += (
-                " 这次失败说明中段出镜角色写错了。"
-                "mid_frame_characters 必须严格跟随片段中间那一拍真实出镜的人物，"
-                "不要直接照搬整个 scene cast，也不要把只在尾帧才出现的人提前写进中段帧。"
-            )
-        if "不能只保留首尾同组角色的一部分" in normalized_error:
-            retry_note += (
-                " 这次失败说明中段锚点把同一组多人角色写丢了。"
-                "如果首帧和尾帧是同一组双人或多人，而中段只是其中一人的反应特写或动作插入镜头，"
-                "就必须把 `mid_frame_mode` 明确设成 `insert_cut`，"
-                "并把 `timed_beats`、`mid_frame_prompt`、`shot_state.camera_motion` 都写成"
-                "“从双人主镜头切入单人特写，再切回双人主镜头”的完整运镜。"
-                "如果不是插入镜头，就继续保留整组角色；"
-                "不要出现没有声明 insert_cut 的“首尾两人，中段只剩其中一人”。"
-            )
-            anchor_group_match = re.search(
-                r"首尾帧固定角色组为\s*(?P<anchors>[^，。]+)\s*，但中段写成了\s*(?P<mid>[^。]+)",
-                normalized_error,
-            )
-            if anchor_group_match:
-                anchor_names = str(anchor_group_match.group("anchors") or "").strip()
-                mid_names = str(anchor_group_match.group("mid") or "").strip()
-                if anchor_names and mid_names:
-                    retry_note += (
-                        f" 本次按二选一修正即可："
-                        f"如果中段仍是连续主镜头，就把 `mid_frame_characters` 改回 `{anchor_names}`，"
-                        "并写 `mid_frame_mode=continuous`；"
-                        f"如果中段确实只拍 `{mid_names}` 的插入特写，"
-                        "就保留该中段角色，但必须写 `mid_frame_mode=insert_cut`，"
-                        f"并让 `timed_beats` 明确成“先 {anchor_names} 同框 -> 再切 {mid_names} 单人 -> 最后回到 {anchor_names} 同框”。"
-                        "不要再输出“首尾整组、中段只剩一人、但 mid_frame_mode 仍是 continuous”的半对半错结构。"
-                    )
-        if "多人同帧时仍要求单人特写" in normalized_error or "单帧里重复出现" in normalized_error:
-            retry_note += (
-                " 这次失败说明某一帧的人物构图自相矛盾。"
-                "如果某一帧是双人或多人同框，就不要再写“某角色侧脸特写 / 大特写 / 单人近景”。"
-                "尤其 `shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 共享的镜头约束，"
-                "只要 start/mid/end 任一帧会出现双人，就不要在这两个字段里写指向某一个角色的特写动作。"
-                "同一帧里同一角色只能出现一次；需要单人特写时，就把该帧的 frame_characters 改成单人，"
-                "或者改写成双人同构图下的自然表情表现。"
-                "例如：如果 start_frame 是 `苏晴、林远`，就不要写“推向苏晴侧脸特写”；"
-                "应改成“轻微前推，保持两人同框并捕捉苏晴表情变化”。"
+                " 这次失败说明人物构图自相矛盾。"
+                "如果当前片段是双人或多人同框，就不要再写“某角色侧脸特写 / 大特写 / 单人近景”。"
+                "`shot_state.framing` 和 `shot_state.camera_motion` 是整个 segment 共享的镜头约束，"
+                "多人同框时应改成关系镜头或共享镜头语言，避免把同一角色重复生成。"
+                "例如不要写“推向苏晴侧脸特写”，应改成“轻微前推，保持两人同框并捕捉苏晴表情变化”。"
             )
             multi_focus_match = re.search(
                 r"segment\s+(?P<segment_id>\S+)\s+的\s+(?P<field_name>[^\s]+)\s+在\s+"
-                r"(?P<frame_label>start_frame|mid_frame|end_frame)\s*"
+                r"(?P<frame_label>segment)\s*"
                 r"\((?P<frame_names>[^)]+)\)\s*多人同帧时仍要求单人特写",
                 normalized_error,
             )

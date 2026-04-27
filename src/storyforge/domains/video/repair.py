@@ -134,7 +134,7 @@ class VideoRepairMixin:
             system_prompt=(
                 "你是 StoryForge 的 Scene Continuity Repair Agent。"
                 "你只修复目标 scene 的场景连续性基线，不重写剧情，不改章节结构，不新增角色。"
-                "你的职责是把当前 scene 修成更适合后续场景母图、关键帧和视频复用的稳定环境合同。"
+                "你的职责是把当前 scene 修成更适合后续场景母图和视频复用的稳定环境合同。"
             ),
             user_prompt=self._build_scene_continuity_repair_user_prompt(
                 story_title=project_package.title,
@@ -194,65 +194,25 @@ class VideoRepairMixin:
         if not involved_characters:
             raise ValueError("目标 segment 缺少 involved_characters，无法执行修复。")
 
-        for field_name, characters in (
-            ("start_frame_characters", candidate.start_frame_characters),
-            ("mid_frame_characters", candidate.mid_frame_characters if candidate.requires_mid_frame else []),
-            ("end_frame_characters", candidate.end_frame_characters),
-        ):
-            invalid_names = [
-                name for name in characters
-                if str(name).strip() and str(name).strip() not in involved_characters
-            ]
-            if invalid_names:
-                raise ValueError(
-                    f"{field_name} 只能使用目标片段已有角色，非法角色：{'、'.join(invalid_names)}。"
-                )
-
-        if not candidate.start_frame_characters:
-            raise ValueError("start_frame_characters 不能为空。")
-        if not candidate.end_frame_characters:
-            raise ValueError("end_frame_characters 不能为空。")
-        if candidate.requires_mid_frame:
-            self._validate_mid_frame_anchor_group_continuity(
-                segment_id=candidate.segment_id,
-                start_frame_characters=candidate.start_frame_characters,
-                mid_frame_characters=candidate.mid_frame_characters,
-                mid_frame_mode=candidate.mid_frame_mode,
-                end_frame_characters=candidate.end_frame_characters,
+        candidate_characters = [
+            str(name).strip()
+            for name in candidate.involved_characters
+            if str(name).strip()
+        ] or list(involved_characters)
+        invalid_names = [name for name in candidate_characters if name not in involved_characters]
+        if invalid_names:
+            raise ValueError(
+                f"involved_characters 只能使用目标片段已有角色，非法角色：{'、'.join(invalid_names)}。"
             )
+        if not candidate_characters:
+            raise ValueError("involved_characters 不能为空。")
         self._validate_segment_direction_consistency(
             segment_id=candidate.segment_id,
             screen_direction=candidate.shot_state.screen_direction,
             end_state_lock=candidate.shot_state.end_state_lock,
-            end_frame_prompt=candidate.end_frame_prompt,
+            tail_state_prompt=candidate.shot_state.end_state_lock,
             timed_beats=candidate.timed_beats,
         )
-        self._validate_single_frame_focus_conflict(
-            segment_id=candidate.segment_id,
-            field_name="start_frame_prompt",
-            prompt_text=candidate.start_frame_prompt,
-            frame_characters=candidate.start_frame_characters,
-            frame_label="start_frame",
-        )
-        self._validate_single_frame_focus_conflict(
-            segment_id=candidate.segment_id,
-            field_name="end_frame_prompt",
-            prompt_text=candidate.end_frame_prompt,
-            frame_characters=candidate.end_frame_characters,
-            frame_label="end_frame",
-        )
-        if candidate.requires_mid_frame:
-            if not candidate.mid_frame_prompt.strip():
-                raise ValueError("requires_mid_frame=true 时 mid_frame_prompt 不能为空。")
-            if not candidate.mid_frame_characters:
-                raise ValueError("requires_mid_frame=true 时 mid_frame_characters 不能为空。")
-            self._validate_single_frame_focus_conflict(
-                segment_id=candidate.segment_id,
-                field_name="mid_frame_prompt",
-                prompt_text=candidate.mid_frame_prompt,
-                frame_characters=candidate.mid_frame_characters,
-                frame_label="mid_frame",
-            )
 
         duration_seconds = self._normalize_seedance_duration(candidate.duration_seconds)
         if duration_seconds != candidate.duration_seconds:
@@ -285,19 +245,6 @@ class VideoRepairMixin:
             duration_seconds=duration_seconds,
             require_full_coverage=True,
         )
-        self._validate_keyframe_semantic_distance(
-            segment_id=candidate.segment_id,
-            summary=getattr(candidate, "summary", "") or target_segment.summary,
-            timed_beats=candidate.timed_beats,
-            start_frame_characters=candidate.start_frame_characters,
-            mid_frame_characters=candidate.mid_frame_characters,
-            end_frame_characters=candidate.end_frame_characters,
-            requires_mid_frame=candidate.requires_mid_frame,
-            mid_frame_mode=candidate.mid_frame_mode,
-            continuity_link=candidate.continuity_link,
-            shot_state=candidate.shot_state,
-        )
-
         transition_mode = candidate.continuity_link.transition_mode.strip().lower()
         if previous_segment is None and transition_mode == "continue":
             raise ValueError("首段或无上一段时，continuity_link.transition_mode 不能为 continue。")
@@ -600,15 +547,9 @@ class VideoRepairMixin:
                 segment=segment,
                 previous_segment=previous_segment,
             )
-            should_reuse_previous = (
-                previous_segment is not None
-                and repaired_link.transition_mode == "continue"
-                and repaired_link.previous_segment_id == previous_segment.segment_id
-            )
             repaired_segment = segment.model_copy(
                 update={
                     "continuity_link": repaired_link,
-                    "reuse_previous_end_frame": should_reuse_previous,
                 }
             )
             repaired_segments.append(repaired_segment)
@@ -950,39 +891,6 @@ class VideoRepairMixin:
                         ),
                         "title": self._replace_character_aliases(segment.title, alias_map),
                         "involved_characters": resolved_names,
-                        "start_frame_characters": self._normalize_frame_characters_for_segment(
-                            frame_position="start",
-                            raw_names=segment.start_frame_characters,
-                            prompt_text=segment.start_frame_prompt,
-                            frame_context_text=self._frame_context_text(segment, "start"),
-                            resolved_names=resolved_names,
-                            chapter_number=segment.chapter_number,
-                            canonical_names=canonical_names,
-                            chapter_feature_map=chapter_feature_map,
-                            role_map=role_map,
-                        ),
-                        "mid_frame_characters": self._normalize_frame_characters_for_segment(
-                            frame_position="mid",
-                            raw_names=segment.mid_frame_characters,
-                            prompt_text=segment.mid_frame_prompt,
-                            frame_context_text=self._frame_context_text(segment, "mid"),
-                            resolved_names=resolved_names,
-                            chapter_number=segment.chapter_number,
-                            canonical_names=canonical_names,
-                            chapter_feature_map=chapter_feature_map,
-                            role_map=role_map,
-                        ),
-                        "end_frame_characters": self._normalize_frame_characters_for_segment(
-                            frame_position="end",
-                            raw_names=segment.end_frame_characters,
-                            prompt_text=segment.end_frame_prompt,
-                            frame_context_text=self._frame_context_text(segment, "end"),
-                            resolved_names=resolved_names,
-                            chapter_number=segment.chapter_number,
-                            canonical_names=canonical_names,
-                            chapter_feature_map=chapter_feature_map,
-                            role_map=role_map,
-                        ),
                         "summary": self._replace_character_aliases(segment.summary, alias_map),
                         "narration": self._replace_character_aliases(segment.narration, alias_map),
                         "dialogue_lines": [
@@ -1009,16 +917,8 @@ class VideoRepairMixin:
                             self._replace_character_aliases(item, alias_map)
                             for item in segment.timed_beats
                         ],
-                        "start_frame_prompt": self._replace_character_aliases(
-                            segment.start_frame_prompt,
-                            alias_map,
-                        ),
-                        "mid_frame_prompt": self._replace_character_aliases(
-                            segment.mid_frame_prompt,
-                            alias_map,
-                        ),
-                        "end_frame_prompt": self._replace_character_aliases(
-                            segment.end_frame_prompt,
+                        "motion_plan": self._replace_character_aliases_in_motion_plan(
+                            segment.motion_plan,
                             alias_map,
                         ),
                     }
@@ -1028,6 +928,17 @@ class VideoRepairMixin:
         return self._rebuild_plan_preserving_scenes(
             source_plan=plan,
             replacement_segments=normalized_segments,
+        )
+
+    def _replace_character_aliases_in_motion_plan(self, motion_plan, alias_map: dict[str, str]):
+        return motion_plan.model_copy(
+            update={
+                "scene_motion": self._replace_character_aliases(motion_plan.scene_motion, alias_map),
+                "beat_progression": self._replace_character_aliases(motion_plan.beat_progression, alias_map),
+                "camera_path": self._replace_character_aliases(motion_plan.camera_path, alias_map),
+                "character_motion": self._replace_character_aliases(motion_plan.character_motion, alias_map),
+                "continuity_guard": self._replace_character_aliases(motion_plan.continuity_guard, alias_map),
+            }
         )
 
     def _resolve_character_alias(
@@ -1129,8 +1040,6 @@ class VideoRepairMixin:
                 segment.title,
                 segment.summary,
                 segment.narration,
-                segment.start_frame_prompt,
-                segment.end_frame_prompt,
                 segment.scene_bible.location,
                 segment.scene_bible.time_window,
                 segment.scene_bible.weather,
@@ -1153,6 +1062,11 @@ class VideoRepairMixin:
                 " ".join(segment.continuity_link.carry_over_elements),
                 segment.continuity_link.allowed_changes,
                 segment.continuity_link.transition_reason,
+                segment.motion_plan.scene_motion,
+                segment.motion_plan.beat_progression,
+                segment.motion_plan.camera_path,
+                segment.motion_plan.character_motion,
+                segment.motion_plan.continuity_guard,
                 " ".join(segment.dialogue_lines),
                 " ".join(segment.subtitle_lines),
                 " ".join(segment.timed_beats),
@@ -1251,11 +1165,7 @@ class VideoRepairMixin:
         )
         if timed_context:
             return timed_context
-        if frame_position == "start":
-            return segment.start_frame_prompt
-        if frame_position == "mid":
-            return segment.mid_frame_prompt
-        return segment.end_frame_prompt
+        return segment.shot_state.end_state_lock or segment.shot_state.action_progression or segment.summary
 
     def _select_timed_beat_for_frame(
         self,
@@ -1496,7 +1406,7 @@ class VideoRepairMixin:
             "上一镜头",
             "上一片段",
             "尾部",
-            "尾帧",
+            "尾部",
             "状态",
             "镜头",
             "画面",

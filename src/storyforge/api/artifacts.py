@@ -129,12 +129,8 @@ def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object |
         risk_types.append("动作容量过载")
     if missing_tail_seconds is not None and missing_tail_seconds > 0.2:
         risk_types.append("尾部节拍留空")
-    if segment.requires_mid_frame:
-        risk_types.append("需要中段锚点")
     if getattr(segment, "subsegment_count", 1) > 1:
         risk_types.append("拆分子段")
-    if getattr(segment, "mid_frame_mode", "continuous") == "insert_cut":
-        risk_types.append("插入镜头")
     if continuity_group and getattr(continuity_group, "issue_count", 0):
         risk_types.append("连续性风险")
     status = "warning" if risk_types else "ok"
@@ -143,8 +139,6 @@ def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object |
         planner_warning_source = "action_capacity"
     elif missing_tail_seconds is not None and missing_tail_seconds > 0.2:
         planner_warning_source = "timed_beats"
-    elif segment.requires_mid_frame:
-        planner_warning_source = "mid_frame"
     elif getattr(segment, "subsegment_count", 1) > 1:
         planner_warning_source = "subsegment_split"
     repair_source = "continuity_report" if continuity_group and getattr(continuity_group, "issue_count", 0) else ""
@@ -159,8 +153,6 @@ def _build_segment_diagnostics(segment: VideoSegment, continuity_group: object |
         "timed_beat_count": len(timed_beats),
         "timed_beat_end_seconds": timed_beat_end_seconds,
         "missing_tail_seconds": missing_tail_seconds,
-        "requires_mid_frame": bool(segment.requires_mid_frame),
-        "mid_frame_mode": str(getattr(segment, "mid_frame_mode", "continuous") or "continuous"),
         "subsegment_index": int(getattr(segment, "subsegment_index", 1) or 1),
         "subsegment_count": int(getattr(segment, "subsegment_count", 1) or 1),
         "repair_source": repair_source,
@@ -181,8 +173,6 @@ def _build_inferred_segment_diagnostics(segment: PlannedSegmentArtifactResponse)
         "timed_beat_count": 0,
         "timed_beat_end_seconds": None,
         "missing_tail_seconds": None,
-        "requires_mid_frame": bool(segment.requires_mid_frame),
-        "mid_frame_mode": str(segment.mid_frame_mode or "continuous"),
         "subsegment_index": 1,
         "subsegment_count": 1,
         "repair_source": "",
@@ -378,34 +368,103 @@ def _collect_character_artifacts(
     output_dir: Path,
     output_root: Path,
 ) -> list[CharacterArtifactItem]:
-    artifacts = _collect_character_current_artifacts(
+    file_artifacts = _collect_character_current_artifacts(
         output_dir / "assets" / "characters",
         output_root,
     )
     manifest_map = _load_character_manifest_map(output_dir)
     character_items: list[CharacterArtifactItem] = []
-    for artifact in artifacts:
-        manifest_item = manifest_map.get(artifact.path, {})
-        character_items.append(
-            CharacterArtifactItem(
-                **artifact.model_dump(),
-                character_name=str(manifest_item.get("character_name", "") or ""),
-                prompt=str(manifest_item.get("prompt", "") or ""),
-                consistency_notes=str(manifest_item.get("consistency_notes", "") or ""),
-                provider=str(manifest_item.get("provider", "") or ""),
-                status=str(manifest_item.get("status", "") or ""),
-                image_kind=str(manifest_item.get("image_kind", "") or ""),
-                candidate_url=_resolve_manifest_artifact_url(
-                    manifest_item.get("candidate_output_path", manifest_item.get("previous_output_path")),
-                    output_dir=output_dir,
-                    output_root=output_root,
-                ) or str(manifest_item.get("candidate_generated_url", manifest_item.get("previous_generated_url", "")) or "") or None,
-                candidate_path=str(manifest_item.get("candidate_output_path", manifest_item.get("previous_output_path", "")) or ""),
-                character_request=_build_submitted_request_response(manifest_item.get("request_info", {})),
-                error=str(manifest_item.get("error", "") or ""),
-            )
+    seen_paths: set[str] = set()
+
+    for manifest_item in manifest_map.values():
+        item = _build_character_artifact_from_manifest_item(
+            manifest_item,
+            output_dir=output_dir,
+            output_root=output_root,
         )
+        if item is None:
+            continue
+        seen_paths.add(item.path)
+        character_items.append(item)
+
+    for artifact in file_artifacts:
+        if artifact.path in seen_paths:
+            continue
+        character_items.append(_build_character_artifact_from_file(artifact, {}))
     return character_items
+
+
+def _build_character_artifact_from_file(
+    artifact: ArtifactItem,
+    manifest_item: dict[str, object],
+) -> CharacterArtifactItem:
+    return CharacterArtifactItem(
+        **artifact.model_dump(),
+        character_name=str(manifest_item.get("character_name", "") or ""),
+        prompt=str(manifest_item.get("prompt", "") or ""),
+        consistency_notes=str(manifest_item.get("consistency_notes", "") or ""),
+        provider=str(manifest_item.get("provider", "") or ""),
+        status=str(manifest_item.get("status", "") or ""),
+        image_kind=str(manifest_item.get("image_kind", "") or ""),
+        candidate_url=None,
+        candidate_path="",
+        character_request=_build_submitted_request_response(manifest_item.get("request_info", {})),
+        error=str(manifest_item.get("error", "") or ""),
+    )
+
+
+def _build_character_artifact_from_manifest_item(
+    manifest_item: dict[str, object],
+    *,
+    output_dir: Path,
+    output_root: Path,
+) -> CharacterArtifactItem | None:
+    artifact = _manifest_output_artifact_item(
+        manifest_item.get("output_path"),
+        manifest_item.get("generated_url"),
+        output_dir=output_dir,
+        output_root=output_root,
+    )
+    if artifact is None:
+        return None
+    item = _build_character_artifact_from_file(artifact, manifest_item)
+    candidate_url = _resolve_manifest_artifact_url(
+        manifest_item.get("candidate_output_path"),
+        output_dir=output_dir,
+        output_root=output_root,
+    ) or str(manifest_item.get("candidate_generated_url", "") or "") or None
+    return item.model_copy(
+        update={
+            "candidate_url": candidate_url,
+            "candidate_path": str(manifest_item.get("candidate_output_path", "") or ""),
+        }
+    )
+
+
+def _manifest_output_artifact_item(
+    raw_path: object,
+    raw_url: object,
+    *,
+    output_dir: Path,
+    output_root: Path,
+) -> ArtifactItem | None:
+    path_text = str(raw_path or "").strip()
+    resolved_path: Path | None = None
+    if path_text:
+        path = Path(path_text)
+        resolved_path = (output_dir / path).resolve() if not path.is_absolute() else path.resolve()
+        if resolved_path.exists() and resolved_path.is_file():
+            return _to_artifact_item(resolved_path, output_root)
+    url = str(raw_url or "").strip() or None
+    if not path_text and not url:
+        return None
+    display_name = (resolved_path.name if resolved_path is not None else "") or str(raw_path or "").strip() or "character.png"
+    return ArtifactItem(
+        name=display_name,
+        path=str(resolved_path or raw_path or ""),
+        url=url,
+        kind="image",
+    )
 
 
 
@@ -569,23 +628,19 @@ def _collect_planned_segments(
         scene = scene_by_id.get(segment.scene_id)
         scene_task = scene_task_map.get(segment.segment_id)
         clip_task = clip_map.get(segment.segment_id)
-        requires_mid_frame = bool(getattr(segment, "requires_mid_frame", False))
-        start_frame = _resolve_manifest_artifact(scene_task.start_frame_path if scene_task else "", output_root, scene_frame_map)
-        mid_frame = (
-            _resolve_manifest_artifact(scene_task.mid_frame_path if scene_task else "", output_root, scene_frame_map)
-            if requires_mid_frame
-            else None
-        )
-        end_frame = _resolve_manifest_artifact(scene_task.end_frame_path if scene_task else "", output_root, scene_frame_map)
         rendered_clip = _resolve_rendered_clip_artifact(clip_task, output_root, rendered_clip_map)
+        character_references = _resolve_clip_character_reference_artifacts(
+            clip_task,
+            output_root,
+            character_image_map,
+        )
+        has_scene_master_url = bool(
+            (scene and getattr(scene, "scene_master_frame_url", ""))
+            or (scene_task and getattr(scene_task, "scene_master_frame_url", ""))
+        )
         scene_ready = bool(
-            scene_task
-            and scene_task.start_frame_url
-            and scene_task.end_frame_url
-            and (
-                not requires_mid_frame
-                or bool(scene_task.mid_frame_url)
-            )
+            has_scene_master_url
+            and _clip_character_references_ready(clip_task, character_references)
         )
         video_ready = bool(
             clip_task
@@ -619,27 +674,17 @@ def _collect_planned_segments(
                 summary=segment.summary,
                 chapter_number=segment.chapter_number,
                 duration_seconds=segment.duration_seconds,
-                requires_mid_frame=requires_mid_frame,
-                mid_frame_mode=getattr(segment, "mid_frame_mode", "continuous"),
                 scene_master_frame=scene_master_map.get(segment.scene_id),
-                start_frame=start_frame,
-                mid_frame=mid_frame,
-                end_frame=end_frame,
                 rendered_clip=rendered_clip,
                 scene_master_frame_prompt=scene_task.scene_master_frame_prompt if scene_task else "",
-                start_frame_prompt=scene_task.start_frame_prompt if scene_task else segment.start_frame_prompt,
-                mid_frame_prompt=(
-                    (scene_task.mid_frame_prompt if scene_task else segment.mid_frame_prompt)
-                    if requires_mid_frame
-                    else ""
-                ),
-                end_frame_prompt=scene_task.end_frame_prompt if scene_task else segment.end_frame_prompt,
                 video_prompt=clip_task.prompt if clip_task else "",
                 submitted_video_prompt=clip_task.submitted_prompt if clip_task else "",
                 seedance_motion_prompt=_extract_seedance_motion_prompt(
                     str((clip_task.submitted_prompt if clip_task else "") or (clip_task.prompt if clip_task else "") or ""),
                 ),
                 motion_plan=_build_motion_plan_response(segment),
+                motion_contract=dict(getattr(clip_task, "motion_contract", {}) or {}),
+                character_references=character_references,
                 diagnostics=_build_segment_diagnostics(
                     segment,
                     continuity_lookup.get(segment.segment_id),
@@ -649,70 +694,9 @@ def _collect_planned_segments(
                     clip_task.submitted_reference_bindings if clip_task else [],
                 ),
                 scene_master_frame_request=scene_request_map.get(segment.scene_id),
-                start_frame_request=(
-                    _build_submitted_request_response(
-                        scene_task.start_frame_request_info if scene_task else {},
-                    )
-                    or _build_derived_scene_frame_request_response(
-                        provider=str(getattr(scene_task, "provider", "") or "seedream"),
-                        prompt=str(getattr(scene_task, "start_frame_prompt", "") or ""),
-                        frame_kind="start",
-                        scene_task=scene_task,
-                        scene_task_map=scene_task_map,
-                        scene_frame_map=scene_frame_map,
-                        scene_master_frame=scene_master_map.get(segment.scene_id),
-                        character_image_map=character_image_map,
-                        start_frame=start_frame,
-                        mid_frame=mid_frame,
-                    )
-                ),
-                mid_frame_request=(
-                    (
-                        _build_submitted_request_response(
-                            scene_task.mid_frame_request_info if scene_task else {},
-                        )
-                        or _build_derived_scene_frame_request_response(
-                            provider=str(getattr(scene_task, "provider", "") or "seedream"),
-                            prompt=str(getattr(scene_task, "mid_frame_prompt", "") or ""),
-                            frame_kind="mid",
-                            scene_task=scene_task,
-                            scene_task_map=scene_task_map,
-                            scene_frame_map=scene_frame_map,
-                            scene_master_frame=scene_master_map.get(segment.scene_id),
-                            character_image_map=character_image_map,
-                            start_frame=start_frame,
-                            mid_frame=mid_frame,
-                        )
-                    )
-                    if requires_mid_frame
-                    else None
-                ),
-                end_frame_request=(
-                    _build_submitted_request_response(
-                        scene_task.end_frame_request_info if scene_task else {},
-                    )
-                    or _build_derived_scene_frame_request_response(
-                        provider=str(getattr(scene_task, "provider", "") or "seedream"),
-                        prompt=str(getattr(scene_task, "end_frame_prompt", "") or ""),
-                        frame_kind="end",
-                        scene_task=scene_task,
-                        scene_task_map=scene_task_map,
-                        scene_frame_map=scene_frame_map,
-                        scene_master_frame=scene_master_map.get(segment.scene_id),
-                        character_image_map=character_image_map,
-                        start_frame=start_frame,
-                        mid_frame=mid_frame,
-                    )
-                ),
                 video_request=(
                     _build_submitted_request_response(
                         clip_task.submitted_request_info if clip_task else {},
-                    )
-                    or _build_legacy_video_request_response(
-                        clip_task,
-                        start_frame=start_frame,
-                        mid_frame=mid_frame,
-                        end_frame=end_frame,
                     )
                 ),
                 scene_ready=scene_ready,
@@ -750,8 +734,8 @@ def _build_motion_plan_response(segment: VideoSegment) -> dict[str, str]:
         payload = {
             key: getattr(motion_plan, key, "")
             for key in (
-                "start_to_mid",
-                "mid_to_end",
+                "scene_motion",
+                "beat_progression",
                 "camera_path",
                 "character_motion",
                 "continuity_guard",
@@ -760,8 +744,8 @@ def _build_motion_plan_response(segment: VideoSegment) -> dict[str, str]:
     return {
         key: str(payload.get(key, "") or "").strip()
         for key in (
-            "start_to_mid",
-            "mid_to_end",
+            "scene_motion",
+            "beat_progression",
             "camera_path",
             "character_motion",
             "continuity_guard",
@@ -836,54 +820,6 @@ def _build_submitted_request_response(
     )
 
 
-def _build_legacy_video_request_response(
-    clip_task,
-    *,
-    start_frame: ArtifactItem | None,
-    mid_frame: ArtifactItem | None,
-    end_frame: ArtifactItem | None,
-) -> SubmittedRequestResponse | None:
-    if clip_task is None:
-        return None
-    prompt = str(
-        getattr(clip_task, "submitted_prompt", "") or getattr(clip_task, "prompt", "") or ""
-    ).strip()
-    reference_bindings = _build_video_reference_bindings(
-        clip_task,
-        start_frame=start_frame,
-        mid_frame=mid_frame,
-        end_frame=end_frame,
-    )
-    if not prompt and not reference_bindings:
-        return None
-    content: list[dict[str, object]] = []
-    if prompt:
-        content.append({"type": "text", "text": prompt})
-    for item in reference_bindings:
-        if not item.url:
-            continue
-        content.append(
-            {
-                "role": "reference_image",
-                "type": "image_url",
-                "image_url": {"url": item.url},
-            }
-        )
-    return SubmittedRequestResponse(
-        provider="seedance",
-        endpoint="",
-        variant=str(getattr(clip_task, "submit_variant", "") or "derived_from_manifest"),
-        payload={
-            "mode": "derived_from_manifest",
-            "content": content,
-            "ratio": str(getattr(clip_task, "aspect_ratio", "") or ""),
-            "duration": int(getattr(clip_task, "duration_seconds", 0) or 0),
-            "generate_audio": bool(getattr(clip_task, "with_audio", True)),
-        },
-        reference_bindings=reference_bindings,
-    )
-
-
 def _build_derived_scene_master_request_response(
     *,
     prompt_text: str,
@@ -906,212 +842,34 @@ def _build_derived_scene_master_request_response(
     )
 
 
-def _build_derived_scene_frame_request_response(
-    *,
-    provider: str,
-    prompt: str,
-    frame_kind: str,
-    scene_task,
-    scene_task_map: dict[str, object],
-    scene_frame_map: dict[str, ArtifactItem],
-    scene_master_frame: ArtifactItem | None,
-    character_image_map: dict[str, ArtifactItem],
-    start_frame: ArtifactItem | None,
-    mid_frame: ArtifactItem | None,
-) -> SubmittedRequestResponse | None:
-    if scene_task is None:
-        return None
-    prompt_text = str(prompt or "").strip()
-    reference_bindings = _build_scene_frame_reference_bindings(
-        frame_kind=frame_kind,
-        scene_task=scene_task,
-        scene_task_map=scene_task_map,
-        scene_frame_map=scene_frame_map,
-        scene_master_frame=scene_master_frame,
-        character_image_map=character_image_map,
-        start_frame=start_frame,
-        mid_frame=mid_frame,
+def _clip_character_references_ready(clip_task, character_references: list[ArtifactItem] | None = None) -> bool:
+    if clip_task is None:
+        return False
+    expected_count = len(
+        [name for name in getattr(clip_task, "visible_characters", []) if str(name).strip()]
     )
-    if not prompt_text and not reference_bindings:
-        return None
-    return SubmittedRequestResponse(
-        provider=provider or "seedream",
-        endpoint="",
-        variant="derived_from_manifest",
-        payload={
-            "mode": "derived_from_manifest",
-            "frame": frame_kind,
-            "prompt": prompt_text,
-            "reference_images": [item.url for item in reference_bindings if item.url],
-        },
-        reference_bindings=reference_bindings,
-    )
+    if expected_count <= 0:
+        return True
+    if character_references and len(character_references) >= expected_count:
+        return True
+    return len(
+        [url for url in getattr(clip_task, "character_image_urls", []) if str(url).strip()]
+    ) >= expected_count
 
 
-def _build_scene_frame_reference_bindings(
-    *,
-    frame_kind: str,
-    scene_task,
-    scene_task_map: dict[str, object],
-    scene_frame_map: dict[str, ArtifactItem],
-    scene_master_frame: ArtifactItem | None,
-    character_image_map: dict[str, ArtifactItem],
-    start_frame: ArtifactItem | None,
-    mid_frame: ArtifactItem | None,
-) -> list[PromptReferenceBindingResponse]:
-    bindings: list[dict[str, str]] = []
-    if scene_master_frame is not None and scene_master_frame.url:
-        bindings.append(
-            {
-                "label": f"图片{len(bindings) + 1}",
-                "kind": "scene_master",
-                "description": "场景母图参考，用于锁定当前 scene 的环境、空间和光线基线。",
-                "url": scene_master_frame.url,
-            }
-        )
-    frame_characters = _frame_character_names(scene_task, frame_kind)
-    for artifact in _resolve_character_reference_artifacts(
-        scene_task=scene_task,
-        frame_characters=frame_characters,
-        character_image_map=character_image_map,
-    ):
-        if not artifact.url:
-            continue
-        bindings.append(
-            {
-                "label": f"图片{len(bindings) + 1}",
-                "kind": "character",
-                "description": "角色参考图，用于锁定当前帧真实出镜角色的定妆、服装和外观。",
-                "url": artifact.url,
-            }
-        )
-    temporal_artifact = _resolve_temporal_reference_artifact(
-        frame_kind=frame_kind,
-        scene_task=scene_task,
-        scene_task_map=scene_task_map,
-        scene_frame_map=scene_frame_map,
-        start_frame=start_frame,
-        mid_frame=mid_frame,
-    )
-    if temporal_artifact is not None and temporal_artifact.url:
-        bindings.append(
-            {
-                "label": f"图片{len(bindings) + 1}",
-                "kind": "temporal",
-                "description": "时间承接参考，用上一帧或上一段画面锁定动作与镜头衔接。",
-                "url": temporal_artifact.url,
-            }
-        )
-    return _build_prompt_reference_bindings(bindings)
-
-
-def _frame_character_names(scene_task, frame_kind: str) -> list[str]:
-    mapping = {
-        "start": getattr(scene_task, "start_frame_characters", []),
-        "mid": getattr(scene_task, "mid_frame_characters", []),
-        "end": getattr(scene_task, "end_frame_characters", []),
-    }
-    raw_names = mapping.get(frame_kind, [])
-    if isinstance(raw_names, list):
-        return [str(item).strip() for item in raw_names if str(item).strip()]
-    return []
-
-
-def _resolve_character_reference_artifacts(
-    *,
-    scene_task,
-    frame_characters: list[str],
+def _resolve_clip_character_reference_artifacts(
+    clip_task,
+    output_root: Path,
     character_image_map: dict[str, ArtifactItem],
 ) -> list[ArtifactItem]:
-    candidates = [
-        character_image_map[path]
-        for path in getattr(scene_task, "reference_images", [])
-        if path in character_image_map
-    ]
-    if not frame_characters:
-        return candidates[:1] if len(candidates) == 1 else []
-    selected: list[ArtifactItem] = []
-    used_paths: set[str] = set()
-    for name in frame_characters:
-        matched = next(
-            (
-                item
-                for item in candidates
-                if item.path not in used_paths and _character_artifact_matches_name(item, name)
-            ),
-            None,
-        )
-        if matched is None:
-            continue
-        used_paths.add(matched.path)
-        selected.append(matched)
-    if selected:
-        return selected
-    return candidates[:1] if len(candidates) == 1 else candidates
-
-
-def _character_artifact_matches_name(artifact: ArtifactItem, character_name: str) -> bool:
-    name = str(character_name or "").strip()
-    if not name:
-        return False
-    return name in artifact.name or name in artifact.path
-
-
-def _resolve_temporal_reference_artifact(
-    *,
-    frame_kind: str,
-    scene_task,
-    scene_task_map: dict[str, object],
-    scene_frame_map: dict[str, ArtifactItem],
-    start_frame: ArtifactItem | None,
-    mid_frame: ArtifactItem | None,
-) -> ArtifactItem | None:
-    if frame_kind == "start":
-        if not getattr(scene_task, "reuse_previous_end_frame", False):
-            return None
-        source_segment_id = str(getattr(scene_task, "continuity_source_segment_id", "") or "").strip()
-        if not source_segment_id:
-            return None
-        previous_task = scene_task_map.get(source_segment_id)
-        previous_end_path = str(getattr(previous_task, "end_frame_path", "") or "").strip() if previous_task else ""
-        return scene_frame_map.get(previous_end_path)
-    if frame_kind == "mid":
-        return start_frame
-    if frame_kind == "end":
-        return mid_frame or start_frame
-    return None
-
-
-def _build_video_reference_bindings(
-    clip_task,
-    *,
-    start_frame: ArtifactItem | None,
-    mid_frame: ArtifactItem | None,
-    end_frame: ArtifactItem | None,
-) -> list[PromptReferenceBindingResponse]:
-    bindings: list[dict[str, str]] = []
-    ordered = [
-        ("start", start_frame),
-        ("mid", mid_frame),
-        ("end", end_frame),
-    ]
-    descriptions = {
-        "start": "开场视觉锚点，视频必须从这张图对应的构图、角色关系与动作状态自然起步。",
-        "mid": "中段视觉锚点，镜头推进过程中必须自然经过这张图对应的中间状态，不要跳过或弱化。",
-        "end": "收束视觉锚点，片尾必须落到这张图对应的构图、角色关系与动作结果。",
-    }
-    for kind, artifact in ordered:
-        if artifact is None or not artifact.url:
-            continue
-        bindings.append(
-            {
-                "label": f"图片{len(bindings) + 1}",
-                "kind": kind,
-                "description": descriptions[kind],
-                "url": artifact.url,
-            }
-        )
-    return _build_prompt_reference_bindings(bindings)
+    if clip_task is None:
+        return []
+    artifacts: list[ArtifactItem] = []
+    for raw_path in getattr(clip_task, "character_image_paths", []):
+        artifact = _resolve_manifest_artifact(str(raw_path or ""), output_root, character_image_map)
+        if artifact is not None:
+            artifacts.append(artifact)
+    return artifacts
 
 
 def _resolve_manifest_artifact(
@@ -1307,8 +1065,6 @@ def _build_inferred_planned_segments(
 ) -> list[PlannedSegmentArtifactResponse]:
     segment_map: dict[str, PlannedSegmentArtifactResponse] = {}
     for item in scene_frames:
-        if item.name.endswith("_master.png") or item.name.endswith("_master.jpg") or item.name.endswith("_master.webp"):
-            continue
         segment_id = _segment_id_from_asset_name(item.name)
         segment = segment_map.setdefault(
             segment_id,
@@ -1318,13 +1074,7 @@ def _build_inferred_planned_segments(
                 chapter_number=0,
             ),
         )
-        if "_end" in item.name:
-            segment.end_frame = item
-        elif "_mid" in item.name:
-            segment.mid_frame = item
-            segment.requires_mid_frame = True
-        else:
-            segment.start_frame = item
+        segment.scene_master_frame = item
     for item in rendered_clips:
         segment_id = _segment_id_from_asset_name(item.name)
         segment = segment_map.setdefault(
@@ -1337,13 +1087,11 @@ def _build_inferred_planned_segments(
         )
         segment.rendered_clip = item
     for segment in segment_map.values():
-        segment.scene_ready = bool(
-            segment.start_frame and segment.end_frame and (not segment.requires_mid_frame or segment.mid_frame)
-        )
+        segment.scene_ready = segment.scene_master_frame is not None
         segment.video_ready = segment.rendered_clip is not None
         segment.diagnostics = _build_inferred_segment_diagnostics(segment)
     return sorted(segment_map.values(), key=lambda item: item.segment_id)
 
 
 def _segment_id_from_asset_name(name: str) -> str:
-    return name.rsplit(".", 1)[0].removesuffix("_start").removesuffix("_mid").removesuffix("_end")
+    return name.rsplit(".", 1)[0].removesuffix("_master")

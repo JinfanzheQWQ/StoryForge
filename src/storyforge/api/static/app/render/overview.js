@@ -31,7 +31,7 @@ export function renderWorkbenchOverviewTab({ task, artifacts, context, run = nul
       return "下一步：生成角色定妆图。";
     }
     if (segments.length && readySceneCount < segments.length) {
-      return "下一步：进入场景工作台或分段审片台，补齐缺失的场景关键帧。";
+      return "下一步：进入场景工作台或分段审片台，补齐缺失的场景母图。";
     }
     if (segments.length && readyVideoCount < segments.length) {
       return "下一步：进入分段审片台，逐段生成或重生成视频。";

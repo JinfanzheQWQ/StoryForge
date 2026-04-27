@@ -18,7 +18,7 @@ export const state = {
   projectDetailTab: "overview",
   selectedSegmentId: "",
   segmentReviewFilter: "all",
-  selectedSegmentAssetKind: "start",
+  selectedSegmentAssetKind: "video",
   runContinuityReviewModes: new Map(),
   artifactsByTaskId: new Map(),
   artifactVersionByTaskId: new Map(),

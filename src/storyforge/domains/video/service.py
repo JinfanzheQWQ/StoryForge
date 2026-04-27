@@ -159,6 +159,7 @@ class NovelToVideoService(
             scenes,
             segments,
             scene_images,
+            character_images,
             output_dir,
         )
 
@@ -255,7 +256,6 @@ class NovelToVideoService(
         normalize_for_seedance: bool,
         repair_continuity: bool,
     ) -> VideoSegmentPlanSchema:
-        plan = self._repair_segment_plan(plan, novel_package, visual_bible)
         plan = self._normalize_segment_characters(plan, novel_package, visual_bible)
         plan = self._repair_scene_bibles(plan, novel_package)
         plan = self._repair_shot_states(plan, novel_package)
@@ -266,8 +266,6 @@ class NovelToVideoService(
         if repair_continuity:
             plan = self._repair_continuity_links(plan)
         return plan
-
-
 
 
 

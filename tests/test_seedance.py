@@ -41,7 +41,7 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(report.failed_count, 0)
         self.assertEqual(report.pending_count, 0)
 
-    def test_build_payload_uses_multimodal_reference_images_for_timeline(self) -> None:
+    def test_build_payload_uses_scene_master_and_character_references(self) -> None:
         client = SeedanceClient(
             SeedanceConfig(
                 model="doubao-seedance-2-0-260128",
@@ -58,12 +58,9 @@ class SeedanceClientTestCase(unittest.TestCase):
             sound_effects=["风声", "脚步声"],
             music_direction="低频悬疑氛围",
             timed_beats=["[0s-2s] 角色入场。"],
-            start_frame_path="start.png",
-            end_frame_path="end.png",
-            mid_frame_path="mid.png",
-            start_frame_url="https://example.com/start.png",
-            mid_frame_url="https://example.com/mid.png",
-            end_frame_url="https://example.com/end.png",
+            scene_master_url="https://example.com/scene.png",
+            character_image_urls=["https://example.com/role-a.png", "https://example.com/role-b.png"],
+            visible_characters=["角色A", "角色B"],
             duration_seconds=5,
             aspect_ratio="16:9",
             with_audio=True,
@@ -78,20 +75,55 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertFalse(payload["watermark"])
         self.assertTrue(payload["generate_audio"])
         self.assertIn("提交素材绑定", payload["content"][0]["text"])
-        self.assertIn("图片1：首帧", payload["content"][0]["text"])
-        self.assertIn("图片2：中段", payload["content"][0]["text"])
-        self.assertIn("图片3：尾帧", payload["content"][0]["text"])
-        self.assertIn("严格按 图片1 -> 图片2 -> 图片3 的顺序推进画面", payload["content"][0]["text"])
-        self.assertIn("必须拍出可见的切入、入画、靠近、让位或镜头重构过程", payload["content"][0]["text"])
+        self.assertIn("图片1：场景母图", payload["content"][0]["text"])
+        self.assertIn("图片2：角色A 的角色图", payload["content"][0]["text"])
+        self.assertIn("图片3：角色B 的角色图", payload["content"][0]["text"])
+        self.assertIn("角色图只用于身份参考，不是视频时间帧", payload["content"][0]["text"])
         self.assertEqual(
             [item.get("role", "text") for item in payload["content"]],
             ["text", "reference_image", "reference_image", "reference_image"],
         )
-        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/start.png")
-        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
-        self.assertEqual(payload["content"][3]["image_url"]["url"], "https://example.com/end.png")
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/scene.png")
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/role-a.png")
+        self.assertEqual(payload["content"][3]["image_url"]["url"], "https://example.com/role-b.png")
 
-    def test_build_payload_without_end_frame_keeps_mid_frame_as_primary_reference(self) -> None:
+    def test_build_payload_prefers_scene_master_and_character_references(self) -> None:
+        client = SeedanceClient(SeedanceConfig(model="doubao-seedance-2-0-260128"))
+        clip = SeedanceClipTask(
+            segment_id="ch01-seg-v2",
+            scene_id="ch01-sc01",
+            title="喊住",
+            prompt="在图片1的樱花石板路场景中，陈屿喊住苏晚，苏晚停步摘下一边耳机并回头。",
+            narration="",
+            dialogue_lines=["陈屿：苏晚。"],
+            subtitle_lines=["苏晚"],
+            sound_effects=["微风", "脚步声"],
+            music_direction="青春电影感",
+            timed_beats=["0-2秒：陈屿吸气。", "2-8秒：苏晚停步回头。"],
+            scene_master_path="scene.png",
+            scene_master_url="https://example.com/scene.png",
+            character_image_paths=["chen.png", "su.png"],
+            character_image_urls=["https://example.com/chen.png", "https://example.com/su.png"],
+            visible_characters=["陈屿", "苏晚"],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-seg-v2.mp4",
+        )
+
+        payload, resolved_prompt, bindings = client._build_payload_with_metadata(clip)
+
+        self.assertIn("图片1：场景母图", resolved_prompt)
+        self.assertIn("图片2：陈屿 的角色图", resolved_prompt)
+        self.assertIn("图片3：苏晚 的角色图", resolved_prompt)
+        self.assertIn("角色图只用于身份参考，不是视频时间帧", resolved_prompt)
+        self.assertNotIn("严格按 图片1 -> 图片2", resolved_prompt)
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/scene.png")
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/chen.png")
+        self.assertEqual(payload["content"][3]["image_url"]["url"], "https://example.com/su.png")
+        self.assertEqual([item["kind"] for item in bindings], ["scene_master", "character", "character"])
+
+    def test_build_payload_without_references_stays_text_only(self) -> None:
         client = SeedanceClient(SeedanceConfig())
         clip = SeedanceClipTask(
             segment_id="ch01-seg02",
@@ -103,31 +135,19 @@ class SeedanceClientTestCase(unittest.TestCase):
             sound_effects=[],
             music_direction="",
             timed_beats=[],
-            start_frame_path="start.png",
-            end_frame_path="end.png",
-            mid_frame_path="mid.png",
-            start_frame_url="https://example.com/start.png",
-            mid_frame_url="https://example.com/mid.png",
-            end_frame_url="https://example.com/end.png",
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
             output_path="rendered/ch01-seg02.mp4",
         )
 
-        payload = client.build_payload(
-            clip,
-            include_mid_frame_reference=True,
-            include_end_frame=False,
-        )
+        payload = client.build_payload(clip)
 
         self.assertEqual(
             [item.get("role", "text") for item in payload["content"]],
-            ["text", "reference_image", "reference_image"],
+            ["text"],
         )
-        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/start.png")
-        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/mid.png")
-        self.assertIn("图片2：中段", payload["content"][0]["text"])
+        self.assertNotIn("提交素材绑定", payload["content"][0]["text"])
 
     def test_submit_clip_reports_timeline_payload_rejection_without_retry(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -141,12 +161,9 @@ class SeedanceClientTestCase(unittest.TestCase):
             sound_effects=[],
             music_direction="",
             timed_beats=[],
-            start_frame_path="start.png",
-            end_frame_path="end.png",
-            mid_frame_path="mid.png",
-            start_frame_url="https://example.com/start.png",
-            mid_frame_url="https://example.com/mid.png",
-            end_frame_url="https://example.com/end.png",
+            scene_master_url="https://example.com/scene.png",
+            character_image_urls=["https://example.com/role.png"],
+            visible_characters=["角色"],
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
@@ -183,24 +200,23 @@ class SeedanceClientTestCase(unittest.TestCase):
             client._submit_clip(fake_client, clip)
 
         self.assertEqual(len(fake_client.calls), 1)
-        self.assertEqual(clip.submit_variant, "timeline_only")
+        self.assertEqual(clip.submit_variant, "scene_character_motion")
         self.assertIn("提交素材绑定", clip.submitted_prompt)
         self.assertTrue(clip.submitted_reference_bindings)
-        self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "start")
-        self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "mid")
-        self.assertEqual(clip.submitted_reference_bindings[2]["kind"], "end")
+        self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "scene_master")
+        self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "character")
         self.assertEqual(clip.submitted_reference_bindings[0]["label"], "图片1")
         self.assertEqual(clip.submitted_request_info["provider"], "seedance")
-        self.assertEqual(clip.submitted_request_info["variant"], "timeline_only")
+        self.assertEqual(clip.submitted_request_info["variant"], "scene_character_motion")
         self.assertEqual(
             clip.submitted_request_info["payload"]["content"][1]["image_url"]["url"],
-            "https://example.com/start.png",
+            "https://example.com/scene.png",
         )
         self.assertEqual(
             [item.get("role", "text") for item in fake_client.calls[0]["payload"]["content"]],
-            ["text", "reference_image", "reference_image", "reference_image"],
+            ["text", "reference_image", "reference_image"],
         )
-        self.assertIn("图片2：中段", fake_client.calls[0]["payload"]["content"][0]["text"])
+        self.assertIn("图片1：场景母图", fake_client.calls[0]["payload"]["content"][0]["text"])
 
     def test_submit_clip_raises_detailed_error_after_all_payload_variants_fail(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -214,12 +230,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             sound_effects=[],
             music_direction="",
             timed_beats=[],
-            start_frame_path="start.png",
-            end_frame_path="end.png",
-            mid_frame_path="mid.png",
-            start_frame_url="https://example.com/start.png",
-            mid_frame_url="https://example.com/mid.png",
-            end_frame_url="https://example.com/end.png",
             duration_seconds=8,
             aspect_ratio="16:9",
             with_audio=True,
@@ -266,8 +276,6 @@ class SeedanceClientTestCase(unittest.TestCase):
             sound_effects=[],
             music_direction="",
             timed_beats=[],
-            start_frame_path="start.png",
-            end_frame_path="end.png",
             duration_seconds=30,
             aspect_ratio="16:9",
             with_audio=True,
@@ -292,8 +300,6 @@ class SeedanceClientTestCase(unittest.TestCase):
                 sound_effects=[],
                 music_direction="",
                 timed_beats=[],
-                start_frame_path="start.png",
-                end_frame_path="end.png",
                 duration_seconds=5,
                 aspect_ratio="16:9",
                 with_audio=True,
@@ -314,8 +320,6 @@ class SeedanceClientTestCase(unittest.TestCase):
                 sound_effects=[],
                 music_direction="",
                 timed_beats=[],
-                start_frame_path="start.png",
-                end_frame_path="end.png",
                 duration_seconds=5,
                 aspect_ratio="16:9",
                 with_audio=True,
@@ -380,14 +384,10 @@ class SeedanceClientTestCase(unittest.TestCase):
                 sound_effects=[],
                 music_direction="",
                 timed_beats=[],
-                start_frame_path="a_start.png",
-                end_frame_path="a_end.png",
                 duration_seconds=5,
                 aspect_ratio="16:9",
                 with_audio=True,
                 output_path=str(clip_a_path),
-                start_frame_url="https://example.com/a_start.png",
-                end_frame_url="https://example.com/a_end.png",
             )
             clip_b = SeedanceClipTask(
                 segment_id="seg-b",
@@ -399,14 +399,10 @@ class SeedanceClientTestCase(unittest.TestCase):
                 sound_effects=[],
                 music_direction="",
                 timed_beats=[],
-                start_frame_path="b_start.png",
-                end_frame_path="b_end.png",
                 duration_seconds=5,
                 aspect_ratio="16:9",
                 with_audio=True,
                 output_path=str(clip_b_path),
-                start_frame_url="https://example.com/b_start.png",
-                end_frame_url="https://example.com/b_end.png",
             )
             manifest = SeedanceManifest(
                 title="片段选择测试",

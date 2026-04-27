@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import os
-import shutil
 from typing import Any
 
 import httpx
@@ -16,10 +15,6 @@ from storyforge.domains.video.contracts import CharacterImageTask, SceneImageTas
 
 DEFAULT_SEEDREAM_BASE_URL = "https://operator.las.cn-beijing.volces.com/api/v1"
 SEEDREAM_BASE_URL_ENV = "SEEDREAM_BASE_URL"
-SEEDREAM_MAX_FRAME_REFERENCE_IMAGES = 4
-SEEDREAM_MAX_CHARACTER_REFERENCE_IMAGES = 2
-
-
 @dataclass(slots=True)
 class SeedreamExecutionReport:
     submitted: bool
@@ -98,93 +93,16 @@ class SeedreamClient:
         project_package: VideoProjectPackage,
         force_submit: bool = False,
         segment_ids: set[str] | None = None,
-        frame_kind: str | None = None,
     ) -> SeedreamExecutionReport:
-        preflight = self._build_preflight_report(force_submit=force_submit)
-        if preflight is not None:
-            return preflight
-
-        target_scene_tasks = self._select_scene_tasks(project_package, segment_ids)
-        missing_references = [
-            item.character_name
-            for item in project_package.character_images
-            if item.use_as_reference and not item.generated_url
-        ]
-        if missing_references:
-            return SeedreamExecutionReport(
-                submitted=False,
-                generated_count=0,
-                failed_count=len(target_scene_tasks),
-                note=(
-                    "Seedream scene generation requires completed character reference images first: "
-                    + ", ".join(missing_references)
-                ),
-            )
-
-        generated_count = 0
-        failed_count = 0
-        scene_map = {
-            item.segment_id: item
-            for item in project_package.scene_images
-        }
-        scene_lookup = {
-            item.scene_id: item
-            for item in project_package.scenes
-            if item.scene_id
-        }
-        selected_scene_ids = {
+        scene_ids = {
             task.scene_id
-            for task in target_scene_tasks
+            for task in self._select_scene_tasks(project_package, segment_ids)
             if task.scene_id
         }
-        failed_scene_ids: set[str] = set()
-
-        with httpx.Client(timeout=120) as client:
-            for scene_id in sorted(selected_scene_ids):
-                scene = scene_lookup.get(scene_id)
-                if scene is None:
-                    continue
-                success, generated_now = self._ensure_scene_master_frame(client, scene)
-                self._sync_scene_master_to_scene_tasks(project_package.scene_images, scene)
-                if generated_now:
-                    generated_count += 1
-                if not success:
-                    failed_scene_ids.add(scene_id)
-
-            for task in target_scene_tasks:
-                scene = scene_lookup.get(task.scene_id)
-                self._sync_scene_master_to_task(task, scene)
-                if task.scene_id and task.scene_id in failed_scene_ids:
-                    task.status = "failed"
-                    task.error = (
-                        scene.scene_master_frame_error
-                        if scene is not None and scene.scene_master_frame_error
-                        else "scene_master_frame generation failed."
-                    )
-                    failed_count += 1
-                    continue
-                success = self._generate_scene_frames(
-                    client,
-                    task,
-                    project_package.character_images,
-                    scene_map,
-                    scene_lookup,
-                    frame_kind=frame_kind,
-                )
-                generated_count += self._planned_scene_frame_count(task, frame_kind=frame_kind) if success else 0
-                failed_count += int(not success)
-
-        self._apply_scene_urls_to_seedance_manifest(project_package)
-        note = (
-            "Seedream scene image tasks executed successfully."
-            if failed_count == 0
-            else "Seedream scene image generation completed with partial failures."
-        )
-        return SeedreamExecutionReport(
-            submitted=True,
-            generated_count=generated_count,
-            failed_count=failed_count,
-            note=note,
+        return self.generate_scene_master_frames(
+            project_package,
+            force_submit=force_submit,
+            scene_ids=scene_ids or None,
         )
 
     def generate_scene_master_frames(
@@ -295,12 +213,21 @@ class SeedreamClient:
                 provider=task.provider,
                 reference_bindings=[],
             )
-            task.candidate_generated_url = image_url
-            task.status = "candidate_ready"
-            if self.config.download_outputs and image_url:
-                candidate_path = self._candidate_character_image_path(Path(task.output_path))
-                task.candidate_output_path = str(candidate_path)
-                self._download_image(client, image_url, candidate_path)
+            has_current_image = bool(str(task.generated_url or "").strip()) or Path(task.output_path).is_file()
+            if has_current_image:
+                task.candidate_generated_url = image_url
+                task.status = "candidate_ready"
+                if self.config.download_outputs and image_url:
+                    candidate_path = self._candidate_character_image_path(Path(task.output_path))
+                    task.candidate_output_path = str(candidate_path)
+                    self._download_image(client, image_url, candidate_path)
+            else:
+                task.generated_url = image_url
+                task.candidate_generated_url = ""
+                task.candidate_output_path = ""
+                task.status = "completed"
+                if self.config.download_outputs and image_url:
+                    self._download_image(client, image_url, Path(task.output_path))
             return True
         except Exception as exc:
             task.status = "failed"
@@ -311,137 +238,6 @@ class SeedreamClient:
         candidate_dir = output_path.parent / "_candidates"
         candidate_dir.mkdir(parents=True, exist_ok=True)
         return candidate_dir / output_path.name
-
-    def _generate_scene_frames(
-        self,
-        client: httpx.Client,
-        task: SceneImageTask,
-        character_images: list[CharacterImageTask],
-        scene_map: dict[str, SceneImageTask],
-        scene_lookup: dict[str, VideoScene],
-        *,
-        frame_kind: str | None = None,
-    ) -> bool:
-        task.status = "running"
-        try:
-            scene = scene_lookup.get(task.scene_id)
-            self._sync_scene_master_to_task(task, scene)
-            scene_master_reference_urls = (
-                [task.scene_master_frame_url]
-                if task.scene_master_frame_url
-                else []
-            )
-            reference_urls = self._resolve_reference_urls(task.reference_images, character_images)
-            existing_start_frame_url = task.start_frame_url
-            existing_mid_frame_url = task.mid_frame_url
-            existing_end_frame_url = task.end_frame_url
-            generate_start_frame = frame_kind in (None, "start")
-            generate_mid_frame = frame_kind in (None, "mid")
-            generate_end_frame = frame_kind in (None, "end")
-
-            start_frame_url = existing_start_frame_url
-            if generate_start_frame:
-                start_frame_url = self._resolve_continuity_start_frame(task, scene_map)
-            if generate_start_frame and start_frame_url:
-                task.start_frame_request_info = {
-                    "provider": task.provider,
-                    "variant": "reuse_previous_end_frame",
-                    "payload": {
-                        "mode": "reuse_previous_end_frame",
-                        "source_segment_id": task.continuity_source_segment_id,
-                        "reused_image_url": start_frame_url,
-                    },
-                    "reference_bindings": [
-                        {
-                            "label": "复用图",
-                            "kind": "temporal_reuse",
-                            "description": "未提交 Seedream，直接复用上一片段尾帧作为当前片段首帧。",
-                            "url": start_frame_url,
-                        }
-                    ],
-                }
-                self._materialize_reused_start_frame(task, scene_map, client, start_frame_url)
-            elif generate_start_frame:
-                start_temporal_anchor_urls = self._resolve_start_temporal_anchor_urls(
-                    task,
-                    scene_map,
-                )
-                start_reference_urls, start_reference_bindings = self._build_frame_reference_bundle(
-                    temporal_anchor_urls=start_temporal_anchor_urls,
-                    scene_master_reference_urls=scene_master_reference_urls,
-                    frame_character_names=task.start_frame_characters,
-                    character_images=character_images,
-                    fallback_urls=reference_urls,
-                )
-                self._last_request_info = {}
-                start_frame_url = self._create_image(
-                    client,
-                    prompt=task.start_frame_prompt,
-                    reference_images=start_reference_urls,
-                )
-                task.start_frame_request_info = self._snapshot_last_request_info(
-                    provider=task.provider,
-                    reference_bindings=start_reference_bindings,
-                )
-
-            mid_frame_url = existing_mid_frame_url
-            if generate_mid_frame and task.requires_mid_frame and task.mid_frame_prompt.strip():
-                mid_frame_references, mid_frame_bindings = self._build_frame_reference_bundle(
-                    temporal_anchor_urls=[start_frame_url] if start_frame_url else [],
-                    scene_master_reference_urls=scene_master_reference_urls,
-                    frame_character_names=task.mid_frame_characters,
-                    character_images=character_images,
-                    fallback_urls=reference_urls,
-                )
-                self._last_request_info = {}
-                mid_frame_url = self._create_image(
-                    client,
-                    prompt=task.mid_frame_prompt,
-                    reference_images=mid_frame_references,
-                )
-                task.mid_frame_request_info = self._snapshot_last_request_info(
-                    provider=task.provider,
-                    reference_bindings=mid_frame_bindings,
-                )
-
-            end_frame_url = existing_end_frame_url
-            if generate_end_frame:
-                end_frame_references, end_frame_bindings = self._build_frame_reference_bundle(
-                    temporal_anchor_urls=(
-                        [mid_frame_url]
-                        if mid_frame_url
-                        else ([start_frame_url] if start_frame_url else [])
-                    ),
-                    scene_master_reference_urls=scene_master_reference_urls,
-                    frame_character_names=task.end_frame_characters,
-                    character_images=character_images,
-                    fallback_urls=reference_urls,
-                )
-                self._last_request_info = {}
-                end_frame_url = self._create_image(
-                    client,
-                    prompt=task.end_frame_prompt,
-                    reference_images=end_frame_references,
-                )
-                task.end_frame_request_info = self._snapshot_last_request_info(
-                    provider=task.provider,
-                    reference_bindings=end_frame_bindings,
-                )
-            task.start_frame_url = start_frame_url
-            task.mid_frame_url = mid_frame_url if task.requires_mid_frame else ""
-            task.end_frame_url = end_frame_url
-            task.status = "completed"
-            if self.config.download_outputs and generate_start_frame and start_frame_url and not task.reuse_previous_end_frame:
-                self._download_image(client, start_frame_url, Path(task.start_frame_path))
-            if self.config.download_outputs and generate_mid_frame and mid_frame_url and task.mid_frame_path:
-                self._download_image(client, mid_frame_url, Path(task.mid_frame_path))
-            if self.config.download_outputs and generate_end_frame and end_frame_url:
-                self._download_image(client, end_frame_url, Path(task.end_frame_path))
-            return True
-        except Exception as exc:
-            task.status = "failed"
-            task.error = str(exc)
-            return False
 
     def _ensure_scene_master_frame(
         self,
@@ -675,129 +471,6 @@ class SeedreamClient:
         response.raise_for_status()
         output_path.write_bytes(response.content)
 
-    def _resolve_reference_urls(
-        self,
-        reference_paths: list[str],
-        character_images: list[CharacterImageTask],
-    ) -> list[str]:
-        path_to_url = {
-            item.output_path: item.generated_url
-            for item in character_images
-            if item.generated_url and item.use_as_reference
-        }
-        return [path_to_url[path] for path in reference_paths if path in path_to_url]
-
-    def _resolve_character_reference_urls(
-        self,
-        character_names: list[str],
-        character_images: list[CharacterImageTask],
-        *,
-        fallback_urls: list[str],
-    ) -> list[str]:
-        if not character_names:
-            # A single available reference is safe as a legacy fallback; multiple
-            # references would reintroduce off-frame characters into single-person frames.
-            return list(fallback_urls) if len(fallback_urls) == 1 else []
-
-        urls: list[str] = []
-        for name in character_names:
-            for item in character_images:
-                if (
-                    item.character_name == name
-                    and item.generated_url
-                    and item.use_as_reference
-                    and item.generated_url not in urls
-                ):
-                    urls.append(item.generated_url)
-        if urls:
-            return urls
-        return list(fallback_urls)
-
-    def _build_frame_reference_urls(
-        self,
-        *,
-        temporal_anchor_urls: list[str],
-        scene_master_reference_urls: list[str],
-        frame_character_names: list[str],
-        character_images: list[CharacterImageTask],
-        fallback_urls: list[str],
-    ) -> list[str]:
-        return self._build_frame_reference_bundle(
-            temporal_anchor_urls=temporal_anchor_urls,
-            scene_master_reference_urls=scene_master_reference_urls,
-            frame_character_names=frame_character_names,
-            character_images=character_images,
-            fallback_urls=fallback_urls,
-        )[0]
-
-    def _build_frame_reference_bundle(
-        self,
-        *,
-        temporal_anchor_urls: list[str],
-        scene_master_reference_urls: list[str],
-        frame_character_names: list[str],
-        character_images: list[CharacterImageTask],
-        fallback_urls: list[str],
-    ) -> tuple[list[str], list[dict[str, str]]]:
-        # Keep frame references intentionally sparse and stable: scene master first,
-        # then only the characters actually visible in this frame, with any temporal
-        # continuity anchor appended last as an extra hint rather than the primary ref.
-        character_reference_urls = self._resolve_character_reference_urls(
-            frame_character_names,
-            character_images,
-            fallback_urls=fallback_urls,
-        )[:SEEDREAM_MAX_CHARACTER_REFERENCE_IMAGES]
-        merged = self._merge_reference_url_groups(
-            scene_master_reference_urls,
-            character_reference_urls,
-            temporal_anchor_urls,
-        )
-        ordered_urls = merged[:SEEDREAM_MAX_FRAME_REFERENCE_IMAGES]
-        return ordered_urls, self._describe_reference_bindings(
-            ordered_urls,
-            scene_master_reference_urls=scene_master_reference_urls,
-            character_reference_urls=character_reference_urls,
-            temporal_anchor_urls=temporal_anchor_urls,
-        )
-
-    def _describe_reference_bindings(
-        self,
-        ordered_urls: list[str],
-        *,
-        scene_master_reference_urls: list[str],
-        character_reference_urls: list[str],
-        temporal_anchor_urls: list[str],
-    ) -> list[dict[str, str]]:
-        scene_master_set = {str(url).strip() for url in scene_master_reference_urls if str(url).strip()}
-        character_set = {str(url).strip() for url in character_reference_urls if str(url).strip()}
-        temporal_set = {str(url).strip() for url in temporal_anchor_urls if str(url).strip()}
-        bindings: list[dict[str, str]] = []
-        for index, raw_url in enumerate(ordered_urls, start=1):
-            url = str(raw_url).strip()
-            if not url:
-                continue
-            if url in scene_master_set:
-                kind = "scene_master"
-                description = "场景母图参考，用于锁定当前 scene 的环境、空间和光线基线。"
-            elif url in character_set:
-                kind = "character"
-                description = "角色参考图，用于锁定当前帧真实出镜角色的定妆、服装和外观。"
-            elif url in temporal_set:
-                kind = "temporal"
-                description = "时间承接参考，用上一帧或上一段画面锁定动作与镜头衔接。"
-            else:
-                kind = "reference"
-                description = "补充参考图。"
-            bindings.append(
-                {
-                    "label": f"图片{index}",
-                    "kind": kind,
-                    "description": description,
-                    "url": url,
-                }
-            )
-        return bindings
-
     def _snapshot_last_request_info(
         self,
         *,
@@ -813,88 +486,31 @@ class SeedreamClient:
 
     def _apply_scene_urls_to_seedance_manifest(self, project_package: VideoProjectPackage) -> None:
         scene_map = {item.segment_id: item for item in project_package.scene_images}
+        character_url_by_path = {
+            item.output_path: item.generated_url
+            for item in project_package.character_images
+            if item.output_path and item.generated_url
+        }
+        character_url_by_name = {
+            item.character_name: item.generated_url
+            for item in project_package.character_images
+            if item.character_name and item.generated_url
+        }
         for clip in project_package.seedance_manifest.clips:
             scene = scene_map.get(clip.segment_id)
-            if scene is None:
-                continue
-            clip.start_frame_url = scene.start_frame_url
-            clip.mid_frame_url = scene.mid_frame_url
-            clip.end_frame_url = scene.end_frame_url
-
-    def _resolve_continuity_start_frame(
-        self,
-        task: SceneImageTask,
-        scene_map: dict[str, SceneImageTask],
-    ) -> str:
-        if not task.reuse_previous_end_frame or not task.continuity_source_segment_id:
-            return ""
-        previous_task = scene_map.get(task.continuity_source_segment_id)
-        if previous_task is None:
-            return ""
-        return previous_task.end_frame_url
-
-    def _resolve_start_temporal_anchor_urls(
-        self,
-        task: SceneImageTask,
-        scene_map: dict[str, SceneImageTask],
-    ) -> list[str]:
-        source_segment_id = str(task.scene_transition_source_segment_id or "").strip()
-        if not source_segment_id:
-            return []
-        previous_task = scene_map.get(source_segment_id)
-        if previous_task is None:
-            return []
-        temporal_url = str(previous_task.end_frame_url or "").strip()
-        return [temporal_url] if temporal_url else []
-
-    def _materialize_reused_start_frame(
-        self,
-        task: SceneImageTask,
-        scene_map: dict[str, SceneImageTask],
-        client: httpx.Client,
-        start_frame_url: str,
-    ) -> None:
-        if not self.config.download_outputs:
-            return
-        previous_task = scene_map.get(task.continuity_source_segment_id)
-        if previous_task is None:
-            return
-        source_path = Path(previous_task.end_frame_path)
-        target_path = Path(task.start_frame_path)
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        if source_path.exists():
-            shutil.copyfile(source_path, target_path)
-            return
-        response = client.get(start_frame_url)
-        response.raise_for_status()
-        target_path.write_bytes(response.content)
-
-    def _merge_reference_urls(
-        self,
-        primary: list[str],
-        secondary: list[str],
-    ) -> list[str]:
-        merged: list[str] = []
-        for url in primary + secondary:
-            if url and url not in merged:
-                merged.append(url)
-        return merged
-
-    def _merge_reference_url_groups(
-        self,
-        *groups: list[str],
-    ) -> list[str]:
-        merged: list[str] = []
-        for group in groups:
-            for url in group:
-                if url and url not in merged:
-                    merged.append(url)
-        return merged
-
-    def _planned_scene_frame_count(self, task: SceneImageTask, *, frame_kind: str | None = None) -> int:
-        if frame_kind in {"start", "mid", "end"}:
-            return 1
-        return 3 if task.requires_mid_frame else 2
+            if scene is not None:
+                clip.scene_master_path = clip.scene_master_path or scene.scene_master_frame_path
+                clip.scene_master_url = clip.scene_master_url or scene.scene_master_frame_url
+            character_urls = [
+                character_url_by_path.get(path, "")
+                for path in clip.character_image_paths
+            ]
+            if not any(character_urls):
+                character_urls = [
+                    character_url_by_name.get(name, "")
+                    for name in clip.visible_characters
+            ]
+            clip.character_image_urls = [url for url in character_urls if url]
 
     def _build_preflight_report(
         self,

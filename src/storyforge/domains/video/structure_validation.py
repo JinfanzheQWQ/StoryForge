@@ -217,7 +217,6 @@ class VideoStructureValidationMixin:
             "首段 timed_beats 没有消费 scene_transition_contract",
             "最后一个 segment 仍停在 transition_goal 发生前",
             "没有真正落到当前 chunk 的 transition_goal",
-            "关键帧语义距离过近",
         )
         return any(marker in normalized_error for marker in soft_markers)
 

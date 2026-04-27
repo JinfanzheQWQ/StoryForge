@@ -66,7 +66,7 @@ GENERIC_CONTINUITY_FILLER_TERMS = (
     "上一镜头",
     "上一片段",
     "尾部",
-    "尾帧",
+    "尾部",
     "状态",
     "镜头",
     "画面",
@@ -401,10 +401,7 @@ def _resolve_v2_effective_mode(project_package, v1_summary: ContinuitySummary, r
     reasons: list[str] = []
     if any(len(scene.segments) > 1 for scene in project_package.scenes):
         reasons.append("存在同场景多片段")
-    if any(
-        len({*segment.involved_characters, *segment.start_frame_characters, *segment.mid_frame_characters, *segment.end_frame_characters}) >= 2
-        for segment in project_package.segments
-    ):
+    if any(len(set(segment.involved_characters)) >= 2 for segment in project_package.segments):
         reasons.append("存在双人或多人同框")
     if any(
         segment.continuity_link.transition_mode.strip().lower() == "continue"
@@ -480,11 +477,8 @@ def _build_v2_review_request(project_package, v1_rules: ContinuityRuleReview, tr
                 "title": segment.title,
                 "summary": _truncate(segment.summary, 220),
                 "duration_seconds": segment.duration_seconds,
-                "requires_mid_frame": segment.requires_mid_frame,
-                "mid_frame_mode": getattr(segment, "mid_frame_mode", "continuous"),
-                "reuse_previous_end_frame": bool(getattr(segment, "reuse_previous_end_frame", False)),
                 "involved_characters": list(segment.involved_characters),
-                "frame_contract": _build_segment_frame_contract_context(segment),
+                "motion_contract": _build_segment_motion_contract_context(segment),
                 "timed_beats": list(segment.timed_beats[:6]),
                 "narration_preview": _truncate(segment.narration, 120),
                 "dialogue_preview": [_truncate(item, 80) for item in segment.dialogue_lines[:3]],
@@ -608,54 +602,21 @@ def _segment_has_spoken_content(segment) -> bool:
     return any(str(item or "").strip() for item in [*segment.dialogue_lines, *segment.subtitle_lines])
 
 
-def _build_segment_frame_contract_context(segment) -> dict[str, Any]:
-    frame_contract = {
-        "start": {
-            "characters": list(segment.start_frame_characters),
-            "state": _truncate(_build_start_frame_state_summary(segment), 160),
-        },
-        "end": {
-            "characters": list(segment.end_frame_characters),
-            "state": _truncate(_build_end_frame_state_summary(segment), 160),
+def _build_segment_motion_contract_context(segment) -> dict[str, Any]:
+    return {
+        "characters": list(segment.involved_characters),
+        "entry_state": _truncate(segment.continuity_link.opening_match, 160),
+        "motion": _truncate(segment.shot_state.action_progression, 200),
+        "exit_state": _truncate(segment.shot_state.end_state_lock, 160),
+        "camera": _truncate(segment.shot_state.camera_motion, 160),
+        "screen_direction": _truncate(segment.shot_state.screen_direction, 120),
+        "motion_plan": {
+            "scene_motion": _truncate(segment.motion_plan.scene_motion, 160),
+            "beat_progression": _truncate(segment.motion_plan.beat_progression, 160),
+            "character_motion": _truncate(segment.motion_plan.character_motion, 160),
+            "continuity_guard": _truncate(segment.motion_plan.continuity_guard, 160),
         },
     }
-    if segment.requires_mid_frame:
-        frame_contract["mid"] = {
-            "characters": list(segment.mid_frame_characters),
-            "mode": getattr(segment, "mid_frame_mode", "continuous"),
-            "state": _truncate(_build_mid_frame_state_summary(segment), 160),
-        }
-    return frame_contract
-
-
-def _build_start_frame_state_summary(segment) -> str:
-    candidates = (
-        str(segment.continuity_link.opening_match or "").strip(),
-        _first_timed_beat(segment.timed_beats),
-        str(segment.shot_state.blocking or "").strip(),
-        str(segment.summary or "").strip(),
-    )
-    return _first_nonempty(*candidates)
-
-
-def _build_mid_frame_state_summary(segment) -> str:
-    candidates = (
-        _middle_timed_beat(segment.timed_beats),
-        str(segment.shot_state.blocking or "").strip(),
-        str(segment.shot_state.action_progression or "").strip(),
-        str(segment.summary or "").strip(),
-    )
-    return _first_nonempty(*candidates)
-
-
-def _build_end_frame_state_summary(segment) -> str:
-    candidates = (
-        str(segment.shot_state.end_state_lock or "").strip(),
-        _last_timed_beat(segment.timed_beats),
-        str(segment.shot_state.action_progression or "").strip(),
-        str(segment.summary or "").strip(),
-    )
-    return _first_nonempty(*candidates)
 
 
 def _build_segment_runtime_status_context(scene_task, clip_task) -> dict[str, Any]:
@@ -663,9 +624,10 @@ def _build_segment_runtime_status_context(scene_task, clip_task) -> dict[str, An
         "scene_images": {
             "status": str(getattr(scene_task, "status", "") or ""),
             "scene_master_frame_status": str(getattr(scene_task, "scene_master_frame_status", "") or ""),
-            "has_start_frame": bool(getattr(scene_task, "start_frame_url", "") or getattr(scene_task, "start_frame_path", "")),
-            "has_mid_frame": bool(getattr(scene_task, "mid_frame_url", "") or getattr(scene_task, "mid_frame_path", "")),
-            "has_end_frame": bool(getattr(scene_task, "end_frame_url", "") or getattr(scene_task, "end_frame_path", "")),
+            "has_scene_master_frame": bool(
+                getattr(scene_task, "scene_master_frame_url", "")
+                or getattr(scene_task, "scene_master_frame_path", "")
+            ),
         },
         "video": {
             "submit_status": str(getattr(clip_task, "submit_status", "") or ""),
@@ -753,7 +715,7 @@ def _build_scene_issues(
                 severity="medium",
                 code="scene_baseline_weak",
                 message=(
-                    "场景基线过弱，后续关键帧容易出现背景或空间漂移："
+                    "场景基线过弱，后续视频容易出现背景或空间漂移："
                     + "、".join(baseline_gaps)
                 ),
                 scene_id=scene.scene_id,
@@ -1097,7 +1059,7 @@ def _build_segment_issues(
             )
         )
 
-    issues.extend(_build_frame_character_issues(segment))
+    issues.extend(_build_segment_character_issues(segment))
     issues.extend(_build_timing_issues(segment))
     issues.extend(
         _build_continuity_transition_issues(
@@ -1115,15 +1077,13 @@ def _build_segment_issues(
         and previous_segment is not None
         and _scene_generation_started(scene_task, previous_scene_task)
     ):
-        if previous_scene_task is None or not _frame_output_ready(
-            output_dir, previous_scene_task.end_frame_path, previous_scene_task.end_frame_url
-        ):
+        if previous_scene_task is None or not _scene_master_output_ready(output_dir, previous_scene_task):
             issues.append(
                 _issue(
                     scope="segment",
                     severity="high",
                     code="continuity_source_missing",
-                    message="该片段要求承接上一段，但上一段尾帧还不可用。",
+                    message="该片段要求承接上一段，但上一段场景母图还不可用。",
                     scene_id=segment.scene_id,
                     segment_id=segment.segment_id,
                     recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
@@ -1264,39 +1224,13 @@ def _build_scene_task_issues(
     if scene_task.status != "completed":
         return issues
 
-    if not _frame_output_ready(output_dir, scene_task.start_frame_path, scene_task.start_frame_url):
+    if not _scene_master_output_ready(output_dir, scene_task):
         issues.append(
             _issue(
                 scope="segment",
                 severity="high",
-                code="start_frame_missing",
-                message="片段场景图已完成，但首帧缺失。",
-                scene_id=segment.scene_id,
-                segment_id=segment.segment_id,
-                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
-            )
-        )
-    if scene_task.requires_mid_frame and not _frame_output_ready(
-        output_dir, scene_task.mid_frame_path, scene_task.mid_frame_url
-    ):
-        issues.append(
-            _issue(
-                scope="segment",
-                severity="high",
-                code="mid_frame_missing",
-                message="片段要求中段锚点帧，但当前中段帧缺失。",
-                scene_id=segment.scene_id,
-                segment_id=segment.segment_id,
-                recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
-            )
-        )
-    if not _frame_output_ready(output_dir, scene_task.end_frame_path, scene_task.end_frame_url):
-        issues.append(
-            _issue(
-                scope="segment",
-                severity="high",
-                code="end_frame_missing",
-                message="片段场景图已完成，但尾帧缺失。",
+                code="scene_master_frame_missing",
+                message="场景图阶段已完成，但 scene 母图缺失。",
                 scene_id=segment.scene_id,
                 segment_id=segment.segment_id,
                 recommended_action=ACTION_REGENERATE_SCENE_IMAGES,
@@ -1314,25 +1248,13 @@ def _build_video_clip_issues(
     issues: list[ContinuityIssue] = []
 
     if scene_task is not None and scene_task.status == "completed":
-        if not clip_task.start_frame_url and scene_task.start_frame_url:
+        if not clip_task.scene_master_url and getattr(scene_task, "scene_master_frame_url", ""):
             issues.append(
                 _issue(
                     scope="segment",
                     severity="medium",
-                    code="seedance_start_frame_missing",
-                    message="视频提交清单缺少首帧 URL，无法稳定复用当前片段关键帧。",
-                    scene_id=segment.scene_id,
-                    segment_id=segment.segment_id,
-                    recommended_action=ACTION_REGENERATE_VIDEO,
-                )
-            )
-        if not clip_task.end_frame_url and scene_task.end_frame_url:
-            issues.append(
-                _issue(
-                    scope="segment",
-                    severity="medium",
-                    code="seedance_end_frame_missing",
-                    message="视频提交清单缺少尾帧 URL，无法稳定复用当前片段关键帧。",
+                    code="seedance_scene_master_missing",
+                    message="视频提交清单缺少场景母图 URL，无法稳定复用当前 scene 环境。",
                     scene_id=segment.scene_id,
                     segment_id=segment.segment_id,
                     recommended_action=ACTION_REGENERATE_VIDEO,
@@ -1384,42 +1306,20 @@ def _build_video_clip_issues(
     return issues
 
 
-def _build_frame_character_issues(segment) -> list[ContinuityIssue]:
+def _build_segment_character_issues(segment) -> list[ContinuityIssue]:
     issues: list[ContinuityIssue] = []
-    involved_characters = set(segment.involved_characters)
-    frame_specs = [
-        ("start", segment.start_frame_characters),
-        ("mid", segment.mid_frame_characters if segment.requires_mid_frame else []),
-        ("end", segment.end_frame_characters),
-    ]
-    for frame_kind, characters in frame_specs:
-        if frame_kind == "mid" and not segment.requires_mid_frame:
-            continue
-        if not characters:
-            issues.append(
-                _issue(
-                    scope="segment",
-                    severity="medium",
-                    code=f"{frame_kind}_frame_characters_missing",
-                    message=f"{frame_kind} 帧没有标注出镜角色，后续生图和视频承接会变弱。",
-                    scene_id=segment.scene_id,
-                    segment_id=segment.segment_id,
-                )
+    involved_characters = [str(name).strip() for name in segment.involved_characters if str(name).strip()]
+    if not involved_characters:
+        issues.append(
+            _issue(
+                scope="segment",
+                severity="medium",
+                code="segment_characters_missing",
+                message="片段没有标注实际出镜或发声角色，后续角色参考图绑定会变弱。",
+                scene_id=segment.scene_id,
+                segment_id=segment.segment_id,
             )
-            continue
-        invalid_names = [name for name in characters if name not in involved_characters]
-        if invalid_names:
-            issues.append(
-                _issue(
-                    scope="segment",
-                    severity="medium",
-                    code=f"{frame_kind}_frame_characters_invalid",
-                    message=f"{frame_kind} 帧包含未出现在片段角色列表里的角色：{'、'.join(invalid_names)}。",
-                    scene_id=segment.scene_id,
-                    segment_id=segment.segment_id,
-                    details={"invalid_names": invalid_names},
-                )
-            )
+        )
     return issues
 
 
@@ -1650,8 +1550,8 @@ def _spoken_unit_count(lines: list[str]) -> int:
     return sum(len(SPOKEN_TEXT_PATTERN.findall(str(line))) for line in lines)
 
 
-def _frame_output_ready(output_dir: Path, path_str: str, url: str) -> bool:
-    return bool(url) or _path_exists(output_dir, path_str)
+def _scene_master_output_ready(output_dir: Path, scene_task: SceneImageTask) -> bool:
+    return bool(scene_task.scene_master_frame_url) or _path_exists(output_dir, scene_task.scene_master_frame_path)
 
 
 def _path_exists(output_dir: Path, raw_path: str) -> bool:

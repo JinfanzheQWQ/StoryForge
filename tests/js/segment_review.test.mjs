@@ -7,7 +7,7 @@ const helpers = {
   buildBlockedSceneButtonLabel: () => "场景图被锁定",
   buildSegmentRepairButtonLabel: () => "智能修复该段",
   buildSegmentSceneButtonLabel: () => "生成场景图",
-  buildSegmentVideoButtonLabel: () => "生成视频",
+  buildSegmentVideoButtonLabel: (_segment, status) => status === "running" ? "视频生成中" : "生成视频",
   renderContinuityIssueList: () => "",
   renderContinuityRiskChips: () => "",
   renderRepairPlanNotice: () => "",
@@ -81,25 +81,50 @@ const segment = {
   },
 };
 
-state.selectedSegmentAssetKind = "start";
-const startHtml = renderSegmentReviewDetail({ segment, index: 0, model, galleryId: "g", characterStatus: "completed", helpers });
-assert.match(startHtml, /重做首帧/);
-assert.match(startHtml, /规划诊断摘要/);
-assert.match(startHtml, /动作容量过载/);
-assert.match(startHtml, /3 \/ 2/);
-assert.match(startHtml, /5s -&gt; 8s/);
-assert.match(startHtml, /data-generate-scene-segment="ch01-sc01-seg01"/);
-assert.match(startHtml, /data-frame-kind="start"/);
-assert.match(startHtml, /计划首帧/);
-assert.doesNotMatch(startHtml, /保存并重做视频/);
-
 state.selectedSegmentAssetKind = "video";
 const videoHtml = renderSegmentReviewDetail({ segment, index: 0, model, galleryId: "g", characterStatus: "completed", helpers });
+assert.match(videoHtml, /规划诊断摘要/);
+assert.match(videoHtml, /动作容量过载/);
+assert.match(videoHtml, /3 \/ 2/);
+assert.match(videoHtml, /5s -&gt; 8s/);
 assert.match(videoHtml, /重做当前视频/);
 assert.match(videoHtml, /data-generate-video-segment="ch01-sc01-seg01"/);
 assert.doesNotMatch(videoHtml, /data-frame-kind="video"/);
 assert.match(videoHtml, /保存并重做视频/);
 assert.match(videoHtml, /计划视频/);
-assert.doesNotMatch(videoHtml, /保存并重做首帧/);
+
+const missingVideoHtml = renderSegmentReviewDetail({
+  segment: { ...segment, videoReady: false, clip: null },
+  index: 0,
+  model,
+  galleryId: "g",
+  characterStatus: "completed",
+  helpers,
+});
+assert.match(missingVideoHtml, /生成当前视频/);
+assert.match(missingVideoHtml, /保存并生成视频/);
+assert.doesNotMatch(missingVideoHtml, /重做当前视频/);
+
+const runningVideoHtml = renderSegmentReviewDetail({
+  segment,
+  index: 0,
+  model: { ...model, videoTaskStatus: "running", canGenerateVideo: false },
+  galleryId: "g",
+  characterStatus: "completed",
+  helpers,
+});
+assert.match(runningVideoHtml, /视频生成中/);
+assert.match(
+  runningVideoHtml,
+  /data-reset-segment-prompt="ch01-sc01-seg01"[\s\S]*?disabled[\s\S]*?>重置当前点 Prompt/,
+);
+assert.match(
+  runningVideoHtml,
+  /data-save-segment-prompts="ch01-sc01-seg01"[\s\S]*?disabled[\s\S]*?>保存视频 Prompt/,
+);
+assert.match(
+  runningVideoHtml,
+  /data-save-and-rerun-segment-prompt="ch01-sc01-seg01"[\s\S]*?disabled[\s\S]*?>保存并重做视频/,
+);
 
 console.log("segment_review render tests passed");

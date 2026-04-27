@@ -40,7 +40,6 @@ class CreateStageTaskRequest(BaseModel):
     character_name: str | None = None
     segment_id: str | None = None
     scene_id: str | None = None
-    frame_kind: Literal["start", "mid", "end"] | None = None
     master_only: bool = False
     merge_only: bool = False
     resume_from_progress: bool = False
@@ -57,10 +56,6 @@ class CreateStageTaskRequest(BaseModel):
             raise ValueError("master_only=true 时必须提供 scene_id。")
         if self.master_only and segment_id:
             raise ValueError("master_only=true 不能与 segment_id 同时提交。")
-        if self.frame_kind and not segment_id:
-            raise ValueError("frame_kind 只能用于 segment_id 局部场景图任务。")
-        if self.frame_kind and (scene_id or self.master_only or self.merge_only):
-            raise ValueError("frame_kind 不能与 scene_id、master_only 或 merge_only 同时提交。")
         if self.resume_from_progress and (segment_id or scene_id or self.master_only or self.merge_only):
             raise ValueError("resume_from_progress 目前只支持分段合同阶段，不能和局部媒体范围一起提交。")
         return self
@@ -128,14 +123,11 @@ class JobAcceptedResponse(BaseModel):
 
 class UpdateSegmentPromptRequest(BaseModel):
     scene_master_frame_prompt: str | None = None
-    start_frame_prompt: str | None = None
-    mid_frame_prompt: str | None = None
-    end_frame_prompt: str | None = None
     video_prompt: str | None = None
 
 
 class ResetSegmentPromptRequest(BaseModel):
-    field: Literal["start_frame_prompt", "mid_frame_prompt", "end_frame_prompt", "video_prompt"]
+    field: Literal["scene_master_frame_prompt", "video_prompt"]
 
 
 class SegmentPromptUpdateResponse(BaseModel):
@@ -162,16 +154,16 @@ class CharacterPromptUpdateResponse(BaseModel):
 
 
 class SelectCharacterImageVersionRequest(BaseModel):
-    version: Literal["current", "candidate", "previous"]
+    version: Literal["current", "candidate"]
 
 
 class CharacterImageVersionSelectionResponse(BaseModel):
     project_id: str
     source_task_id: str
     character_name: str
-    selected_version: Literal["current", "candidate", "previous"]
+    selected_version: Literal["current", "candidate"]
     current_url: str = ""
-    previous_url: str = ""
+    candidate_url: str = ""
 
 
 class ProjectDeletedResponse(BaseModel):
@@ -248,28 +240,19 @@ class PlannedSegmentArtifactResponse(BaseModel):
     summary: str = ""
     chapter_number: int
     duration_seconds: int | None = None
-    requires_mid_frame: bool = False
-    mid_frame_mode: str = "continuous"
     scene_master_frame: ArtifactItem | None = None
-    start_frame: ArtifactItem | None = None
-    mid_frame: ArtifactItem | None = None
-    end_frame: ArtifactItem | None = None
     rendered_clip: ArtifactItem | None = None
     scene_master_frame_prompt: str = ""
-    start_frame_prompt: str = ""
-    mid_frame_prompt: str = ""
-    end_frame_prompt: str = ""
     video_prompt: str = ""
     submitted_video_prompt: str = ""
     seedance_motion_prompt: str = ""
     motion_plan: dict[str, str] = Field(default_factory=dict)
+    motion_contract: dict[str, Any] = Field(default_factory=dict)
+    character_references: list[ArtifactItem] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     submitted_prompt_variant: str = ""
     submitted_reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)
     scene_master_frame_request: SubmittedRequestResponse | None = None
-    start_frame_request: SubmittedRequestResponse | None = None
-    mid_frame_request: SubmittedRequestResponse | None = None
-    end_frame_request: SubmittedRequestResponse | None = None
     video_request: SubmittedRequestResponse | None = None
     scene_ready: bool = False
     video_ready: bool = False

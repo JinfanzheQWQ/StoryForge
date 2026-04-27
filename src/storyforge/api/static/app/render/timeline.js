@@ -53,7 +53,7 @@ export function renderTimelineTab({ task, artifacts, context, run = null, helper
           <p class="section-kicker">Timeline</p>
           <h4>按视频片段审片</h4>
           <p class="asset-note">分段合同完成后，这里会按 LLM 生成的 segment_plan 逐段展示。每一段都可以单独生成场景图和视频，不再一次性把全部片段跑完。</p>
-          <p class="asset-note">首帧、中段锚点帧、尾帧和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
+          <p class="asset-note">场景母图、角色参考图和视频片段会放在同一张卡里，便于逐段检查角色一致性、动作推进和字幕是否完整。</p>
         </div>
         <div class="detail-chip-row">
           ${chip(`场景 ${sceneGroups.length}`)}
@@ -273,9 +273,8 @@ export function renderTimelineTab({ task, artifacts, context, run = null, helper
                       </div>
                       ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
                       <div class="timeline-preview-grid">
-                        ${helpers.renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
-                        ${segment.requiresMidFrame ? helpers.renderTimelinePreview(segment.midFrame, "中段", galleryId) : ""}
-                        ${helpers.renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
+                        ${helpers.renderTimelinePreview(segment.sceneMasterFrame, "场景母图", galleryId)}
+                        ${(segment.characterReferences || []).map((item, itemIndex) => helpers.renderTimelinePreview(item, `角色图 ${itemIndex + 1}`, galleryId)).join("")}
                         ${helpers.renderTimelinePreview(segment.clip, "视频", galleryId)}
                       </div>
                       ${renderSegmentPromptPanel(segment, rootTask)}
@@ -283,7 +282,7 @@ export function renderTimelineTab({ task, artifacts, context, run = null, helper
                         <div class="detail-chip-row">
                           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
                           ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
-                          ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+                          ${chip("母图+角色图")}
                           ${segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
                           ${affectedBySceneRepair && sceneRepairRemainingActions.length ? chip("场景修复目标") : ""}
                           ${helpers.renderContinuityRiskChips(segmentContinuity)}
@@ -308,6 +307,7 @@ export function renderTimelineTab({ task, artifacts, context, run = null, helper
                             type="button"
                             class="secondary small${sceneRecommended ? " recommended-action" : ""}"
                             data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
+                            data-scene-id="${escapeAttr(segment.sceneId)}"
                             data-project-id="${escapeAttr(rootTask.project_id)}"
                             data-source-task="${escapeAttr(rootTask.task_id)}"
                             ${canGenerateScene ? "" : "disabled"}

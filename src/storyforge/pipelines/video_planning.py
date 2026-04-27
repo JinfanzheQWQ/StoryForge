@@ -882,18 +882,15 @@ def _build_contract_payload_from_video_segment(segment) -> dict[str, object]:
         "title": segment.title,
         "summary": segment.summary,
         "involved_characters": list(segment.involved_characters),
-        "start_frame_characters": list(segment.start_frame_characters),
-        "mid_frame_characters": list(segment.mid_frame_characters),
-        "end_frame_characters": list(segment.end_frame_characters),
         "narration": segment.narration,
         "dialogue_lines": list(segment.dialogue_lines),
         "subtitle_lines": list(segment.subtitle_lines),
         "timed_beats": list(segment.timed_beats),
         "duration_seconds": segment.duration_seconds,
-        "requires_mid_frame": segment.requires_mid_frame,
         "transition_hint": segment.transition_hint,
         "shot_state": segment.shot_state.model_dump(),
         "continuity_link": segment.continuity_link.model_dump(),
+        "motion_plan": segment.motion_plan.model_dump(),
     }
 
 
@@ -1269,6 +1266,7 @@ def _write_segment_contract_checkpoint(
         scenes,
         segments,
         scene_images,
+        character_images,
         str(paths.output_dir),
     )
 

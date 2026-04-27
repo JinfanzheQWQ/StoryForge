@@ -212,15 +212,15 @@ export function buildBatchRepairButtonLabel(batchRepairTaskStatus, batchRepairTa
 
 export function buildSegmentSceneButtonLabel(segment, sceneTaskStatus) {
   if (isBusyTaskStatus(sceneTaskStatus)) {
-    return "场景图生成中";
+    return "场景母图生成中";
   }
   if (segment.sceneReady) {
-    return "重生成场景图";
+    return "重生成场景母图";
   }
   if (sceneTaskStatus === "failed") {
-    return "重试场景图";
+    return "重试场景母图";
   }
-  return "生成场景图";
+  return "生成场景母图";
 }
 
 export function buildBlockedSceneButtonLabel(segment, sceneTaskStatus, characterStatus) {

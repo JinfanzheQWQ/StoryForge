@@ -78,11 +78,6 @@ class VideoSceneChunkOrchestrationMixin:
                         "segment_id": f"{scene.scene_id}-ck{chunk.order_index:02d}-seg{index:02d}",
                         "chapter_number": scene.chapter_number,
                         "scene_id": scene.scene_id,
-                        "mid_frame_characters": (
-                            list(segment.mid_frame_characters)
-                            if segment.requires_mid_frame
-                            else []
-                        ),
                         "continuity_link": continuity_link,
                     }
                 )
@@ -144,7 +139,7 @@ class VideoSceneChunkOrchestrationMixin:
         return {
             "segment_id": tail_segment.segment_id,
             "summary": tail_segment.summary,
-            "end_frame_characters": list(tail_segment.end_frame_characters),
+            "visible_characters": list(tail_segment.involved_characters),
             "action_progression": tail_segment.shot_state.action_progression.strip(),
             "blocking": tail_segment.shot_state.blocking.strip(),
             "prop_continuity": tail_segment.shot_state.prop_continuity.strip(),
@@ -164,8 +159,8 @@ class VideoSceneChunkOrchestrationMixin:
         tail_segment: SceneSegmentContractSchema,
     ) -> list[str]:
         raw_elements = [
-            f"角色：{'、'.join(tail_segment.end_frame_characters)}"
-            if tail_segment.end_frame_characters
+            f"角色：{'、'.join(tail_segment.involved_characters)}"
+            if tail_segment.involved_characters
             else "",
             f"站位：{tail_segment.shot_state.blocking.strip()}"
             if tail_segment.shot_state.blocking.strip()
@@ -1012,7 +1007,7 @@ class VideoSceneChunkOrchestrationMixin:
         normalized_error = " ".join(str(error or "").split()).strip()
         return (
             "多人同帧时仍要求单人特写" in normalized_error
-            and "单帧里重复出现" in normalized_error
+            and "画面里重复出现" in normalized_error
         )
 
     def _parse_scene_segment_focus_conflict_failure(
@@ -1022,7 +1017,7 @@ class VideoSceneChunkOrchestrationMixin:
         normalized = " ".join(str(failure_message or "").split()).strip()
         match = re.search(
             r"segment\s+(?P<segment_id>\S+)\s+的\s+(?P<field_name>[^\s]+)\s+在\s+"
-            r"(?P<frame_label>start_frame|mid_frame|end_frame)\s*"
+            r"(?P<frame_label>segment)\s*"
             r"\((?P<frame_names>[^)]+)\)\s*多人同帧时仍要求单人特写",
             normalized,
         )

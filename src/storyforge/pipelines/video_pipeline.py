@@ -97,7 +97,6 @@ def run_scene_image_pipeline(
     submit_scenes: bool = True,
     segment_id: str | None = None,
     scene_id: str | None = None,
-    frame_kind: str | None = None,
     master_only: bool = False,
     continuity_review_mode: str = "auto",
     llm_provider: str | None = None,
@@ -115,6 +114,11 @@ def run_scene_image_pipeline(
         scene_id=None if master_only else scene_id,
         segment_ids=segment_ids,
     )
+    selected_scene_ids = selected_scene_ids or (
+        {scene.scene_id for scene in planning.project_package.scenes}
+        if scene_id is None
+        else {scene_id}
+    )
     if master_only:
         scene_execution = seedream_client.generate_scene_master_frames(
             planning.project_package,
@@ -124,11 +128,11 @@ def run_scene_image_pipeline(
         )
         combined_execution = scene_execution
     else:
-        scene_execution = seedream_client.generate_scene_images(
+        scene_execution = seedream_client.generate_scene_master_frames(
             planning.project_package,
             force_submit=submit_scenes,
-            segment_ids=selected_segment_ids,
-            frame_kind=frame_kind,
+            scene_ids=selected_scene_ids,
+            force_regenerate=False,
         )
         character_execution = read_seedream_execution_report(character_execution_path)
         combined_execution = merge_seedream_execution_reports(character_execution, scene_execution)
@@ -140,13 +144,11 @@ def run_scene_image_pipeline(
         planning.scene_images_path,
         selected_segment_ids=selected_segment_ids,
         selected_scene_ids=selected_scene_ids,
-        frame_kind=frame_kind,
     )
-    manifest_selected_segment_ids = set() if master_only else selected_segment_ids
     merged_manifest = _merge_seedance_manifest_for_write(
         planning.manifest,
         planning.manifest_path,
-        selected_segment_ids=manifest_selected_segment_ids,
+        selected_segment_ids=set(),
     )
     planning.project_package.scene_images = merged_scene_images
     planning.project_package.seedance_manifest = merged_manifest
@@ -487,6 +489,7 @@ def run_video_render_pipeline(
         )
 
     manifest = planning.manifest
+    _sync_v2_seedance_references(planning.project_package.seedance_manifest, planning.project_package)
     selected_segment_ids = _resolve_selected_segment_ids(
         planning.project_package,
         segment_id=segment_id,
@@ -539,6 +542,38 @@ def run_video_render_pipeline(
         manifest=merged_manifest,
         seedance_execution=seedance_execution,
     )
+
+
+def _sync_v2_seedance_references(manifest: SeedanceManifest, project_package: object) -> None:
+    scene_by_segment = {
+        item.segment_id: item
+        for item in getattr(project_package, "scene_images", [])
+    }
+    character_url_by_path = {
+        item.output_path: item.generated_url
+        for item in getattr(project_package, "character_images", [])
+        if getattr(item, "output_path", "") and getattr(item, "generated_url", "")
+    }
+    character_url_by_name = {
+        item.character_name: item.generated_url
+        for item in getattr(project_package, "character_images", [])
+        if getattr(item, "character_name", "") and getattr(item, "generated_url", "")
+    }
+    for clip in manifest.clips:
+        scene_task = scene_by_segment.get(clip.segment_id)
+        if scene_task is not None:
+            clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
+            clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
+        resolved_character_urls = [
+            character_url_by_path.get(path, "")
+            for path in clip.character_image_paths
+        ]
+        if not any(resolved_character_urls):
+            resolved_character_urls = [
+                character_url_by_name.get(name, "")
+                for name in clip.visible_characters
+            ]
+        clip.character_image_urls = [url for url in resolved_character_urls if url]
 
 
 def run_video_merge_pipeline(
@@ -697,7 +732,6 @@ def _merge_scene_image_tasks_for_write(
     *,
     selected_segment_ids: set[str] | None,
     selected_scene_ids: set[str] | None,
-    frame_kind: str | None = None,
 ) -> list[SceneImageTask]:
     latest_tasks = _load_scene_image_tasks_from_path(path)
     latest_by_segment = {item.segment_id: item for item in latest_tasks}
@@ -726,7 +760,7 @@ def _merge_scene_image_tasks_for_write(
         primary, secondary = (
             (current_task, latest_task) if prefer_current else (latest_task, current_task)
         )
-        merged_tasks.append(_merge_scene_image_task(primary, secondary, frame_kind=frame_kind if prefer_current else None))
+        merged_tasks.append(_merge_scene_image_task(primary, secondary))
     return merged_tasks
 
 
@@ -796,13 +830,9 @@ def _should_prefer_current_segment_state(
 def _merge_scene_image_task(
     preferred: SceneImageTask,
     fallback: SceneImageTask,
-    *,
-    frame_kind: str | None = None,
 ) -> SceneImageTask:
     payload = to_jsonable(preferred)
     fallback_payload = to_jsonable(fallback)
-    if frame_kind in {"start", "mid", "end"}:
-        payload = _merge_single_frame_scene_image_task_payload(payload, fallback_payload, frame_kind)
     payload["status"] = _prefer_nondefault_status(
         payload.get("status", "planned"),
         fallback_payload.get("status", "planned"),
@@ -813,9 +843,6 @@ def _merge_scene_image_task(
     )
     for field_name in (
         "scene_master_frame_url",
-        "start_frame_url",
-        "mid_frame_url",
-        "end_frame_url",
     ):
         payload[field_name] = _prefer_nonempty_string(
             payload.get(field_name, ""),
@@ -831,33 +858,7 @@ def _merge_scene_image_task(
         fallback_error=fallback_payload.get("error", ""),
         chosen_status=payload["status"],
     )
-    for field_name in (
-        "start_frame_request_info",
-        "mid_frame_request_info",
-        "end_frame_request_info",
-    ):
-        payload[field_name] = _prefer_nonempty_mapping(
-            payload.get(field_name, {}),
-            fallback_payload.get(field_name, {}),
-        )
     return SceneImageTask.from_dict(payload)
-
-
-def _merge_single_frame_scene_image_task_payload(
-    payload: dict[str, object],
-    fallback_payload: dict[str, object],
-    frame_kind: str,
-) -> dict[str, object]:
-    keep_frame_kinds = {"start", "mid", "end"} - {frame_kind}
-    for keep_kind in keep_frame_kinds:
-        for suffix in ("frame_url", "frame_request_info"):
-            field_name = f"{keep_kind}_{suffix}"
-            payload[field_name] = fallback_payload.get(field_name, payload.get(field_name, ""))
-    if frame_kind != "start" and fallback_payload.get("start_frame_url"):
-        payload["start_frame_url"] = fallback_payload.get("start_frame_url", "")
-    if frame_kind != "mid" and fallback_payload.get("mid_frame_url"):
-        payload["mid_frame_url"] = fallback_payload.get("mid_frame_url", "")
-    return payload
 
 
 def _merge_seedance_clip_task(
@@ -875,9 +876,9 @@ def _merge_seedance_clip_task(
         fallback_payload.get("remote_status", "planned"),
     )
     for field_name in (
-        "start_frame_url",
-        "mid_frame_url",
-        "end_frame_url",
+        "scene_id",
+        "scene_master_path",
+        "scene_master_url",
         "submitted_prompt",
         "submit_variant",
         "remote_task_id",
@@ -889,6 +890,19 @@ def _merge_seedance_clip_task(
             payload.get(field_name, ""),
             fallback_payload.get(field_name, ""),
         )
+    for field_name in (
+        "character_image_paths",
+        "character_image_urls",
+        "visible_characters",
+    ):
+        payload[field_name] = _prefer_nonempty_list(
+            payload.get(field_name, []),
+            fallback_payload.get(field_name, []),
+        )
+    payload["motion_contract"] = _prefer_nonempty_mapping(
+        payload.get("motion_contract", {}),
+        fallback_payload.get("motion_contract", {}),
+    )
     payload["submitted_reference_bindings"] = _prefer_nonempty_list(
         payload.get("submitted_reference_bindings", []),
         fallback_payload.get("submitted_reference_bindings", []),
@@ -1198,6 +1212,7 @@ def _rebuild_segment_execution_contracts(
         project_package.scenes,
         project_package.segments,
         rebuilt_scene_images,
+        project_package.character_images,
         str(output_dir),
     )
 
@@ -1233,9 +1248,9 @@ def _reset_scene_image_task_for_repair(task: SceneImageTask) -> SceneImageTask:
     payload = {
         **to_jsonable(task),
         "status": "planned",
-        "start_frame_url": "",
-        "mid_frame_url": "",
-        "end_frame_url": "",
+        "scene_master_frame_status": "planned",
+        "scene_master_frame_url": "",
+        "scene_master_frame_error": "",
         "error": "",
     }
     return SceneImageTask.from_dict(payload)
@@ -1244,9 +1259,6 @@ def _reset_scene_image_task_for_repair(task: SceneImageTask) -> SceneImageTask:
 def _reset_seedance_clip_task_for_repair(task: SeedanceClipTask) -> SeedanceClipTask:
     payload = {
         **to_jsonable(task),
-        "start_frame_url": "",
-        "mid_frame_url": "",
-        "end_frame_url": "",
         "remote_task_id": "",
         "submit_status": "planned",
         "remote_status": "planned",

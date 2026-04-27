@@ -17,16 +17,16 @@ StoryForge 是一套分步式故事视频生产工作台。它强调阶段审阅
 
 - 视频规划结构为 `chapter -> scene -> chunk -> segment`。
 - scene 带 `covered_event_ids`、紧凑事件摘要、`scene_bible` 和 `scene_transition_contract`。
-- segment 带 `shot_state`、`continuity_link`、首 / 中 / 尾帧角色集合、`timed_beats` 和 `motion_plan`。
-- artifacts API 会返回 segment 诊断信息，包括动作预算、时长、`timed_beats` 覆盖、中段模式、拆段状态、风险类型、修复来源和规划告警来源。
+- segment 带 `shot_state`、`continuity_link`、`timed_beats` 和 `motion_plan`。
+- artifacts API 会返回 segment 诊断信息，包括动作预算、时长、`timed_beats` 覆盖、拆段状态、风险类型、修复来源和规划告警来源。
 
 ### 图片与视频
 
 - 使用 Seedream 生成角色图。
 - 使用 Seedream 生成无角色场景母图。
-- 使用 Seedream 生成 segment 首帧、中段帧和尾帧。
+- 使用 Seedream 生成角色定妆图和 scene 场景母图。
 - 使用 Seedance 根据有序时间锚点图生成视频。
-- 视频 prompt 使用 `图片1 / 图片2 / 图片3` 绑定首帧、中段帧和尾帧。
+- 视频 prompt 使用 `图片1=场景母图，图片2+=角色图` 绑定参考图。
 - 视频阶段不把场景母图或角色图作为 Seedance 参考图提交。
 - Seedream / Seedance 水印选项按 run 保存。
 
@@ -35,8 +35,8 @@ StoryForge 是一套分步式故事视频生产工作台。它强调阶段审阅
 - 项目列表、项目详情、任务时间线和产物浏览。
 - 小说编辑页用于维护正文真源。
 - 场景工作台用于查看 scene 分组、场景母图、过渡合同和 scene 级操作。
-- 分段审片台用于查看关键帧、视频、prompt、请求参数、诊断信息和重做入口。
-- Prompt Editor 支持修改单个首帧、中段、尾帧或视频 prompt。
+- 分段审片台用于查看场景母图、角色图、视频、prompt、请求参数、诊断信息和重做入口。
+- Prompt Editor 支持修改场景母图 prompt 和视频 prompt。
 - Request Inspector 支持查看真实提交 payload、Prompt Diff、参考图绑定和 provider 请求摘要。
 
 ### 持久化与恢复
@@ -71,5 +71,5 @@ StoryForge 是一套分步式故事视频生产工作台。它强调阶段审阅
 - 优化场景和片段风险展示，让页面直接提示下一步该做什么。
 - 继续减少 prompt 重复，同时保留 schema 和 provider 必需指令。
 - 补更多前端轻量测试，覆盖 prompt 修改、请求检查和单点重做按钮。
-- 强化场景母图、关键帧角色集合和 Seedance 提交绑定的一致性检查。
+- 强化场景母图、角色图和 Seedance 提交绑定的一致性检查。
 - 在大批量并发任务前评估更持久的队列执行方案。

@@ -139,7 +139,7 @@ function renderCompareRow(run) {
   const artifacts = run.latestArtifacts;
   const errorMessage = buildTaskErrorMessage(displayTask);
   const summary = artifacts?.available
-    ? `角色图 ${artifacts.character_images.length} / 场景帧 ${artifacts.scene_frames.length} / 片段 ${artifacts.rendered_clips.length}${artifacts.full_story ? " / 总片" : ""}`
+    ? `角色图 ${artifacts.character_images.length} / 场景母图 ${artifacts.scene_frames.length} / 片段 ${artifacts.rendered_clips.length}${artifacts.full_story ? " / 总片" : ""}`
     : "等待产物";
   const activeClass = task.task_id === state.selectedProjectTaskId ? "active" : "";
 
@@ -183,7 +183,7 @@ function renderRunSwitchCard(run) {
   const completedCount = stageStatuses.filter((status) => status === "completed").length;
   const activeClass = task.task_id === state.selectedProjectTaskId ? "active" : "";
   const mediaSummary = artifacts?.available
-    ? `${artifacts.character_images.length} 图 / ${artifacts.rendered_clips.length} 视频`
+    ? `角色 ${artifacts.character_images.length} / 视频 ${artifacts.rendered_clips.length}`
     : "等待产物";
 
   return `
@@ -256,7 +256,7 @@ function renderProjectHero(detail, runs, selectedRun, artifacts) {
           ${metricCard("制作进度", `${progress.completedCount} / 6`)}
           ${metricCard("最近更新", formatShortTime(detail.updated_at))}
           ${metricCard("角色图", String(artifacts?.character_images?.length || 0))}
-          ${metricCard("场景帧", String(artifacts?.scene_frames?.length || 0))}
+          ${metricCard("场景母图", String(artifacts?.scene_frames?.length || 0))}
           ${metricCard("视频片段", String(artifacts?.rendered_clips?.length || 0))}
         </div>
       </div>

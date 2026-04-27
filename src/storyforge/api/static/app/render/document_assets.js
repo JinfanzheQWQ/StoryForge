@@ -53,9 +53,9 @@ const DOCUMENT_META = {
     summary: "按 scene 记录分段合同执行进度、失败位置和断点恢复状态，用于失败后继续生成。",
   },
   "scene_image_manifest.json": {
-    title: "场景帧任务清单",
+    title: "场景图任务清单",
     category: "媒体任务清单",
-    summary: "记录每个场景母图，以及每个片段的首帧、中段锚点帧、尾帧、角色参考图和输出位置。",
+    summary: "记录每个 scene 的场景母图生成任务、提交参数、输出位置和状态。",
   },
   "seedream_character_execution.json": {
     title: "角色图执行报告",
@@ -65,7 +65,7 @@ const DOCUMENT_META = {
   "seedream_scene_execution.json": {
     title: "场景图执行报告",
     category: "执行报告",
-    summary: "用来确认场景关键帧阶段是否真正跑通，以及失败原因。",
+    summary: "用来确认场景母图阶段是否真正跑通，以及失败原因。",
   },
   "seedance_manifest.json": {
     title: "视频提交清单",
@@ -80,7 +80,7 @@ const DOCUMENT_META = {
   "continuity_report.json": {
     title: "连续性校验报告",
     category: "修复与风险",
-    summary: "连续性审校结果，汇总场景母图、关键帧承接、对白预算和视频执行风险，并驱动修复入口。",
+    summary: "连续性审校结果，汇总场景母图、动作承接、对白预算和视频执行风险，并驱动修复入口。",
   },
 };
 

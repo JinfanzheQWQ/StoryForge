@@ -489,12 +489,11 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("covered_event_ids", first_planned_segment)
             self.assertIn("covered_event_summaries", first_planned_segment)
             self.assertIn("scene_master_frame_prompt", first_planned_segment)
-            self.assertIn("start_frame_prompt", first_planned_segment)
-            self.assertIn("end_frame_prompt", first_planned_segment)
             self.assertIn("video_prompt", first_planned_segment)
             self.assertIn("submitted_video_prompt", first_planned_segment)
             self.assertIn("seedance_motion_prompt", first_planned_segment)
             self.assertIn("motion_plan", first_planned_segment)
+            self.assertIn("motion_contract", first_planned_segment)
             self.assertIn("diagnostics", first_planned_segment)
             self.assertIn("action_node_count", first_planned_segment["diagnostics"])
             self.assertIn("action_node_budget", first_planned_segment["diagnostics"])
@@ -503,8 +502,6 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("timed_beat_count", first_planned_segment["diagnostics"])
             self.assertIn("timed_beat_end_seconds", first_planned_segment["diagnostics"])
             self.assertIn("missing_tail_seconds", first_planned_segment["diagnostics"])
-            self.assertIn("requires_mid_frame", first_planned_segment["diagnostics"])
-            self.assertIn("mid_frame_mode", first_planned_segment["diagnostics"])
             self.assertIn("subsegment_index", first_planned_segment["diagnostics"])
             self.assertIn("subsegment_count", first_planned_segment["diagnostics"])
             self.assertIn("risk_type", first_planned_segment["diagnostics"])
@@ -515,17 +512,8 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("submitted_prompt_variant", first_planned_segment)
             self.assertIn("submitted_reference_bindings", first_planned_segment)
             self.assertIn("scene_master_frame_request", first_planned_segment)
-            self.assertIn("start_frame_request", first_planned_segment)
-            self.assertIn("mid_frame_request", first_planned_segment)
-            self.assertIn("end_frame_request", first_planned_segment)
             self.assertIn("video_request", first_planned_segment)
             self.assertTrue(first_planned_segment["scene_master_frame_request"])
-            self.assertTrue(first_planned_segment["start_frame_request"])
-            self.assertTrue(first_planned_segment["video_request"])
-            if not first_planned_segment["requires_mid_frame"]:
-                self.assertFalse(first_planned_segment["mid_frame"])
-                self.assertEqual(first_planned_segment["mid_frame_prompt"], "")
-                self.assertIsNone(first_planned_segment["mid_frame_request"])
 
             continuity_report_path = Path(segment_task["result"]["output_dir"]) / "continuity_report.json"
             continuity_payload = json.loads(continuity_report_path.read_text(encoding="utf-8"))
@@ -687,9 +675,7 @@ class ApiTestCase(unittest.TestCase):
             rendered_dir = output_dir / "rendered"
             frames_dir.mkdir(parents=True)
             rendered_dir.mkdir(parents=True)
-            (frames_dir / "ch01-sc01-seg01_start.png").write_bytes(b"start")
-            (frames_dir / "ch01-sc01-seg01_mid.png").write_bytes(b"mid")
-            (frames_dir / "ch01-sc01-seg01_end.png").write_bytes(b"end")
+            (frames_dir / "ch01-sc01-seg01_master.png").write_bytes(b"master")
             (rendered_dir / "ch01-sc01-seg01.mp4").write_bytes(b"video")
 
             task = TaskRecord(
@@ -709,15 +695,13 @@ class ApiTestCase(unittest.TestCase):
         self.assertTrue(artifacts.available)
         self.assertEqual(len(artifacts.planned_segments), 1)
         segment = artifacts.planned_segments[0]
-        self.assertTrue(segment.requires_mid_frame)
+        self.assertIsNotNone(segment.scene_master_frame)
         diagnostics = segment.diagnostics
         self.assertEqual(diagnostics["status"], "ok")
         self.assertEqual(diagnostics["risk_type"], "")
         self.assertEqual(diagnostics["risk_types"], [])
         self.assertIn("duration_auto_expanded_from", diagnostics)
         self.assertIn("planner_warning_source", diagnostics)
-        self.assertEqual(diagnostics["requires_mid_frame"], True)
-        self.assertEqual(diagnostics["mid_frame_mode"], "continuous")
         self.assertEqual(diagnostics["action_node_count"], 0)
 
     def test_story_job_accepts_openai_selection(self) -> None:
@@ -877,26 +861,6 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
             self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedream.watermark)
             self.assertTrue(mock_run_scene_image_pipeline.call_args.kwargs["config"].seedance.watermark)
-
-            frame_response = client.post(
-                "/v1/projects/scenes",
-                json={
-                    "project_id": project_id,
-                    "source_task_id": source_task_id,
-                    "segment_id": segment_id,
-                    "frame_kind": "start",
-                },
-            )
-            self.assertEqual(frame_response.status_code, 202)
-            frame_task_id = frame_response.json()["task_id"]
-            frame_task = self._wait_for_completion(client, frame_task_id)
-            self.assertEqual(frame_task["status"], "completed")
-            self.assertEqual(frame_task["payload"]["segment_id"], segment_id)
-            self.assertEqual(frame_task["payload"]["frame_kind"], "start")
-            self.assertEqual(frame_task["result"]["segment_id"], segment_id)
-            self.assertEqual(frame_task["result"]["frame_kind"], "start")
-            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["segment_id"], segment_id)
-            self.assertEqual(mock_run_scene_image_pipeline.call_args.kwargs["frame_kind"], "start")
 
             video_response = client.post(
                 "/v1/projects/videos",
@@ -1181,7 +1145,18 @@ class ApiTestCase(unittest.TestCase):
                 scene_id = "ch01-sc01"
                 (output_dir / "scene_plan.json").write_text(
                     json.dumps(
-                        {"scenes": [{"scene_id": scene_id, "scene_master_frame_prompt": "旧场景母图"}]},
+                        {
+                            "scenes": [
+                                {
+                                    "scene_id": scene_id,
+                                    "scene_master_frame_prompt": "旧场景母图",
+                                    "scene_master_frame_path": str(output_dir / "assets" / "frames" / f"{scene_id}_master.png"),
+                                    "scene_master_frame_url": "https://example.invalid/old-master.png",
+                                    "scene_master_frame_status": "completed",
+                                    "scene_master_request_info": {"payload": {"prompt": "旧场景母图"}},
+                                }
+                            ]
+                        },
                         ensure_ascii=False,
                         indent=2,
                     ),
@@ -1196,9 +1171,6 @@ class ApiTestCase(unittest.TestCase):
                                 "scene_id": scene_id,
                                 "title": "等待",
                                 "summary": "林屿等待苏晚。",
-                                "start_frame_prompt": "旧首帧",
-                                "mid_frame_prompt": "旧中段",
-                                "end_frame_prompt": "旧尾帧",
                                 "duration_seconds": 6,
                             }
                         ],
@@ -1214,9 +1186,9 @@ class ApiTestCase(unittest.TestCase):
                                 "segment_id": segment_id,
                                 "scene_id": scene_id,
                                 "scene_master_frame_prompt": "旧场景母图",
-                                "start_frame_prompt": "旧首帧",
-                                "mid_frame_prompt": "旧中段",
-                                "end_frame_prompt": "旧尾帧",
+                                "scene_master_frame_path": str(output_dir / "assets" / "frames" / f"{scene_id}_master.png"),
+                                "scene_master_frame_url": "https://example.invalid/old-master.png",
+                                "scene_master_frame_status": "completed",
                             }
                         ],
                         ensure_ascii=False,
@@ -1224,6 +1196,9 @@ class ApiTestCase(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                old_master_path = output_dir / "assets" / "frames" / f"{scene_id}_master.png"
+                old_master_path.parent.mkdir(parents=True, exist_ok=True)
+                old_master_path.write_bytes(b"old master")
                 rendered_dir = output_dir / "rendered"
                 rendered_dir.mkdir(parents=True, exist_ok=True)
                 old_clip_path = rendered_dir / f"{segment_id}.mp4"
@@ -1234,6 +1209,8 @@ class ApiTestCase(unittest.TestCase):
                             "clips": [
                                 {
                                     "segment_id": segment_id,
+                                    "scene_id": scene_id,
+                                    "scene_master_url": "https://example.invalid/old-master.png",
                                     "prompt": "旧视频",
                                     "submitted_prompt": "旧提交视频",
                                     "submitted_request_info": {"payload": {"content": []}},
@@ -1276,9 +1253,6 @@ class ApiTestCase(unittest.TestCase):
                     f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}",
                     json={
                         "scene_master_frame_prompt": "新场景母图",
-                        "start_frame_prompt": "新首帧",
-                        "mid_frame_prompt": "新中段",
-                        "end_frame_prompt": "新尾帧",
                         "video_prompt": "新视频",
                     },
                 )
@@ -1288,26 +1262,25 @@ class ApiTestCase(unittest.TestCase):
                     set(response.json()["updated_fields"]),
                     {
                         "scene_master_frame_prompt",
-                        "start_frame_prompt",
-                        "mid_frame_prompt",
-                        "end_frame_prompt",
                         "video_prompt",
                     },
                 )
                 segment_plan = json.loads((output_dir / "segment_plan.json").read_text(encoding="utf-8"))
-                self.assertEqual(segment_plan[0]["start_frame_prompt"], "新首帧")
-                self.assertEqual(segment_plan[0]["mid_frame_prompt"], "新中段")
-                self.assertEqual(segment_plan[0]["end_frame_prompt"], "新尾帧")
+                self.assertEqual(segment_plan[0]["video_prompt"], "新视频")
                 scene_plan = json.loads((output_dir / "scene_plan.json").read_text(encoding="utf-8"))
                 self.assertEqual(scene_plan["scenes"][0]["scene_master_frame_prompt"], "新场景母图")
+                self.assertEqual(scene_plan["scenes"][0]["scene_master_frame_url"], "")
+                self.assertEqual(scene_plan["scenes"][0]["scene_master_frame_status"], "planned")
+                self.assertEqual(scene_plan["scenes"][0]["scene_master_request_info"], {})
                 scene_manifest = json.loads((output_dir / "scene_image_manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(scene_manifest[0]["scene_master_frame_prompt"], "新场景母图")
-                self.assertEqual(scene_manifest[0]["start_frame_prompt"], "新首帧")
-                self.assertEqual(scene_manifest[0]["mid_frame_prompt"], "新中段")
-                self.assertEqual(scene_manifest[0]["end_frame_prompt"], "新尾帧")
+                self.assertEqual(scene_manifest[0]["scene_master_frame_url"], "")
+                self.assertEqual(scene_manifest[0]["scene_master_frame_status"], "planned")
+                self.assertFalse(old_master_path.exists())
                 seedance_manifest = json.loads((output_dir / "seedance_manifest.json").read_text(encoding="utf-8"))
                 clip = seedance_manifest["clips"][0]
                 self.assertEqual(clip["prompt"], "新视频")
+                self.assertEqual(clip["scene_master_url"], "")
                 self.assertEqual(clip["submitted_prompt"], "")
                 self.assertEqual(clip["submitted_request_info"], {})
                 self.assertEqual(clip["submitted_reference_bindings"], [])
@@ -1402,8 +1375,11 @@ class ApiTestCase(unittest.TestCase):
                     encoding="utf-8",
                 )
                 character_asset_path = output_dir / "assets" / "characters" / "陈屿_sheet.png"
+                candidate_asset_path = output_dir / "assets" / "characters" / "_candidates" / "陈屿_sheet.png"
                 character_asset_path.parent.mkdir(parents=True, exist_ok=True)
+                candidate_asset_path.parent.mkdir(parents=True, exist_ok=True)
                 character_asset_path.write_bytes(b"old-character-image")
+                candidate_asset_path.write_bytes(b"old-candidate-image")
                 (output_dir / "character_image_manifest.json").write_text(
                     json.dumps(
                         [
@@ -1414,6 +1390,8 @@ class ApiTestCase(unittest.TestCase):
                                 "provider": "seedream-4.5",
                                 "status": "completed",
                                 "generated_url": "https://example.invalid/old.png",
+                                "candidate_generated_url": "https://example.invalid/old-candidate.png",
+                                "candidate_output_path": str(candidate_asset_path),
                                 "request_info": {
                                     "provider": "seedream-4.5",
                                     "endpoint": "https://example.invalid/images/generations",
@@ -1469,6 +1447,7 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(manifest[0]["generated_url"], "https://example.invalid/old.png")
                 self.assertEqual(manifest[0]["candidate_generated_url"], "")
                 self.assertEqual(manifest[0]["candidate_output_path"], "")
+                self.assertFalse(candidate_asset_path.exists())
 
                 rerun_response = client.post(
                     "/v1/projects/characters",
@@ -1483,6 +1462,9 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(task["status"], "completed", task.get("error"))
                 self.assertEqual(task["payload"]["character_name"], "陈屿")
                 self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["character_name"], "陈屿")
+                manifest = json.loads((output_dir / "character_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest[0]["candidate_generated_url"], "")
+                self.assertEqual(manifest[0]["candidate_output_path"], "")
 
 
     def test_select_character_image_version_can_use_candidate(self) -> None:
@@ -1553,6 +1535,8 @@ class ApiTestCase(unittest.TestCase):
                 artifacts = build_task_artifacts(source_task_record, output_root=output_dir.parent)
                 self.assertEqual(len(artifacts.character_images), 1)
                 self.assertEqual(artifacts.character_images[0].name, "陈屿_sheet.png")
+                self.assertIn("/assets/characters/_candidates/", artifacts.character_images[0].candidate_path)
+                self.assertIn("/outputs/", artifacts.character_images[0].candidate_url or "")
 
                 response = client.post(
                     f"/v1/projects/{project_id}/character-images/{source_record.task_id}/陈屿/select",
@@ -1566,6 +1550,124 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(manifest[0]["candidate_output_path"], "")
                 self.assertEqual(current_path.read_bytes(), b"candidate-image")
                 self.assertFalse(candidate_path.exists())
+
+
+    def test_character_artifacts_include_manifest_url_when_file_missing(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app):
+            container = app.state.container
+            brief = {"title_hint": "远程角色图测试", "idea": "校园告白。", "genre": "青春", "tone": "电影感", "target_audience": "成年读者", "chapter_count": 1, "total_word_target": 1200}
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                for name, payload in {
+                    "story_source.json": {"brief": brief, "title": "远程角色图测试", "chapters": []},
+                    "novel_package.json": {"brief": brief, "outline": {"title": "远程角色图测试", "characters": [], "chapters": []}, "chapters": []},
+                    "character_image_manifest.json": [
+                        {
+                            "character_name": "陈屿",
+                            "prompt": "角色 prompt",
+                            "output_path": str(output_dir / "assets" / "characters" / "陈屿_sheet.png"),
+                            "provider": "seedream-4.5",
+                            "status": "completed",
+                            "generated_url": "https://example.invalid/chenyu.png",
+                            "error": "",
+                        }
+                    ],
+                }.items():
+                    (output_dir / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "远程角色图测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "novel_package_path": str(output_dir / "novel_package.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "characters_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                source_task_record = container.task_queue.store.get(source_record.task_id)
+                self.assertIsNotNone(source_task_record)
+                artifacts = build_task_artifacts(source_task_record, output_root=output_dir.parent)
+                self.assertEqual(len(artifacts.character_images), 1)
+                character_item = artifacts.character_images[0]
+                self.assertEqual(character_item.character_name, "陈屿")
+                self.assertEqual(character_item.url, "https://example.invalid/chenyu.png")
+                self.assertEqual(character_item.status, "completed")
+
+
+    def test_character_artifacts_do_not_treat_previous_version_as_candidate(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app):
+            container = app.state.container
+            brief = {"title_hint": "角色首版测试", "idea": "校园告白。", "genre": "青春", "tone": "电影感", "target_audience": "成年读者", "chapter_count": 1, "total_word_target": 1200}
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                current_path = output_dir / "assets" / "characters" / "陈屿_sheet.png"
+                previous_path = output_dir / "assets" / "characters" / "_previous" / "陈屿_sheet.png"
+                current_path.parent.mkdir(parents=True)
+                previous_path.parent.mkdir(parents=True)
+                current_path.write_bytes(b"current-image")
+                previous_path.write_bytes(b"previous-image")
+                for name, payload in {
+                    "story_source.json": {"brief": brief, "title": "角色首版测试", "chapters": []},
+                    "novel_package.json": {"brief": brief, "outline": {"title": "角色首版测试", "characters": [], "chapters": []}, "chapters": []},
+                    "character_image_manifest.json": [
+                        {
+                            "character_name": "陈屿",
+                            "prompt": "角色 prompt",
+                            "output_path": str(current_path),
+                            "previous_output_path": str(previous_path),
+                            "provider": "seedream-4.5",
+                            "status": "completed",
+                            "generated_url": "https://example.invalid/current.png",
+                            "previous_generated_url": "https://example.invalid/previous.png",
+                            "error": "",
+                        }
+                    ],
+                }.items():
+                    (output_dir / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "角色首版测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "novel_package_path": str(output_dir / "novel_package.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "characters_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                source_task_record = container.task_queue.store.get(source_record.task_id)
+                self.assertIsNotNone(source_task_record)
+                artifacts = build_task_artifacts(source_task_record, output_root=output_dir.parent)
+                self.assertEqual(len(artifacts.character_images), 1)
+                self.assertIsNone(artifacts.character_images[0].candidate_url)
+                self.assertEqual(artifacts.character_images[0].candidate_path, "")
 
 
     def test_select_character_current_deletes_candidate_file(self) -> None:
@@ -1681,20 +1783,13 @@ class ApiTestCase(unittest.TestCase):
                     "title": "等待",
                     "summary": "林屿等待苏晚出现。",
                     "involved_characters": ["林屿"],
-                    "start_frame_characters": ["林屿"],
-                    "mid_frame_characters": [],
-                    "end_frame_characters": ["林屿"],
                     "narration": "",
                     "dialogue_lines": [],
                     "subtitle_lines": [],
                     "sound_effects": ["微风声"],
                     "music_direction": "青春电影感配乐",
                     "timed_beats": ["0-3秒：林屿站在入口处等待", "3-6秒：林屿抬头看向远处"],
-                    "start_frame_prompt": "林屿站在入口处等待",
-                    "mid_frame_prompt": "",
-                    "end_frame_prompt": "林屿抬头看向远处",
                     "duration_seconds": 6,
-                    "requires_mid_frame": False,
                     "scene_bible": scene_bible,
                     "shot_state": {
                         "framing": "中景",
@@ -1742,7 +1837,6 @@ class ApiTestCase(unittest.TestCase):
                         [
                             {
                                 **segment_payload,
-                                "start_frame_prompt": "手动改坏首帧",
                                 "video_prompt": "手动改坏视频",
                             }
                         ],
@@ -1758,9 +1852,6 @@ class ApiTestCase(unittest.TestCase):
                                 "segment_id": segment_id,
                                 "scene_id": scene_id,
                                 "scene_master_frame_prompt": "空场景母图",
-                                "start_frame_prompt": "手动改坏首帧",
-                                "mid_frame_prompt": "",
-                                "end_frame_prompt": "林屿抬头看向远处",
                             }
                         ],
                         ensure_ascii=False,
@@ -1816,18 +1907,18 @@ class ApiTestCase(unittest.TestCase):
                 container.project_store.attach_task(project_id, source_record.task_id, brief)
                 container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
 
-                start_response = client.post(
+                scene_prompt_response = client.post(
                     f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
-                    json={"field": "start_frame_prompt"},
+                    json={"field": "scene_master_frame_prompt"},
                 )
-                self.assertEqual(start_response.status_code, 200)
-                self.assertEqual(start_response.json()["reset_field"], "start_frame_prompt")
-                self.assertIn("图片1是空场景参考图", start_response.json()["prompt"])
+                self.assertEqual(scene_prompt_response.status_code, 200)
+                self.assertEqual(scene_prompt_response.json()["reset_field"], "scene_master_frame_prompt")
+                self.assertIn("场景母图", scene_prompt_response.json()["prompt"])
 
                 segment_plan = json.loads((output_dir / "segment_plan.json").read_text(encoding="utf-8"))
                 scene_manifest = json.loads((output_dir / "scene_image_manifest.json").read_text(encoding="utf-8"))
-                self.assertEqual(segment_plan[0]["start_frame_prompt"], start_response.json()["prompt"])
-                self.assertEqual(scene_manifest[0]["start_frame_prompt"], start_response.json()["prompt"])
+                self.assertEqual(segment_plan[0]["video_prompt"], "手动改坏视频")
+                self.assertEqual(scene_manifest[0]["scene_master_frame_prompt"], scene_prompt_response.json()["prompt"])
 
                 video_response = client.post(
                     f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
@@ -1847,11 +1938,11 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(clip["remote_status"], "planned")
                 self.assertFalse(old_clip_path.exists())
 
-                mid_response = client.post(
+                legacy_response = client.post(
                     f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
-                    json={"field": "mid_frame_prompt"},
+                    json={"field": "unsupported_prompt"},
                 )
-                self.assertEqual(mid_response.status_code, 422)
+                self.assertEqual(legacy_response.status_code, 422)
 
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
@@ -2383,11 +2474,9 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
 
             invalid_frame_scope_cases = [
-                {"frame_kind": "start"},
-                {"segment_id": "seg-01", "scene_id": "scene-01", "frame_kind": "start"},
-                {"segment_id": "seg-01", "master_only": True, "frame_kind": "start"},
-                {"segment_id": "seg-01", "merge_only": True, "frame_kind": "start"},
-                {"segment_id": "seg-01", "frame_kind": "poster"},
+                {"segment_id": "seg-01", "scene_id": "scene-01"},
+                {"segment_id": "seg-01", "master_only": True},
+                {"segment_id": "seg-01", "merge_only": True},
             ]
             for extra_payload in invalid_frame_scope_cases:
                 with self.subTest(extra_payload=extra_payload):
@@ -2847,7 +2936,7 @@ class ApiTestCase(unittest.TestCase):
 
             scene_payload = self._wait_for_completion(client, scene_task_id)
             self.assertEqual(scene_payload["status"], "completed")
-            self.assertEqual(scene_payload["result"]["task_stage"], "scenes")
+            self.assertEqual(scene_payload["result"]["task_stage"], "scene_master_frames")
 
             video_response = client.post(
                 "/v1/projects/videos",

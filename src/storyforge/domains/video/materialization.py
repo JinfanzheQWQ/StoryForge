@@ -124,34 +124,7 @@ class VideoMaterializationMixin:
             dialogue_lines=dialogue_lines,
             timed_beats=timed_beats,
         )
-        requires_mid_frame = self._should_require_mid_frame(
-            involved_characters=involved_characters,
-            duration_seconds=contract.duration_seconds,
-            dialogue_lines=dialogue_lines,
-            timed_beats=timed_beats,
-            requested=contract.requires_mid_frame,
-        )
-        start_frame_characters = self._require_contract_frame_characters(
-            field_name="start_frame_characters",
-            frame_characters=contract.start_frame_characters,
-            involved_characters=involved_characters,
-        )
-        end_frame_characters = self._require_contract_frame_characters(
-            field_name="end_frame_characters",
-            frame_characters=contract.end_frame_characters,
-            involved_characters=involved_characters,
-        )
-        mid_frame_characters = (
-            self._require_contract_frame_characters(
-                field_name="mid_frame_characters",
-                frame_characters=contract.mid_frame_characters,
-                involved_characters=involved_characters,
-            )
-            if requires_mid_frame
-            else []
-        )
-        mid_frame_mode = self._normalize_mid_frame_mode(contract.mid_frame_mode)
-        base_segment = VideoSegmentSchema.model_validate(
+        return VideoSegmentSchema.model_validate(
             {
                 "segment_id": contract.segment_id,
                 "chapter_number": contract.chapter_number,
@@ -165,10 +138,6 @@ class VideoMaterializationMixin:
                 "title": contract.title,
                 "summary": contract.summary,
                 "involved_characters": involved_characters,
-                "start_frame_characters": start_frame_characters,
-                "mid_frame_characters": mid_frame_characters,
-                "mid_frame_mode": mid_frame_mode if requires_mid_frame else "continuous",
-                "end_frame_characters": end_frame_characters,
                 "narration": narration,
                 "dialogue_lines": dialogue_lines,
                 "subtitle_lines": subtitle_lines,
@@ -179,31 +148,9 @@ class VideoMaterializationMixin:
                     scene=scene,
                     segment_summary=contract.summary,
                 ),
-                "start_frame_prompt": "",
-                "mid_frame_prompt": "",
-                "end_frame_prompt": "",
                 "duration_seconds": contract.duration_seconds,
-                "requires_mid_frame": requires_mid_frame,
                 "transition_hint": self._normalize_transition_hint(contract.transition_hint),
-            }
-        )
-        start_frame_prompt = self._build_local_start_frame_prompt(scene, base_segment)
-        end_frame_prompt = self._build_local_end_frame_prompt(scene, base_segment)
-        enriched_segment = base_segment.model_copy(
-            update={
-                "start_frame_prompt": start_frame_prompt,
-                "end_frame_prompt": end_frame_prompt,
-            }
-        )
-        mid_frame_prompt = (
-            self._build_default_mid_frame_prompt(enriched_segment)
-            if requires_mid_frame
-            else ""
-        )
-        return enriched_segment.model_copy(
-            update={
-                "mid_frame_prompt": mid_frame_prompt,
-                "character_voice_notes": [],
+                "motion_plan": contract.motion_plan.model_dump(),
             }
         )
 
@@ -261,9 +208,6 @@ class VideoMaterializationMixin:
                 title=item.title,
                 summary=item.summary,
                 involved_characters=item.involved_characters,
-                start_frame_characters=item.start_frame_characters,
-                mid_frame_characters=item.mid_frame_characters,
-                end_frame_characters=item.end_frame_characters,
                 narration=item.narration,
                 dialogue_lines=item.dialogue_lines,
                 subtitle_lines=item.subtitle_lines
@@ -283,16 +227,11 @@ class VideoMaterializationMixin:
                 ),
                 music_direction=item.music_direction,
                 timed_beats=item.timed_beats,
-                start_frame_prompt=item.start_frame_prompt,
-                mid_frame_prompt=item.mid_frame_prompt,
-                end_frame_prompt=item.end_frame_prompt,
                 duration_seconds=item.duration_seconds,
-                requires_mid_frame=item.requires_mid_frame,
                 transition_hint=item.transition_hint,
                 source_segment_id=item.source_segment_id or item.segment_id,
                 subsegment_index=item.subsegment_index,
                 subsegment_count=item.subsegment_count,
-                reuse_previous_end_frame=item.reuse_previous_end_frame,
                 scene_bible=SceneBible.from_dict(item.scene_bible.model_dump()),
                 shot_state=ShotState.from_dict(item.shot_state.model_dump()),
                 continuity_link=ContinuityLink.from_dict(item.continuity_link.model_dump()),
@@ -327,19 +266,11 @@ class VideoMaterializationMixin:
         )
         candidate = target_schema.model_copy(
             update={
-                "start_frame_prompt": repair_patch.start_frame_prompt.strip(),
-                "mid_frame_prompt": repair_patch.mid_frame_prompt.strip(),
-                "end_frame_prompt": repair_patch.end_frame_prompt.strip(),
-                "start_frame_characters": list(repair_patch.start_frame_characters),
-                "mid_frame_characters": list(repair_patch.mid_frame_characters),
-                "mid_frame_mode": self._normalize_mid_frame_mode(repair_patch.mid_frame_mode),
-                "end_frame_characters": list(repair_patch.end_frame_characters),
                 "narration": repair_patch.narration.strip(),
                 "dialogue_lines": list(repair_patch.dialogue_lines),
                 "subtitle_lines": list(repair_patch.subtitle_lines),
                 "timed_beats": list(repair_patch.timed_beats),
                 "duration_seconds": repair_patch.duration_seconds,
-                "requires_mid_frame": repair_patch.requires_mid_frame,
                 "transition_hint": self._normalize_transition_hint(repair_patch.transition_hint),
                 "shot_state": repair_patch.shot_state,
                 "continuity_link": repair_patch.continuity_link,
@@ -352,31 +283,8 @@ class VideoMaterializationMixin:
             character_visual_bible,
         )
         normalized_segment = single_plan.segments[0]
-        requires_mid_frame = self._should_require_mid_frame(
-            involved_characters=normalized_segment.involved_characters,
-            duration_seconds=normalized_segment.duration_seconds,
-            dialogue_lines=normalized_segment.dialogue_lines,
-            timed_beats=normalized_segment.timed_beats,
-            requested=normalized_segment.requires_mid_frame,
-        )
         normalized_segment = normalized_segment.model_copy(
             update={
-                "requires_mid_frame": requires_mid_frame,
-                "mid_frame_prompt": (
-                    normalized_segment.mid_frame_prompt
-                    if requires_mid_frame
-                    else ""
-                ),
-                "mid_frame_characters": (
-                    normalized_segment.mid_frame_characters
-                    if requires_mid_frame
-                    else []
-                ),
-                "mid_frame_mode": (
-                    self._normalize_mid_frame_mode(normalized_segment.mid_frame_mode)
-                    if requires_mid_frame
-                    else "continuous"
-                ),
                 "subtitle_lines": (
                     normalized_segment.subtitle_lines
                     or self._build_subtitle_lines(
@@ -420,11 +328,6 @@ class VideoMaterializationMixin:
             update={
                 "continuity_link": repaired_continuity_link,
                 "transition_hint": self._normalize_transition_hint(normalized_segment.transition_hint),
-                "reuse_previous_end_frame": bool(
-                    previous_schema is not None
-                    and repaired_continuity_link.transition_mode == "continue"
-                    and repaired_continuity_link.previous_segment_id == previous_schema.segment_id
-                ),
             }
         )
 

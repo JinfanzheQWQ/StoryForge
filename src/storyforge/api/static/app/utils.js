@@ -143,7 +143,7 @@ function buildRunGroup(rootTaskId, tasks) {
     latestVideoTask: videoTasks[0] || null,
     latestRepairTask: repairTasks[0] || null,
     latestMergeTask: mergeTasks[0] || null,
-    latestArtifacts: state.artifactsByTaskId.get(rootTask.task_id) || null,
+    latestArtifacts: state.artifactsByTaskId.get(rootTask.task_id) || rootTask.artifacts || latestTask.artifacts || null,
   };
 }
 

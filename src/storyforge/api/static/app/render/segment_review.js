@@ -87,7 +87,9 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
   const selectedOption = resolveSelectedSegmentAssetOption(segment);
   const isVideoSelected = selectedOption.kind === "video";
   const canRerunSelectedAsset = isVideoSelected ? model.canGenerateVideo : model.canGenerateScene;
-  const selectedRerunLabel = isVideoSelected ? "重做当前视频" : `重做${selectedOption.label}`;
+  const selectedRerunLabel = isVideoSelected
+    ? (segment.videoReady ? "重做当前视频" : "生成当前视频")
+    : `重做${selectedOption.label}`;
   return `
     <article class="segment-review-detail-card">
       <div class="timeline-card-head">
@@ -102,9 +104,8 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
       ${segment.summary ? `<p class="timeline-summary">${escapeHtml(segment.summary)}</p>` : ""}
       ${renderSegmentDiagnosticsSummary(segment)}
       <div class="timeline-preview-grid segment-review-preview-grid">
-        ${helpers.renderTimelinePreview(segment.startFrame, "首帧", galleryId)}
-        ${segment.requiresMidFrame ? helpers.renderTimelinePreview(segment.midFrame, "中段", galleryId) : ""}
-        ${helpers.renderTimelinePreview(segment.endFrame, "尾帧", galleryId)}
+        ${helpers.renderTimelinePreview(segment.sceneMasterFrame, "场景母图", galleryId)}
+        ${(segment.characterReferences || []).map((item, itemIndex) => helpers.renderTimelinePreview(item, `角色图 ${itemIndex + 1}`, galleryId)).join("")}
         ${helpers.renderTimelinePreview(segment.clip, "视频", galleryId)}
       </div>
       <div class="timeline-card-footer">
@@ -112,7 +113,7 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
         <div class="detail-chip-row">
           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
           ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
-          ${segment.requiresMidFrame ? chip("含中段锚点") : chip("双帧片段")}
+          ${chip("母图+角色图")}
           ${model.segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
           ${helpers.renderContinuityRiskChips(model.segmentContinuity)}
         </div>
@@ -132,6 +133,7 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
             type="button"
             class="secondary small${model.sceneRecommended ? " recommended-action" : ""}"
             data-generate-scene-segment="${escapeAttr(segment.segmentId)}"
+            data-scene-id="${escapeAttr(segment.sceneId)}"
             data-project-id="${escapeAttr(model.rootTask.project_id)}"
             data-source-task="${escapeAttr(model.rootTask.task_id)}"
             ${model.canGenerateScene ? "" : "disabled"}
@@ -151,7 +153,7 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
           <button
             type="button"
             class="primary-button small"
-            ${isVideoSelected ? `data-generate-video-segment="${escapeAttr(segment.segmentId)}"` : `data-generate-scene-segment="${escapeAttr(segment.segmentId)}" data-frame-kind="${escapeAttr(selectedOption.frameKind)}"`}
+            ${isVideoSelected ? `data-generate-video-segment="${escapeAttr(segment.segmentId)}"` : `data-generate-scene-segment="${escapeAttr(segment.segmentId)}" data-scene-id="${escapeAttr(segment.sceneId)}"`}
             data-project-id="${escapeAttr(model.rootTask.project_id)}"
             data-source-task="${escapeAttr(model.rootTask.task_id)}"
             ${canRerunSelectedAsset ? "" : "disabled"}
@@ -171,7 +173,7 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
         ${helpers.renderSegmentTaskError(model.videoTask, "视频失败")}
       </div>
       <div class="segment-review-inspector-grid">
-        ${renderPromptEditorPanel(segment, model.rootTask, selectedOption)}
+        ${renderPromptEditorPanel(segment, model.rootTask, selectedOption, { locked: !canRerunSelectedAsset })}
         ${renderRequestInspectorPanel(segment, selectedOption)}
       </div>
     </article>
@@ -256,7 +258,7 @@ export function renderSegmentReviewTab({ task, artifacts, context, run = null, h
         <div>
           <p class="section-kicker">Segment Review</p>
           <h4>分段审片台</h4>
-          <p class="asset-note">左侧选择片段，右侧只审当前 segment。这里集中处理关键帧、视频、prompt、实际请求和风险修复。</p>
+          <p class="asset-note">左侧选择片段，右侧只审当前 segment。这里集中处理场景母图、角色图、视频、prompt、实际请求和风险修复。</p>
         </div>
         <div class="segment-review-filters">
           ${filters.map(([id, label, count]) => `

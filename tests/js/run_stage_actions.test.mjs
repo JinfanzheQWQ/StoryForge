@@ -56,4 +56,22 @@ assert.match(html, /视频提交失败/);
 const noRootHtml = renderRunStageActions({ run: {}, helpers });
 assert.equal(noRootHtml, "");
 
+
+const completedRun = {
+  ...run,
+  latestSegmentContractsTask: { status: "completed", result: { story_source_revision: "rev-1" } },
+};
+const completedHelpers = {
+  ...helpers,
+  resolveSegmentContractsUiState: () => ({
+    progressLabel: "2/2 场景",
+    failureLabel: "",
+    resumeFromProgress: false,
+    buttonLabel: "分段合同已完成",
+  }),
+};
+const completedHtml = renderRunStageActions({ run: completedRun, helpers: completedHelpers });
+assert.match(completedHtml, /stage-complete/);
+assert.match(completedHtml, /分段合同已完成/);
+
 console.log("run_stage_actions render tests passed");

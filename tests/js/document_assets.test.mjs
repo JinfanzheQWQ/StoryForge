@@ -18,19 +18,27 @@ const docHtml = renderDocumentBlock("项目文件", [
 assert.match(docHtml, /项目文件/);
 assert.match(docHtml, /当前项目文件/);
 assert.match(docHtml, /故事正文源文件/);
-assert.match(docHtml, /小说源/);
+assert.match(docHtml, /核心运行文件/);
 assert.match(docHtml, /custom_debug.json/);
 assert.match(docHtml, /其他文件/);
 assert.match(docHtml, /打开文件/);
 
 const groupsHtml = renderDocumentGroups([
   { name: "seedance_execution.json", url: "/seedance_execution.json", kind: "document" },
+  { name: "seedance_manifest.json", url: "/seedance_manifest.json", kind: "document" },
+  { name: "continuity_report.json", url: "/continuity_report.json", kind: "document" },
+  { name: "continuity_repair_ch01-sc01.json", url: "/continuity_repair_ch01-sc01.json", kind: "document" },
   { name: "story_source.json", url: "/story_source.json", kind: "document" },
   { name: "unknown.log", url: "/unknown.log", kind: "document" },
 ]);
-assert.ok(groupsHtml.indexOf("小说源") < groupsHtml.indexOf("执行报告"));
+assert.ok(groupsHtml.indexOf("核心运行文件") < groupsHtml.indexOf("媒体任务清单"));
+assert.ok(groupsHtml.indexOf("媒体任务清单") < groupsHtml.indexOf("修复与风险"));
+assert.ok(groupsHtml.indexOf("修复与风险") < groupsHtml.indexOf("执行报告"));
 assert.ok(groupsHtml.indexOf("执行报告") < groupsHtml.indexOf("其他文件"));
 assert.match(groupsHtml, /视频执行报告/);
+assert.match(groupsHtml, /视频提交清单/);
+assert.match(groupsHtml, /连续性校验报告/);
+assert.match(groupsHtml, /连续性修复报告/);
 assert.match(groupsHtml, /unknown.log/);
 
 assert.match(renderFullStoryBlock(null, "ctx"), /当前版本还没有生成完整成片/);

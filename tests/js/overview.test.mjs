@@ -17,6 +17,7 @@ const helpers = {
   buildOverviewNote: () => "默认下一步",
   buildSceneGroups: () => [{ sceneId: "ch01-sc01", segments }],
   buildTimelineSegments: () => segments,
+  renderDocumentGroups: () => `<section>文档分组</section>`,
   renderContinuityOverview: () => `<section>连续性概览</section>`,
   renderFullStoryBlock: () => `<section>总片预览</section>`,
   renderRunStageActions: () => `<section>阶段入口</section>`,
@@ -41,6 +42,7 @@ const run = {
 const html = renderWorkbenchOverviewTab({
   task,
   artifacts: {
+    documents: [{ name: "story_source.json", url: "/story_source.json", kind: "document" }],
     continuity_summary: { high_risk_count: 2, medium_risk_count: 1 },
     full_story: null,
   },
@@ -60,6 +62,7 @@ assert.match(html, /1\/2/);
 assert.match(html, /高风险/);
 assert.match(html, /中风险/);
 assert.match(html, /阶段入口/);
+assert.match(html, /文档分组/);
 assert.match(html, /连续性概览/);
 assert.match(html, /总片预览/);
 

@@ -19,6 +19,7 @@ import {
   renderSegmentSceneBlockedNotice,
   renderSegmentTaskError,
 } from "./detail_common.js";
+import { renderCharacterWorkbenchTab as renderCharacterWorkbench } from "./character_workbench.js";
 import { renderWorkbenchOverviewTab as renderWorkbenchOverview } from "./overview.js";
 import { renderRequestDebugTab as renderRequestDebugWorkbench } from "./request_debug.js";
 import { renderRunStageActions as renderRunStageActionPanel } from "./run_stage_actions.js";
@@ -181,6 +182,7 @@ const OVERVIEW_HELPERS = {
   buildOverviewNote,
   buildSceneGroups,
   buildTimelineSegments,
+  renderDocumentGroups,
   renderContinuityOverview,
   renderFullStoryBlock,
   renderRunStageActions,
@@ -210,6 +212,9 @@ export function renderRunStageActions(run) {
 export function renderRunTabContent(task, artifacts, context, activeTab, run = null) {
   if (activeTab === "story") {
     return renderStoryStructure({ task, context, run, helpers: STORY_STRUCTURE_HELPERS });
+  }
+  if (activeTab === "characters") {
+    return renderCharacterWorkbench({ task, artifacts, context, run });
   }
   if (activeTab === "scenes") {
     return renderSceneWorkbench({ task, artifacts, context, run, helpers: SCENE_WORKBENCH_HELPERS });

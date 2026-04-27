@@ -30,7 +30,7 @@ export function renderRequestDebugTab({ task, artifacts, run = null, helpers }) 
       ${helpers.renderAssetSectionIntro(
         "请求与调试",
         "这里集中查看真实提交参数、参考图绑定顺序、计划 prompt、实际提交 prompt 和执行报告。",
-        [chip(`Segment ${segments.length}`), chip(`调试文件 ${debugDocuments.length}`)].join(""),
+        [chip(`Segment ${segments.length}`), chip(`媒体链路文件 ${debugDocuments.length}`)].join(""),
       )}
       <div class="request-debug-grid">
         ${segments.map((segment) => `
@@ -42,7 +42,7 @@ export function renderRequestDebugTab({ task, artifacts, run = null, helpers }) 
           </details>
         `).join("")}
       </div>
-      ${debugDocuments.length ? helpers.renderDocumentBlock("调试文件", debugDocuments, "当前媒体链路的 manifest 与执行报告。") : ""}
+      ${debugDocuments.length ? helpers.renderDocumentBlock("媒体链路文件", debugDocuments, "按媒体任务清单、修复与风险、执行报告分类查看。") : ""}
     </section>
   `;
 }

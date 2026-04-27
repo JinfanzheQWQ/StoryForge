@@ -101,6 +101,31 @@ export async function updateSegmentPrompts(projectId, sourceTaskId, segmentId, p
   return response.json();
 }
 
+export async function updateCharacterPrompt(projectId, sourceTaskId, characterName, payload) {
+  const response = await fetch(`/v1/projects/${projectId}/character-prompts/${sourceTaskId}/${encodeURIComponent(characterName)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
+
+export async function selectCharacterImageVersion(projectId, sourceTaskId, characterName, payload) {
+  const response = await fetch(`/v1/projects/${projectId}/character-images/${sourceTaskId}/${encodeURIComponent(characterName)}/select`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await buildApiErrorMessage(response));
+  }
+  return response.json();
+}
+
 export async function resetSegmentPrompt(projectId, sourceTaskId, segmentId, field) {
   const response = await fetch(`/v1/projects/${projectId}/segment-prompts/${sourceTaskId}/${segmentId}/reset`, {
     method: "POST",

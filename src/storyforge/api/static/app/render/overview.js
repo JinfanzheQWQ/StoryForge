@@ -60,6 +60,7 @@ export function renderWorkbenchOverviewTab({ task, artifacts, context, run = nul
         </div>
       </article>
       ${run ? helpers.renderRunStageActions(run) : ""}
+      ${artifacts?.documents?.length ? helpers.renderDocumentGroups(artifacts.documents) : ""}
       ${helpers.renderContinuityOverview(artifacts?.continuity_summary)}
       ${helpers.renderFullStoryBlock(artifacts?.full_story, context)}
     </section>

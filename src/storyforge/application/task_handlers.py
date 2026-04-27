@@ -323,6 +323,7 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         output_root=output_dir,
         use_llm=use_llm,
         submit_characters=True,
+        character_name=str(task.payload.get("character_name", "") or "").strip() or None,
     )
     response = {
         **partial_response,

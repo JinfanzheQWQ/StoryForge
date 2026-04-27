@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tempfile
 import sys
 import unittest
 from unittest.mock import Mock, patch
@@ -1175,6 +1176,45 @@ class SeedreamClientTestCase(unittest.TestCase):
             http_client.post.call_args_list[3].kwargs["json"]["image"],
             reference_images[:2],
         )
+
+
+    def test_generate_character_image_writes_candidate_without_replacing_current(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "林屿_sheet.png"
+            output_path.write_bytes(b"old-image")
+            task = CharacterImageTask(
+                character_name="林屿",
+                prompt="角色图",
+                output_path=str(output_path),
+                provider="seedream-4.5",
+                generated_url="https://example.com/old.png",
+            )
+
+            def fake_create_image(http_client, prompt, reference_images=None):
+                client._last_request_info = {
+                    "provider": "seedream",
+                    "endpoint": "https://example.invalid/images/generations",
+                    "variant": "text_only; refs=0",
+                    "payload": {"prompt": prompt, "watermark": False},
+                }
+                return "https://example.com/new.png"
+
+            with patch.object(client, "_create_image", side_effect=fake_create_image):
+                success = client._generate_character_image(Mock(), task)
+
+            self.assertTrue(success)
+            self.assertEqual(task.generated_url, "https://example.com/old.png")
+            self.assertEqual(task.request_info["payload"]["prompt"], "角色图")
+            self.assertEqual(task.request_info["reference_bindings"], [])
+            self.assertEqual(task.candidate_generated_url, "https://example.com/new.png")
+            self.assertTrue(Path(task.candidate_output_path).exists())
+            self.assertEqual(output_path.read_bytes(), b"old-image")
 
     def test_build_frame_reference_urls_prioritizes_scene_then_active_characters_then_temporal(self) -> None:
         client = SeedreamClient(

@@ -11,7 +11,6 @@ class CharacterVisualProfileSchema(BaseModel):
     gender: str = Field(default="未指定", description="角色性别，必须从小说角色卡继承")
     appearance: str = Field(description="外观描述")
     outfit: str = Field(description="服装设定")
-    color_palette: list[str] = Field(description="主色板")
     portrait_prompt: str = Field(description="角色图生成 prompt")
 
 

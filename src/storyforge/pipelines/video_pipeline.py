@@ -56,6 +56,7 @@ def run_character_image_pipeline(
     output_root: Path | None = None,
     use_llm: bool = True,
     submit_characters: bool = True,
+    character_name: str | None = None,
 ) -> CharacterImagePipelineResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     planning = load_video_planning_artifacts(output_dir)
@@ -63,6 +64,7 @@ def run_character_image_pipeline(
     character_execution = seedream_client.generate_character_images(
         planning.project_package,
         force_submit=submit_characters,
+        character_names={character_name.strip()} if character_name and character_name.strip() else None,
     )
     character_execution_path = planning.output_dir / "seedream_character_execution.json"
 

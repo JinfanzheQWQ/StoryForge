@@ -30,6 +30,7 @@ export const state = {
 export const DETAIL_TABS = [
   { id: "overview", label: "生产总览" },
   { id: "story", label: "正文与结构" },
+  { id: "characters", label: "角色" },
   { id: "scenes", label: "场景工作台" },
   { id: "segments", label: "分段审片台" },
   { id: "debug", label: "请求与调试" },

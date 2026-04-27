@@ -37,6 +37,7 @@ class CreateStageTaskRequest(BaseModel):
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
     seedream_watermark: bool | None = None
     seedance_watermark: bool | None = None
+    character_name: str | None = None
     segment_id: str | None = None
     scene_id: str | None = None
     frame_kind: Literal["start", "mid", "end"] | None = None
@@ -146,6 +147,33 @@ class SegmentPromptUpdateResponse(BaseModel):
     prompt: str = ""
 
 
+class UpdateCharacterPromptRequest(BaseModel):
+    prompt: str
+
+
+class CharacterPromptUpdateResponse(BaseModel):
+    project_id: str
+    source_task_id: str
+    character_name: str
+    updated_fields: list[str] = Field(default_factory=list)
+    prompt: str = ""
+
+
+
+
+class SelectCharacterImageVersionRequest(BaseModel):
+    version: Literal["current", "candidate", "previous"]
+
+
+class CharacterImageVersionSelectionResponse(BaseModel):
+    project_id: str
+    source_task_id: str
+    character_name: str
+    selected_version: Literal["current", "candidate", "previous"]
+    current_url: str = ""
+    previous_url: str = ""
+
+
 class ProjectDeletedResponse(BaseModel):
     project_id: str
     deleted: bool
@@ -183,6 +211,9 @@ class CharacterArtifactItem(ArtifactItem):
     provider: str = ""
     status: str = ""
     image_kind: str = ""
+    candidate_url: str | None = None
+    candidate_path: str = ""
+    character_request: SubmittedRequestResponse | None = None
     error: str = ""
 
 

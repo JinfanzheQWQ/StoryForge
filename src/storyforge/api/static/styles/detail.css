@@ -494,6 +494,16 @@
   gap: 10px;
 }
 
+
+.stage-action-panel .stage-complete,
+.stage-action-panel .stage-complete:disabled {
+  color: var(--muted-strong);
+  border-color: rgba(48, 88, 115, 0.12);
+  background: rgba(229, 235, 232, 0.52);
+  opacity: 0.72;
+  box-shadow: none;
+}
+
 .continuity-mode-field {
   display: grid;
   gap: 7px;
@@ -1075,6 +1085,197 @@
 .prompt-editor-actions .small {
   min-height: 34px;
   padding: 0 12px;
+  font-size: 11px;
+}
+
+
+.character-workbench-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.character-card-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.character-workbench-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(48, 88, 115, 0.14);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 249, 0.9));
+  box-shadow: var(--shadow-sm);
+}
+
+
+.character-workbench-card.is-busy {
+  position: relative;
+  border-color: rgba(37, 99, 235, 0.28);
+  box-shadow: 0 18px 38px rgba(37, 99, 235, 0.1);
+}
+
+.character-workbench-card.is-busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: var(--radius-xl);
+  background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.06), transparent);
+  animation: characterBusySweep 1.25s linear infinite;
+}
+
+.character-operation-status {
+  padding: 10px 12px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: var(--radius-lg);
+  background: rgba(239, 246, 255, 0.92);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+@keyframes characterBusySweep {
+  from { transform: translateX(-28%); }
+  to { transform: translateX(28%); }
+}
+
+.character-card-head,
+.character-version-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.character-card-head h4 {
+  margin: 0;
+  font-family: var(--title);
+  font-size: 22px;
+  letter-spacing: -0.035em;
+}
+
+.character-version-panel,
+.character-prompt-editor,
+.character-request-empty {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(48, 88, 115, 0.12);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.character-version-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 420px);
+  gap: 12px;
+}
+
+.character-version-grid.has-previous {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.character-version-card {
+  display: grid;
+  gap: 8px;
+}
+
+.character-image-preview {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid rgba(48, 88, 115, 0.16);
+  border-radius: var(--radius-lg);
+  background: rgba(246, 249, 247, 0.84);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.character-image-preview.static {
+  cursor: default;
+}
+
+.character-image-preview span {
+  font-size: 11px;
+  font-weight: 760;
+  color: var(--muted-strong);
+}
+
+.character-image-preview img {
+  width: 100%;
+  max-height: 340px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.character-image-preview em {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: var(--muted);
+  font-style: normal;
+}
+
+.character-version-actions,
+.character-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.character-prompt-editor textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.character-request-details {
+  border: 1px solid rgba(48, 88, 115, 0.12);
+  border-radius: var(--radius-lg);
+  background: rgba(245, 248, 247, 0.7);
+  overflow: hidden;
+}
+
+.character-request-details summary {
+  cursor: pointer;
+  padding: 12px;
+  font-weight: 760;
+  color: var(--text-strong);
+}
+
+.character-request-details .prompt-section {
+  border: 0;
+  border-top: 1px solid rgba(48, 88, 115, 0.1);
+  border-radius: 0;
+  background: transparent;
+}
+
+.prompt-editor-card {
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-editor-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.prompt-editor-card textarea {
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  font-family: var(--mono);
   font-size: 11px;
 }
 

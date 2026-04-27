@@ -311,12 +311,80 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 }
 ```
 
+只重做单个角色图：
+
+```json
+{
+  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "source_task_id": "story-task-id",
+  "character_name": "陈屿"
+}
+```
+
 说明：
 
 - `Cast Analyzer` 的 `source_evidence` 必须能在正文中定位；后端会对“带修饰语的人名或稳定称呼”做容错匹配，但不会放过正文中根本不存在的人物
 - 这一步依赖已经完成且未过期的 `project.segment_contracts`
 - 前端默认仍传入根 story task 的 `source_task_id`，因为分析结果会回写到同一条 run 根任务上
+- `character_name` 可选；传入时只提交 `character_image_manifest.json` 中同名角色的生图任务
 - `seedream_watermark / seedance_watermark` 可选；不传则继承本次 run 根任务上的设置
+
+#### `PUT /v1/projects/{project_id}/character-prompts/{source_task_id}/{character_name}`
+
+保存单个角色定妆图 Prompt。接口只更新 `character_image_manifest.json`，不会自动提交 Seedream 任务。
+
+请求示例：
+
+```json
+{
+  "prompt": "陈屿，男性，中国男大学生，白底三视图，自然肤色，不要红手..."
+}
+```
+
+保存后该角色图任务会回到 `planned` 状态，但不会清空当前正式角色图。页面上的“保存并重做该角色”会先调用本接口，再调用 `POST /v1/projects/characters` 并传入同一个 `character_name`。角色图提交成功后，`character_image_manifest.json` 会记录 `request_info` 与候选图字段，前端角色页会展示真实 Seedream payload 和待确认候选图。
+
+响应示例：
+
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "task-id",
+  "character_name": "陈屿",
+  "updated_fields": ["prompt"],
+  "prompt": "陈屿，男性，中国男大学生，白底三视图，自然肤色，不要红手..."
+}
+```
+
+
+#### `POST /v1/projects/{project_id}/character-images/{source_task_id}/{character_name}/select`
+
+选择单个角色图要保留的版本。角色重做后，系统会生成候选图但不覆盖当前正式图；本接口用于放弃候选图或使用候选图替换正式图。
+
+请求示例：
+
+```json
+{
+  "version": "candidate"
+}
+```
+
+字段说明：
+
+- `version = current`：放弃候选图，并清理候选图本地文件。
+- `version = candidate`：使用候选图替换正式角色图，并清理候选图本地文件。
+
+响应示例：
+
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "task-id",
+  "character_name": "陈屿",
+  "selected_version": "candidate",
+  "current_url": "https://example.invalid/candidate.png",
+  "previous_url": ""
+}
+```
 
 #### `POST /v1/projects/scenes`
 

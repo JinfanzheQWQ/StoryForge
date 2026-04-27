@@ -356,15 +356,31 @@ def _collect_artifacts(
     return items
 
 
+
+
+def _collect_character_current_artifacts(
+    directory: Path,
+    output_root: Path,
+) -> list[ArtifactItem]:
+    if not directory.exists():
+        return []
+    items: list[ArtifactItem] = []
+    for path in _sorted_paths(directory.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in IMAGE_SUFFIXES:
+            continue
+        items.append(_to_artifact_item(path, output_root))
+    return items
+
 def _collect_character_artifacts(
     *,
     output_dir: Path,
     output_root: Path,
 ) -> list[CharacterArtifactItem]:
-    artifacts = _collect_artifacts(
+    artifacts = _collect_character_current_artifacts(
         output_dir / "assets" / "characters",
         output_root,
-        allowed_suffixes=IMAGE_SUFFIXES,
     )
     manifest_map = _load_character_manifest_map(output_dir)
     character_items: list[CharacterArtifactItem] = []
@@ -379,11 +395,40 @@ def _collect_character_artifacts(
                 provider=str(manifest_item.get("provider", "") or ""),
                 status=str(manifest_item.get("status", "") or ""),
                 image_kind=str(manifest_item.get("image_kind", "") or ""),
+                candidate_url=_resolve_manifest_artifact_url(
+                    manifest_item.get("candidate_output_path", manifest_item.get("previous_output_path")),
+                    output_dir=output_dir,
+                    output_root=output_root,
+                ) or str(manifest_item.get("candidate_generated_url", manifest_item.get("previous_generated_url", "")) or "") or None,
+                candidate_path=str(manifest_item.get("candidate_output_path", manifest_item.get("previous_output_path", "")) or ""),
+                character_request=_build_submitted_request_response(manifest_item.get("request_info", {})),
                 error=str(manifest_item.get("error", "") or ""),
             )
         )
     return character_items
 
+
+
+def _resolve_manifest_artifact_url(
+    raw_path: object,
+    *,
+    output_dir: Path,
+    output_root: Path,
+) -> str | None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = (output_dir / path).resolve()
+    else:
+        path = path.resolve()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return _to_artifact_item(path, output_root).url
+    except ValueError:
+        return None
 
 def _load_character_manifest_map(output_dir: Path) -> dict[str, dict[str, object]]:
     manifest_path = output_dir / "character_image_manifest.json"
@@ -439,10 +484,11 @@ def _to_artifact_item(path: Path, output_root: Path) -> ArtifactItem:
     resolved_path = path.resolve()
     relative_path = resolved_path.relative_to(output_root)
     encoded_path = "/".join(quote(part) for part in relative_path.parts)
+    revision = int(resolved_path.stat().st_mtime_ns)
     return ArtifactItem(
         name=path.name,
         path=str(resolved_path),
-        url=f"/outputs/{encoded_path}",
+        url=f"/outputs/{encoded_path}?v={revision}",
         kind=_detect_kind(path),
     )
 

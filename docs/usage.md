@@ -146,8 +146,11 @@ uv run storyforge api serve --host 127.0.0.1 --port 8000
 
 - 性别是否正确。
 - 年龄感和体型是否稳定。
-- 服装和主色是否符合角色设定。
-- 角色定妆图 prompt 是否合理。
+- 服装是否符合角色设定。
+- 手部、肤色和三视图版式是否自然。
+- 角色定妆图 Prompt 是否合理。
+
+角色页会展示每个角色的定妆图、Prompt 和真实 Seedream 提交请求。可以直接修改单个角色的 Prompt，并选择只保存或“保存并重做该角色”。单角色重做只提交目标角色图，不会重跑其他角色、场景图或视频。重做后页面会同时展示当前图和新候选图。新图不会自动替换当前图，只有点击“使用新图”后才会写回正式角色图；点击“放弃新图”会删除候选图。
 
 ### 6. 生成场景图
 
@@ -181,7 +184,7 @@ Seedance 视频提交使用片段关键帧作为时间锚点：
 
 ## Prompt 编辑与重做
 
-分段审片台支持在单个 segment 内选择一个生成点：
+角色页支持单角色 Prompt 编辑；分段审片台支持在单个 segment 内选择一个生成点：
 
 - 首帧
 - 中段
@@ -233,25 +236,40 @@ Request Inspector 用于定位问题来源：
 
 ## 输出产物
 
-常见产物：
+产物按用途分为几类，页面也按这些用途展示。
+
+核心运行文件：
 
 - `story_source.json`：正文真源。
 - `novel_package.json`：结构化小说包。
-- `novel_audit.json`：审稿结果。
 - `story_memory.json`：视频规划记忆。
 - `character_visual_bible.json`：角色视觉设定。
 - `scene_plan.json`：scene 和 segment 主规划。
 - `segment_plan.json`：扁平 segment 执行索引。
-- `segment_contract_progress.json`：分段合同进度。
-- `continuity_report.json`：连续性报告。
+
+媒体任务清单：
+
 - `character_image_manifest.json`：角色图任务清单。
 - `scene_image_manifest.json`：场景图任务清单。
-- `seedream_character_execution.json`：角色图执行报告。
-- `seedream_scene_execution.json`：场景图执行报告。
 - `seedance_manifest.json`：视频提交清单。
-- `seedance_execution.json`：视频执行报告。
+
+恢复、风险和修复：
+
+- `segment_contract_progress.json`：分段合同进度。
+- `scene_structure_source.json`：场景结构恢复快照。
+- `continuity_report.json`：连续性报告。
 - `continuity_repair_<scene_id>.json`：scene 修复报告。
 - `continuity_repair_<segment_id>.json`：segment 修复报告。
+
+执行报告和审阅文件：
+
+- `novel_audit.json`：审稿结果。
+- `seedream_character_execution.json`：角色图执行报告。
+- `seedream_scene_execution.json`：场景图执行报告。
+- `seedance_execution.json`：视频执行报告。
+
+媒体文件：
+
 - `assets/characters/*.png`：角色图。
 - `assets/frames/*.png`：关键帧。
 - `rendered/*.mp4`：视频片段。

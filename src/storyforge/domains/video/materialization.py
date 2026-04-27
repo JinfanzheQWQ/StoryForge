@@ -218,7 +218,6 @@ class VideoMaterializationMixin:
                 gender=item.gender,
                 appearance=item.appearance,
                 outfit=item.outfit,
-                color_palette=item.color_palette,
                 portrait_prompt=self._build_character_sheet_prompt(
                     name=item.name,
                     gender=item.gender,
@@ -321,7 +320,6 @@ class VideoMaterializationMixin:
                     "gender": item.gender,
                     "appearance": item.appearance,
                     "outfit": item.outfit,
-                    "color_palette": list(item.color_palette),
                     "portrait_prompt": item.portrait_prompt,
                 }
                 for item in project_package.character_profiles

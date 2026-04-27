@@ -15,11 +15,15 @@ from storyforge.api.schemas import (
     CreateStoryTaskRequest,
     JobAcceptedResponse,
     ProjectDeletedResponse,
+    CharacterImageVersionSelectionResponse,
+    CharacterPromptUpdateResponse,
     ResetSegmentPromptRequest,
+    SelectCharacterImageVersionRequest,
     SegmentPromptUpdateResponse,
     ProjectDetailResponse,
     ProjectSummaryResponse,
     StorySourceResponse,
+    UpdateCharacterPromptRequest,
     UpdateSegmentPromptRequest,
     UpdateStorySourceRequest,
 )
@@ -69,6 +73,81 @@ def _normalize_prompt_updates(payload: UpdateSegmentPromptRequest) -> dict[str, 
     if not updates:
         raise HTTPException(status_code=422, detail="至少需要提交一个 prompt 字段。")
     return updates
+
+
+def _load_character_prompt_target(
+    output_dir: Path,
+    character_name: str,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    path = output_dir / "character_image_manifest.json"
+    items = _load_json_file(path, [])
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="character_image_manifest.json 格式无效。")
+    for item in items:
+        if isinstance(item, dict) and str(item.get("character_name", "")).strip() == character_name:
+            return items, item
+    raise HTTPException(status_code=404, detail=f"Character {character_name} not found in character_image_manifest.json")
+
+
+def _update_character_prompt(output_dir: Path, character_name: str, prompt: str) -> list[str]:
+    items, target = _load_character_prompt_target(output_dir, character_name)
+    _delete_character_candidate_file(target.get("candidate_output_path", target.get("previous_output_path", "")))
+    target["candidate_generated_url"] = ""
+    target["candidate_output_path"] = ""
+    target["previous_generated_url"] = ""
+    target["previous_output_path"] = ""
+    target["prompt"] = prompt
+    target["status"] = "planned"
+    target["error"] = ""
+    path = output_dir / "character_image_manifest.json"
+    write_json(path, items)
+    return ["prompt"]
+
+
+
+
+
+
+def _delete_character_candidate_file(raw_path: object) -> None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return
+    path = Path(path_text)
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+    except OSError:
+        return
+
+def _select_character_image_version(
+    output_dir: Path,
+    character_name: str,
+    version: str,
+) -> tuple[str, str]:
+    items, target = _load_character_prompt_target(output_dir, character_name)
+    if version not in {"current", "candidate", "previous"}:
+        raise HTTPException(status_code=422, detail="version 只能是 current 或 candidate。")
+    candidate_url = str(target.get("candidate_generated_url", target.get("previous_generated_url", "")) or "").strip()
+    candidate_path = str(target.get("candidate_output_path", target.get("previous_output_path", "")) or "").strip()
+    if version in {"candidate", "previous"}:
+        current_path = str(target.get("output_path", "") or "").strip()
+        if candidate_url:
+            target["generated_url"] = candidate_url
+        if candidate_path and current_path:
+            source_path = Path(candidate_path)
+            target_path = Path(current_path)
+            if source_path.exists() and source_path.is_file():
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(source_path.read_bytes())
+    _delete_character_candidate_file(candidate_path)
+    target["candidate_generated_url"] = ""
+    target["candidate_output_path"] = ""
+    target["previous_generated_url"] = ""
+    target["previous_output_path"] = ""
+    target["status"] = "completed"
+    target["error"] = ""
+    write_json(output_dir / "character_image_manifest.json", items)
+    return str(target.get("generated_url", "") or ""), str(target.get("candidate_generated_url", "") or "")
 
 
 def _load_segment_prompt_target(output_dir: Path, segment_id: str) -> tuple[list[dict[str, object]], dict[str, object]]:
@@ -804,6 +883,9 @@ async def create_character_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    character_name = str(payload.character_name or "").strip()
+    if character_name:
+        task_payload["character_name"] = character_name
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
@@ -815,6 +897,66 @@ async def create_character_job(
         project_id=payload.project_id,
         task_id=record.task_id,
         status=record.status,
+    )
+
+
+@router.put(
+    "/{project_id}/character-prompts/{source_task_id}/{character_name}",
+    response_model=CharacterPromptUpdateResponse,
+)
+async def update_character_prompt(
+    project_id: str,
+    source_task_id: str,
+    character_name: str,
+    payload: UpdateCharacterPromptRequest,
+    request: Request,
+) -> CharacterPromptUpdateResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    output_dir = _output_dir(source_task)
+    prompt = str(payload.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=422, detail="prompt 不能为空。")
+    resolved_character_name = str(character_name or "").strip()
+    if not resolved_character_name:
+        raise HTTPException(status_code=422, detail="character_name 不能为空。")
+    updated_fields = _update_character_prompt(output_dir, resolved_character_name, prompt)
+    return CharacterPromptUpdateResponse(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        character_name=resolved_character_name,
+        updated_fields=updated_fields,
+        prompt=prompt,
+    )
+
+
+
+
+@router.post(
+    "/{project_id}/character-images/{source_task_id}/{character_name}/select",
+    response_model=CharacterImageVersionSelectionResponse,
+)
+async def select_character_image_version(
+    project_id: str,
+    source_task_id: str,
+    character_name: str,
+    payload: SelectCharacterImageVersionRequest,
+    request: Request,
+) -> CharacterImageVersionSelectionResponse:
+    container = request.app.state.container
+    source_task = _resolve_story_source_task(container, project_id, source_task_id)
+    output_dir = _output_dir(source_task)
+    resolved_character_name = str(character_name or "").strip()
+    if not resolved_character_name:
+        raise HTTPException(status_code=422, detail="character_name 不能为空。")
+    current_url, previous_url = _select_character_image_version(output_dir, resolved_character_name, payload.version)
+    return CharacterImageVersionSelectionResponse(
+        project_id=project_id,
+        source_task_id=source_task_id,
+        character_name=resolved_character_name,
+        selected_version=payload.version,
+        current_url=current_url,
+        previous_url=previous_url,
     )
 
 

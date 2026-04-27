@@ -1,5 +1,5 @@
 import { elements } from "./dom.js";
-import { deleteProject, resetSegmentPrompt, updateSegmentPrompts } from "./api.js";
+import { deleteProject, resetSegmentPrompt, selectCharacterImageVersion, updateCharacterPrompt, updateSegmentPrompts } from "./api.js";
 import { askProjectDeleteConfirmation } from "./confirm_modal.js";
 import {
   applyBootstrapToForm,
@@ -110,8 +110,9 @@ async function submitStageFromButton(
   payload,
   successMessage,
   fallbackErrorMessage,
+  { allowDisabled = false } = {},
 ) {
-  if (button.disabled) {
+  if (button.disabled && !allowDisabled) {
     return;
   }
   button.disabled = true;
@@ -123,7 +124,7 @@ async function submitStageFromButton(
   }
 }
 
-async function submitCurrentSegmentAssetTask(button, { afterSave = false } = {}) {
+async function submitCurrentSegmentAssetTask(button, { afterSave = false, allowDisabled = false } = {}) {
   const sourceTaskId = button.dataset.sourceTask;
   const segmentId = button.dataset.generateVideoSegment
     || button.dataset.generateSceneSegment
@@ -146,6 +147,7 @@ async function submitCurrentSegmentAssetTask(button, { afterSave = false } = {})
     isVideo
       ? "片段视频任务提交失败。"
       : (frameKind ? "单图重做任务提交失败。" : "片段场景图任务提交失败。"),
+    { allowDisabled },
   );
 }
 
@@ -363,6 +365,24 @@ async function handleProjectDetailClick(event) {
     return;
   }
 
+  const saveCharacterPromptButton = event.target.closest("[data-save-character-prompt]");
+  if (saveCharacterPromptButton) {
+    await saveCharacterPrompt(saveCharacterPromptButton, { rerunAfterSave: false });
+    return;
+  }
+
+  const saveAndRerunCharacterPromptButton = event.target.closest("[data-save-and-rerun-character-prompt]");
+  if (saveAndRerunCharacterPromptButton) {
+    await saveCharacterPrompt(saveAndRerunCharacterPromptButton, { rerunAfterSave: true });
+    return;
+  }
+
+  const selectCharacterVersionButton = event.target.closest("[data-select-character-version]");
+  if (selectCharacterVersionButton) {
+    await selectCharacterVersion(selectCharacterVersionButton);
+    return;
+  }
+
   const sceneButton = event.target.closest("[data-generate-scenes]");
   if (sceneButton) {
     await submitStageFromButton(
@@ -546,7 +566,7 @@ async function saveSegmentPrompts(button, { rerunAfterSave = false } = {}) {
     await updateSegmentPrompts(projectId, sourceTaskId, segmentId, payload);
     if (rerunAfterSave) {
       setSubmitStatus(elements.pollIndicator, "Prompt 已保存，正在提交当前生成点重做任务...");
-      await submitCurrentSegmentAssetTask(button, { afterSave: true });
+      await submitCurrentSegmentAssetTask(button, { afterSave: true, allowDisabled: true });
     } else {
       setSubmitStatus(elements.pollIndicator, "Prompt 已保存。需要重新生图或生视频时，请手动点击对应按钮。", true);
       await refreshTasks();
@@ -558,6 +578,153 @@ async function saveSegmentPrompts(button, { rerunAfterSave = false } = {}) {
       button.disabled = false;
     }
     button.textContent = originalLabel || "保存 Prompt";
+  }
+}
+
+
+
+function setCharacterCardBusy(button, message) {
+  const panel = button.closest("[data-character-prompt-panel]");
+  if (!panel) {
+    return () => {};
+  }
+  const controls = Array.from(panel.querySelectorAll("button, textarea, summary"));
+  const previousStates = controls.map((control) => ({
+    control,
+    disabled: Boolean(control.disabled),
+    ariaDisabled: control.getAttribute("aria-disabled"),
+  }));
+  const status = panel.querySelector("[data-character-operation-status]");
+  panel.classList.add("is-busy");
+  if (status) {
+    status.hidden = false;
+    status.textContent = message;
+  }
+  for (const control of controls) {
+    if (control.tagName === "SUMMARY") {
+      control.setAttribute("aria-disabled", "true");
+    } else {
+      control.disabled = true;
+    }
+  }
+  return (nextMessage = "") => {
+    panel.classList.remove("is-busy");
+    if (status) {
+      status.hidden = !nextMessage;
+      status.textContent = nextMessage;
+    }
+    for (const item of previousStates) {
+      if (item.control.tagName === "SUMMARY") {
+        if (item.ariaDisabled === null) {
+          item.control.removeAttribute("aria-disabled");
+        } else {
+          item.control.setAttribute("aria-disabled", item.ariaDisabled);
+        }
+      } else {
+        item.control.disabled = item.disabled;
+      }
+    }
+  };
+}
+
+async function selectCharacterVersion(button) {
+  if (button.disabled) {
+    return;
+  }
+  const originalLabel = button.textContent;
+  const useCandidate = button.dataset.selectCharacterVersion === "candidate" || button.dataset.selectCharacterVersion === "previous";
+  const releaseBusy = setCharacterCardBusy(button, useCandidate ? "正在使用新候选图..." : "正在放弃新候选图...");
+  button.disabled = true;
+  button.textContent = useCandidate ? "替换中..." : "放弃中...";
+  try {
+    await selectCharacterImageVersion(
+      button.dataset.projectId || state.selectedProjectId,
+      button.dataset.sourceTask,
+      button.dataset.characterName,
+      { version: button.dataset.selectCharacterVersion },
+    );
+    applyCharacterVersionSelection(button, { useCandidate });
+    releaseBusy(useCandidate ? "已使用新候选图。" : "已放弃新候选图。");
+    setSubmitStatus(elements.pollIndicator, useCandidate ? "已使用新候选图。" : "已放弃新候选图。", true);
+    void refreshTasks();
+  } catch (error) {
+    setSubmitStatus(elements.pollIndicator, error.message || "角色图版本选择失败。", false);
+    releaseBusy(error.message || "角色图版本选择失败。");
+    button.textContent = originalLabel || "选择版本";
+  }
+}
+
+function applyCharacterVersionSelection(button, { useCandidate }) {
+  const panel = button.closest("[data-character-prompt-panel]");
+  if (!panel) {
+    return;
+  }
+  const currentImage = panel.querySelector(".character-version-card.is-current img");
+  const candidateImage = panel.querySelector(".character-version-card:not(.is-current) img");
+  if (useCandidate && currentImage && candidateImage) {
+    const currentUrl = new URL(currentImage.getAttribute("src"), window.location.origin);
+    currentUrl.searchParams.set("v", String(Date.now()));
+    currentImage.setAttribute("src", `${currentUrl.pathname}${currentUrl.search}`);
+  }
+  const candidateCard = panel.querySelector(".character-version-card:not(.is-current)");
+  if (candidateCard) {
+    candidateCard.remove();
+  }
+  const versionActions = panel.querySelector(".character-version-actions");
+  if (versionActions) {
+    versionActions.remove();
+  }
+  const versionGrid = panel.querySelector(".character-version-grid");
+  if (versionGrid) {
+    versionGrid.classList.remove("has-previous");
+  }
+  const versionNote = panel.querySelector(".character-version-head .asset-note");
+  if (versionNote) {
+    versionNote.textContent = "当前没有待确认的新图。";
+  }
+}
+
+async function saveCharacterPrompt(button, { rerunAfterSave = false } = {}) {
+  const panel = button.closest("[data-character-prompt-panel]");
+  if (!panel) {
+    return;
+  }
+  const promptField = panel.querySelector("[data-edit-character-prompt]");
+  if (!promptField) {
+    return;
+  }
+  const originalLabel = button.textContent;
+  const releaseBusy = setCharacterCardBusy(button, rerunAfterSave ? "正在保存 Prompt 并提交重做任务..." : "正在保存角色图 Prompt...");
+  button.disabled = true;
+  button.textContent = rerunAfterSave ? "提交中..." : "保存中...";
+  setSubmitStatus(elements.pollIndicator, rerunAfterSave ? "正在保存角色图 Prompt 并提交重做任务..." : "正在保存角色图 Prompt...");
+  try {
+    const projectId = button.dataset.projectId || state.selectedProjectId;
+    const sourceTaskId = button.dataset.sourceTask;
+    const characterName = button.dataset.saveCharacterPrompt || button.dataset.saveAndRerunCharacterPrompt;
+    await updateCharacterPrompt(projectId, sourceTaskId, characterName, { prompt: promptField.value });
+    if (rerunAfterSave) {
+      setSubmitStatus(elements.pollIndicator, "角色图 Prompt 已保存，正在重做该角色图...");
+      await submitStageFromButton(
+        button,
+        "/v1/projects/characters",
+        withContinuityReviewMode(sourceTaskId, {
+          project_id: projectId,
+          source_task_id: sourceTaskId,
+          character_name: characterName,
+        }),
+        "单角色图任务已创建",
+        "单角色图任务提交失败。",
+        { allowDisabled: true },
+      );
+    } else {
+      setSubmitStatus(elements.pollIndicator, "角色图 Prompt 已保存，正在刷新页面...", true);
+      await refreshTasks();
+    }
+  } catch (error) {
+    setSubmitStatus(elements.pollIndicator, error.message || "角色图 Prompt 保存失败。", false);
+    releaseBusy(error.message || "角色图 Prompt 保存失败。");
+    button.textContent = originalLabel || "保存角色 Prompt";
   }
 }
 

@@ -10339,10 +10339,11 @@ class PipelineTestCase(unittest.TestCase):
         prompt = character_profiles[0].portrait_prompt
 
         self.assertIn("画面唯一可见文字：林晨。", prompt)
-        self.assertIn("内部造型约束：性别 男，仅用于稳定人物生理特征与服装轮廓，不要写成画面文字。", prompt)
+        self.assertIn("内部造型约束：性别 男", prompt)
+        self.assertIn("不写进画面", prompt)
         self.assertIn("外观：20岁男大学生，黑发，清瘦挺拔，气质克制干净。", prompt)
         self.assertIn("服装：白色衬衫，深色长裤，白色板鞋。", prompt)
-        self.assertIn("只根据姓名、外观和服装生成", prompt)
+        self.assertIn("只画同一角色的正面、左侧面、背面", prompt)
         self.assertNotIn("补充人物描述", prompt)
         self.assertNotIn("内部理解参考", prompt)
         self.assertNotIn("学生会主席", prompt)
@@ -11993,7 +11994,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="女",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["深蓝"],
                 portrait_prompt="测试角色图",
             )
         ]
@@ -13437,7 +13437,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="女",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["深蓝"],
                 portrait_prompt="测试角色图",
             ),
             CharacterVisualProfile(
@@ -13446,7 +13445,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="男",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["灰黑"],
                 portrait_prompt="测试角色图",
             ),
         ]
@@ -13573,7 +13571,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="男",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["浅蓝"],
                 portrait_prompt="测试角色图",
             ),
             CharacterVisualProfile(
@@ -13582,7 +13579,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="女",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["米白"],
                 portrait_prompt="测试角色图",
             ),
         ]
@@ -13691,7 +13687,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="男",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["浅蓝"],
                 portrait_prompt="测试角色图",
             ),
             CharacterVisualProfile(
@@ -13700,7 +13695,6 @@ class PipelineTestCase(unittest.TestCase):
                 gender="女",
                 appearance="测试外观",
                 outfit="测试服装",
-                color_palette=["米白"],
                 portrait_prompt="测试角色图",
             ),
         ]

@@ -205,7 +205,7 @@ function renderMotionPlanSection(motionPlan) {
   `;
 }
 
-function renderSubmittedRequest(title, request, emptyNote = "提交后可见") {
+export function renderSubmittedRequest(title, request, emptyNote = "提交后可见") {
   const payload = request?.payload && typeof request.payload === "object"
     ? request.payload
     : null;

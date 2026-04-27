@@ -1009,7 +1009,7 @@ class ApiTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 202)
             task_id = response.json()["task_id"]
             task = self._wait_for_completion(client, task_id)
-            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["status"], "completed", task.get("error"))
             self.assertEqual(task["payload"]["scene_id"], scene_id)
             self.assertTrue(task["payload"]["master_only"])
             self.assertEqual(task["result"]["scene_id"], scene_id)
@@ -1318,6 +1318,319 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(clip["cover_url"], "")
                 self.assertEqual(clip["downloaded_path"], "")
                 self.assertFalse(old_clip_path.exists())
+
+    @patch("storyforge.application.task_handlers.run_character_image_pipeline")
+    def test_update_character_prompt_and_rerun_single_character(self, mock_run_character_image_pipeline) -> None:
+        def fake_character_pipeline(*args, **kwargs):
+            output_dir = kwargs["output_root"]
+            character_images_path = output_dir / "character_image_manifest.json"
+            return SimpleNamespace(
+                output_dir=output_dir,
+                character_bible_path=output_dir / "character_visual_bible.json",
+                character_images_path=character_images_path,
+                scene_plan_path=output_dir / "scene_plan.json",
+                segment_plan_path=output_dir / "segment_plan.json",
+                scene_images_path=output_dir / "scene_image_manifest.json",
+                manifest_path=output_dir / "seedance_manifest.json",
+                seedream_execution_path=output_dir / "seedream_character_execution.json",
+                character_seedream_execution_path=output_dir / "seedream_character_execution.json",
+                project_package=SimpleNamespace(title="角色 Prompt 测试"),
+                manifest=SimpleNamespace(title="角色 Prompt 测试"),
+                seedream_execution=SimpleNamespace(submitted=True, generated_count=1, failed_count=0, note=""),
+            )
+
+        mock_run_character_image_pipeline.side_effect = fake_character_pipeline
+
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {
+                "title_hint": "角色 Prompt 测试",
+                "idea": "两名学生在校园里告白。",
+                "genre": "青春",
+                "tone": "电影感",
+                "target_audience": "成年读者",
+                "chapter_count": 1,
+                "total_word_target": 1200,
+                "must_include": ["校园"],
+                "style_keywords": ["黄昏"],
+            }
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                (output_dir / "story_source.json").write_text(
+                    json.dumps({"brief": brief, "title": "角色 Prompt 测试", "chapters": []}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                (output_dir / "novel_package.json").write_text(
+                    json.dumps(
+                        {
+                            "brief": brief,
+                            "outline": {
+                                "title": "角色 Prompt 测试",
+                                "premise": "校园告白",
+                                "theme": "青春",
+                                "visual_motifs": [],
+                                "characters": [
+                                    {
+                                        "cast_slot_id": "lead_1",
+                                        "name": "陈屿",
+                                        "role": "男主",
+                                        "gender": "男",
+                                        "desire": "完成告白。",
+                                        "conflict": "紧张犹豫。",
+                                        "arc": "从犹豫到坦白。",
+                                        "voice_profile": {
+                                            "voice_style": "温和",
+                                            "timbre": "清晰",
+                                            "speaking_rate": "中速",
+                                            "emotional_baseline": "紧张真诚",
+                                            "accent_or_texture": "普通话",
+                                            "dialogue_delivery": "短句",
+                                            "forbidden_voice_changes": [],
+                                        },
+                                    }
+                                ],
+                                "chapters": [],
+                            },
+                            "chapters": [],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                character_asset_path = output_dir / "assets" / "characters" / "陈屿_sheet.png"
+                character_asset_path.parent.mkdir(parents=True, exist_ok=True)
+                character_asset_path.write_bytes(b"old-character-image")
+                (output_dir / "character_image_manifest.json").write_text(
+                    json.dumps(
+                        [
+                            {
+                                "character_name": "陈屿",
+                                "prompt": "旧角色 prompt",
+                                "output_path": str(output_dir / "assets" / "characters" / "陈屿_sheet.png"),
+                                "provider": "seedream-4.5",
+                                "status": "completed",
+                                "generated_url": "https://example.invalid/old.png",
+                                "request_info": {
+                                    "provider": "seedream-4.5",
+                                    "endpoint": "https://example.invalid/images/generations",
+                                    "variant": "text_only; refs=0",
+                                    "payload": {"prompt": "旧角色 prompt", "watermark": False},
+                                    "reference_bindings": [],
+                                },
+                                "error": "",
+                            }
+                        ],
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                for name, payload in {
+                    "character_visual_bible.json": [],
+                    "scene_plan.json": {"scenes": []},
+                    "segment_plan.json": [],
+                    "scene_image_manifest.json": [],
+                    "seedance_manifest.json": {"clips": []},
+                }.items():
+                    (output_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "角色 Prompt 测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "novel_package_path": str(output_dir / "novel_package.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "segment_contracts_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                response = client.put(
+                    f"/v1/projects/{project_id}/character-prompts/{source_record.task_id}/陈屿",
+                    json={"prompt": "新角色 prompt，自然肤色，不要红手"},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["character_name"], "陈屿")
+                manifest = json.loads((output_dir / "character_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest[0]["prompt"], "新角色 prompt，自然肤色，不要红手")
+                self.assertEqual(manifest[0]["status"], "planned")
+                self.assertEqual(manifest[0]["generated_url"], "https://example.invalid/old.png")
+                self.assertEqual(manifest[0]["candidate_generated_url"], "")
+                self.assertEqual(manifest[0]["candidate_output_path"], "")
+
+                rerun_response = client.post(
+                    "/v1/projects/characters",
+                    json={
+                        "project_id": project_id,
+                        "source_task_id": source_record.task_id,
+                        "character_name": "陈屿",
+                    },
+                )
+                self.assertEqual(rerun_response.status_code, 202)
+                task = self._wait_for_completion(client, rerun_response.json()["task_id"])
+                self.assertEqual(task["status"], "completed", task.get("error"))
+                self.assertEqual(task["payload"]["character_name"], "陈屿")
+                self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["character_name"], "陈屿")
+
+
+    def test_select_character_image_version_can_use_candidate(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {
+                "title_hint": "角色版本选择测试",
+                "idea": "两名学生在校园里告白。",
+                "genre": "青春",
+                "tone": "电影感",
+                "target_audience": "成年读者",
+                "chapter_count": 1,
+                "total_word_target": 1200,
+            }
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                character_dir = output_dir / "assets" / "characters"
+                candidate_dir = character_dir / "_candidates"
+                candidate_dir.mkdir(parents=True)
+                current_path = character_dir / "陈屿_sheet.png"
+                candidate_path = candidate_dir / "陈屿_sheet.png"
+                current_path.write_bytes(b"current-image")
+                candidate_path.write_bytes(b"candidate-image")
+                for name, payload in {
+                    "story_source.json": {"brief": brief, "title": "角色版本选择测试", "chapters": []},
+                    "novel_package.json": {"brief": brief, "outline": {"title": "角色版本选择测试", "characters": [], "chapters": []}, "chapters": []},
+                    "character_image_manifest.json": [
+                        {
+                            "character_name": "陈屿",
+                            "prompt": "角色 prompt",
+                            "output_path": str(current_path),
+                            "candidate_output_path": str(candidate_path),
+                            "provider": "seedream-4.5",
+                            "status": "completed",
+                            "generated_url": "https://example.invalid/current.png",
+                            "candidate_generated_url": "https://example.invalid/candidate.png",
+                            "error": "",
+                        }
+                    ],
+                }.items():
+                    (output_dir / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "角色版本选择测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "novel_package_path": str(output_dir / "novel_package.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "characters_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                source_task_record = container.task_queue.store.get(source_record.task_id)
+                self.assertIsNotNone(source_task_record)
+                artifacts = build_task_artifacts(source_task_record, output_root=output_dir.parent)
+                self.assertEqual(len(artifacts.character_images), 1)
+                self.assertEqual(artifacts.character_images[0].name, "陈屿_sheet.png")
+
+                response = client.post(
+                    f"/v1/projects/{project_id}/character-images/{source_record.task_id}/陈屿/select",
+                    json={"version": "candidate"},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["selected_version"], "candidate")
+                manifest = json.loads((output_dir / "character_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest[0]["generated_url"], "https://example.invalid/candidate.png")
+                self.assertEqual(manifest[0]["candidate_generated_url"], "")
+                self.assertEqual(manifest[0]["candidate_output_path"], "")
+                self.assertEqual(current_path.read_bytes(), b"candidate-image")
+                self.assertFalse(candidate_path.exists())
+
+
+    def test_select_character_current_deletes_candidate_file(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            container = app.state.container
+            brief = {"title_hint": "角色保留当前测试", "idea": "校园告白。", "genre": "青春", "tone": "电影感", "target_audience": "成年读者", "chapter_count": 1, "total_word_target": 1200}
+            project = container.project_store.create(brief)
+            project_id = project.project_id
+            with tempfile.TemporaryDirectory() as temp_dir:
+                output_dir = Path(temp_dir)
+                character_dir = output_dir / "assets" / "characters"
+                candidate_dir = character_dir / "_candidates"
+                candidate_dir.mkdir(parents=True)
+                current_path = character_dir / "苏晚_sheet.png"
+                candidate_path = candidate_dir / "苏晚_sheet.png"
+                current_path.write_bytes(b"current-image")
+                candidate_path.write_bytes(b"candidate-image")
+                for name, payload in {
+                    "story_source.json": {"brief": brief, "title": "角色保留当前测试", "chapters": []},
+                    "novel_package.json": {"brief": brief, "outline": {"title": "角色保留当前测试", "characters": [], "chapters": []}, "chapters": []},
+                    "character_image_manifest.json": [
+                        {
+                            "character_name": "苏晚",
+                            "prompt": "角色 prompt",
+                            "output_path": str(current_path),
+                            "candidate_output_path": str(candidate_path),
+                            "provider": "seedream-4.5",
+                            "status": "completed",
+                            "generated_url": "https://example.invalid/current.png",
+                            "candidate_generated_url": "https://example.invalid/candidate.png",
+                            "error": "",
+                        }
+                    ],
+                }.items():
+                    (output_dir / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                source_record = container.task_queue.store.create(
+                    project_id=project_id,
+                    task_type="project.story",
+                    payload={"project_id": project_id, "brief": brief, "use_llm": True},
+                )
+                source_result = {
+                    "project_id": project_id,
+                    "story_title": "角色保留当前测试",
+                    "output_dir": str(output_dir),
+                    "story_source_path": str(output_dir / "story_source.json"),
+                    "novel_package_path": str(output_dir / "novel_package.json"),
+                    "story_source_revision": utc_now(),
+                    "pipeline_stage": "characters_completed",
+                    "pipeline_root_task_id": source_record.task_id,
+                }
+                container.task_queue.store.mark_completed(source_record.task_id, source_result)
+                container.project_store.attach_task(project_id, source_record.task_id, brief)
+                container.project_store.mark_task_result(project_id, source_record.task_id, source_result)
+
+                response = client.post(
+                    f"/v1/projects/{project_id}/character-images/{source_record.task_id}/苏晚/select",
+                    json={"version": "current"},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(candidate_path.exists())
+                manifest = json.loads((output_dir / "character_image_manifest.json").read_text(encoding="utf-8"))
+                self.assertEqual(manifest[0]["candidate_generated_url"], "")
+                self.assertEqual(manifest[0]["candidate_output_path"], "")
 
     def test_reset_segment_prompt_rebuilds_current_media_prompt(self) -> None:
         config_path = self._create_test_config()

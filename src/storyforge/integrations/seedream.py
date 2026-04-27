@@ -45,15 +45,18 @@ class SeedreamClient:
         self,
         project_package: VideoProjectPackage,
         force_submit: bool = False,
+        character_names: set[str] | None = None,
     ) -> SeedreamExecutionReport:
         preflight = self._build_preflight_report(force_submit=force_submit)
         if preflight is not None:
             return preflight
 
+        target_tasks = self._select_character_tasks(project_package, character_names)
+
         generated_count = 0
         failed_count = 0
         with httpx.Client(timeout=120) as client:
-            for task in project_package.character_images:
+            for task in target_tasks:
                 success = self._generate_character_image(client, task)
                 generated_count += int(success)
                 failed_count += int(not success)
@@ -69,6 +72,26 @@ class SeedreamClient:
             failed_count=failed_count,
             note=note,
         )
+
+    def _select_character_tasks(
+        self,
+        project_package: VideoProjectPackage,
+        character_names: set[str] | None,
+    ) -> list[CharacterImageTask]:
+        if not character_names:
+            return list(project_package.character_images)
+        selected_tasks = [
+            task
+            for task in project_package.character_images
+            if task.character_name in character_names
+        ]
+        missing_names = sorted(character_names - {task.character_name for task in selected_tasks})
+        if missing_names:
+            raise ValueError(
+                "Requested characters are not present in character_image_manifest.json: "
+                + ", ".join(missing_names)
+            )
+        return selected_tasks
 
     def generate_scene_images(
         self,
@@ -266,16 +289,28 @@ class SeedreamClient:
     def _generate_character_image(self, client: httpx.Client, task: CharacterImageTask) -> bool:
         task.status = "running"
         try:
+            self._last_request_info = {}
             image_url = self._create_image(client, prompt=task.prompt)
-            task.generated_url = image_url
-            task.status = "completed"
+            task.request_info = self._snapshot_last_request_info(
+                provider=task.provider,
+                reference_bindings=[],
+            )
+            task.candidate_generated_url = image_url
+            task.status = "candidate_ready"
             if self.config.download_outputs and image_url:
-                self._download_image(client, image_url, Path(task.output_path))
+                candidate_path = self._candidate_character_image_path(Path(task.output_path))
+                task.candidate_output_path = str(candidate_path)
+                self._download_image(client, image_url, candidate_path)
             return True
         except Exception as exc:
             task.status = "failed"
             task.error = str(exc)
             return False
+
+    def _candidate_character_image_path(self, output_path: Path) -> Path:
+        candidate_dir = output_path.parent / "_candidates"
+        candidate_dir.mkdir(parents=True, exist_ok=True)
+        return candidate_dir / output_path.name
 
     def _generate_scene_frames(
         self,

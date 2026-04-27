@@ -11,7 +11,6 @@ class CharacterVisualProfile:
     gender: str
     appearance: str
     outfit: str
-    color_palette: list[str]
     portrait_prompt: str
 
     @classmethod
@@ -22,7 +21,6 @@ class CharacterVisualProfile:
             gender=raw.get("gender", "未指定"),
             appearance=raw["appearance"],
             outfit=raw["outfit"],
-            color_palette=list(raw.get("color_palette", [])),
             portrait_prompt=raw["portrait_prompt"],
         )
 
@@ -38,6 +36,9 @@ class CharacterImageTask:
     use_as_reference: bool = True
     status: str = "planned"
     generated_url: str = ""
+    candidate_generated_url: str = ""
+    candidate_output_path: str = ""
+    request_info: dict[str, Any] = field(default_factory=dict)
     error: str = ""
 
     @classmethod
@@ -52,6 +53,9 @@ class CharacterImageTask:
             use_as_reference=raw.get("use_as_reference", True),
             status=raw.get("status", "planned"),
             generated_url=raw.get("generated_url", ""),
+            candidate_generated_url=raw.get("candidate_generated_url", raw.get("previous_generated_url", "")),
+            candidate_output_path=raw.get("candidate_output_path", raw.get("previous_output_path", "")),
+            request_info=raw.get("request_info", {}) if isinstance(raw.get("request_info"), dict) else {},
             error=raw.get("error", ""),
         )
 

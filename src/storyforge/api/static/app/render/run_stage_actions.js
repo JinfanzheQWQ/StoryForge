@@ -163,7 +163,7 @@ export function renderRunStageActions({ run, helpers }) {
         <div class="action-row">
           <button
             type="button"
-            class="secondary"
+            class="secondary ${sceneStructureStatus === "completed" ? "stage-complete" : ""}"
             data-story-source-project="${escapeAttr(rootTask.project_id)}"
             data-generate-scene-structure="${escapeAttr(rootTask.task_id)}"
             ${canGenerateSceneStructure ? "" : "disabled"}
@@ -172,7 +172,7 @@ export function renderRunStageActions({ run, helpers }) {
           </button>
           <button
             type="button"
-            class="secondary"
+            class="secondary ${segmentContractsStatus === "completed" ? "stage-complete" : ""}"
             data-story-source-project="${escapeAttr(rootTask.project_id)}"
             data-generate-segment-contracts="${escapeAttr(rootTask.task_id)}"
             data-resume-from-progress="${resumeSegmentContractsFromProgress ? "true" : "false"}"
@@ -182,7 +182,7 @@ export function renderRunStageActions({ run, helpers }) {
           </button>
           <button
             type="button"
-            class="secondary"
+            class="secondary ${mergeStatus === "completed" ? "stage-complete" : ""}"
             data-merge-videos="${escapeAttr(rootTask.task_id)}"
             data-project-id="${escapeAttr(rootTask.project_id)}"
             ${canMergeVideos ? "" : "disabled"}
@@ -191,7 +191,7 @@ export function renderRunStageActions({ run, helpers }) {
           </button>
           <button
             type="button"
-            class="secondary"
+            class="secondary ${characterStatus === "completed" ? "stage-complete" : ""}"
             data-generate-characters="${escapeAttr(rootTask.task_id)}"
             ${canGenerateCharacters ? "" : "disabled"}
           >

@@ -9,52 +9,52 @@ import {
 const DOCUMENT_META = {
   "story_source.json": {
     title: "故事正文源文件",
-    category: "小说源",
+    category: "核心运行文件",
     summary: "当前版本的事实文本源。保存正文后，场景结构、分段合同和媒体阶段都从这里继续。",
   },
   "novel_package.json": {
     title: "结构规划总包",
-    category: "结构规划",
-    summary: "运行态最小小说包，包含角色卡、章节规划和正文摘录，是分段合同、图片与视频阶段的正式输入。",
+    category: "核心运行文件",
+    summary: "结构化小说包，包含角色、章节和正文摘录，是视频规划和媒体阶段的正式输入。",
   },
   "novel_audit.json": {
     title: "结构规划审计包",
-    category: "结构规划",
+    category: "调试与审阅",
     summary: "保存 review、workflow_trace，以及从运行包中剥离的分析上下文，主要用于排错和人工审阅。",
   },
   "character_visual_bible.json": {
     title: "角色视觉设定",
-    category: "视频规划",
+    category: "核心运行文件",
     summary: "定义角色外观、服装、配色和定妆提示词，用来锁定视觉一致性。",
   },
   "character_image_manifest.json": {
     title: "角色图任务清单",
-    category: "视频规划",
+    category: "媒体任务清单",
     summary: "记录每个角色图要怎么生成、输出到哪里，以及当前状态。",
   },
   "scene_plan.json": {
     title: "场景规划主文件",
-    category: "视频规划",
+    category: "核心运行文件",
     summary: "定义章节下的 scene 层，以及每个 scene 内部的多个视频片段，并记录 scene_master_frame 的 prompt、路径和状态。",
   },
   "scene_structure_source.json": {
     title: "场景结构恢复快照",
-    category: "视频规划",
+    category: "恢复与进度",
     summary: "保存分段合同开始前的原始 scene skeleton，仅供失败恢复时从当前位置继续，不参与图片和视频执行。",
   },
   "segment_plan.json": {
     title: "片段执行索引",
-    category: "视频规划",
+    category: "核心运行文件",
     summary: "保留给图片与视频执行阶段使用的 flat segment 索引，便于逐段生成和重试。",
   },
   "segment_contract_progress.json": {
     title: "分段合同进度",
-    category: "视频规划",
+    category: "恢复与进度",
     summary: "按 scene 记录分段合同执行进度、失败位置和断点恢复状态，用于失败后继续生成。",
   },
   "scene_image_manifest.json": {
     title: "场景帧任务清单",
-    category: "视频规划",
+    category: "媒体任务清单",
     summary: "记录每个场景母图，以及每个片段的首帧、中段锚点帧、尾帧、角色参考图和输出位置。",
   },
   "seedream_character_execution.json": {
@@ -69,7 +69,7 @@ const DOCUMENT_META = {
   },
   "seedance_manifest.json": {
     title: "视频提交清单",
-    category: "视频提交",
+    category: "媒体任务清单",
     summary: "最终送给 Seedance 的 clip 列表，决定视频片段会如何被生成。",
   },
   "seedance_execution.json": {
@@ -79,17 +79,44 @@ const DOCUMENT_META = {
   },
   "continuity_report.json": {
     title: "连续性校验报告",
-    category: "执行报告",
-    summary: "连续性审校结果，包含 V1 规则校验与可选的 V2 LLM 软审校，汇总场景母图、关键帧承接、对白预算和视频执行风险。",
+    category: "修复与风险",
+    summary: "连续性审校结果，汇总场景母图、关键帧承接、对白预算和视频执行风险，并驱动修复入口。",
   },
 };
 
-const DOCUMENT_GROUP_ORDER = ["小说源", "结构规划", "视频规划", "视频提交", "执行报告", "其他文件"];
+const DOCUMENT_GROUP_ORDER = [
+  "核心运行文件",
+  "媒体任务清单",
+  "恢复与进度",
+  "修复与风险",
+  "执行报告",
+  "调试与审阅",
+  "其他文件",
+];
+
+function resolveDocumentMeta(item) {
+  const baseMeta = DOCUMENT_META[item.name];
+  if (baseMeta) {
+    return baseMeta;
+  }
+  if (/^continuity_repair_.+\.json$/.test(item.name || "")) {
+    return {
+      title: "连续性修复报告",
+      category: "修复与风险",
+      summary: "记录某次 scene 或 segment 智能修复的目标、修复摘要、改写字段和后续建议动作。",
+    };
+  }
+  return {
+    title: item.name,
+    category: "其他文件",
+    summary: "本次运行留下的附加文件，可按需打开查看原始内容。",
+  };
+}
 
 function groupDocuments(items) {
   const groups = new Map();
   items.forEach((item) => {
-    const group = DOCUMENT_META[item.name]?.category || "其他文件";
+    const group = resolveDocumentMeta(item).category;
     if (!groups.has(group)) {
       groups.set(group, []);
     }
@@ -101,11 +128,7 @@ function groupDocuments(items) {
 }
 
 function renderDocumentCard(item) {
-  const meta = DOCUMENT_META[item.name] || {
-    title: item.name,
-    category: "其他文件",
-    summary: "当前运行留下的附加文件，可按需打开查看原始内容。",
-  };
+  const meta = resolveDocumentMeta(item);
   return `
     <article class="doc-card">
       <div class="doc-card-head">

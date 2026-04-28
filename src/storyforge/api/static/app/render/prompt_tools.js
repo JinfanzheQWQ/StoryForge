@@ -204,6 +204,45 @@ function renderMotionPlanSection(motionPlan) {
   `;
 }
 
+function renderVideoFrameContinuitySection(segment) {
+  const requestPayload = segment?.videoRequest?.payload && typeof segment.videoRequest.payload === "object"
+    ? segment.videoRequest.payload
+    : {};
+  const requestFirstFrame = String(requestPayload.first_frame || "").trim();
+  const returnLastFrame = requestPayload.return_last_frame === true;
+  const rows = [
+    ["上一段", segment.previousClipSegmentId || "无"],
+    ["首帧来源", segment.firstFrameUrl || requestFirstFrame || "未使用上一段尾帧"],
+    ["上一段视频", segment.previousClipVideoUrl || "未记录"],
+    ["本段尾帧", segment.lastFrameUrl || "等待 Seedance 返回"],
+    ["请求返回尾帧", returnLastFrame ? "已开启" : "未开启或未提交"],
+  ];
+  const hasSignal = rows.some(([, value]) => value && !["无", "未记录", "等待 Seedance 返回", "未开启或未提交", "未使用上一段尾帧"].includes(value));
+  if (!hasSignal && !returnLastFrame) {
+    return "";
+  }
+  return `
+    <section class="segment-diagnostics-panel">
+      <div class="prompt-editor-panel-head">
+        <div>
+          <p class="section-kicker">Frame Continuity</p>
+          <h5>视频帧连续性</h5>
+          <p class="asset-note">用于判断当前 segment 是否从上一段真实尾帧继续，以及本段是否请求 Seedance 返回尾帧。</p>
+        </div>
+        <span class="matrix-state ${segment.firstFrameUrl || requestFirstFrame ? "ok" : "missing"}">${escapeHtml(segment.firstFrameUrl || requestFirstFrame ? "尾帧承接" : "独立开场")}</span>
+      </div>
+      <div class="segment-diagnostics-grid">
+        ${rows.map(([label, value]) => `
+          <article>
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(String(value || "-"))}</strong>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function renderMotionContractSection(motionContract) {
   if (!motionContract || typeof motionContract !== "object") {
     return "";
@@ -270,87 +309,6 @@ export function renderSubmittedRequest(title, request, emptyNote = "提交后可
       </div>
       ${renderSubmittedReferenceBindings(bindings, "本次实际使用图片", "按真实请求顺序展示")}
       ${hasPayload ? `<pre class="prompt-code">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>` : ""}
-    </section>
-  `;
-}
-
-function extractSubmittedPromptFromRequest(request) {
-  const payload = request?.payload && typeof request.payload === "object" ? request.payload : null;
-  if (!payload) {
-    return "";
-  }
-  if (typeof payload.prompt === "string") {
-    return payload.prompt.trim();
-  }
-  if (Array.isArray(payload.content)) {
-    const textItem = payload.content.find((item) => item?.type === "text" && typeof item.text === "string");
-    return String(textItem?.text || "").trim();
-  }
-  return "";
-}
-
-function buildPromptDiffSnippet(leftText, rightText, radius = 180) {
-  const left = String(leftText || "");
-  const right = String(rightText || "");
-  if (left === right) {
-    return {
-      left: left.slice(0, radius * 2),
-      right: right.slice(0, radius * 2),
-      hasDifference: false,
-    };
-  }
-  let start = 0;
-  const maxStart = Math.min(left.length, right.length);
-  while (start < maxStart && left[start] === right[start]) {
-    start += 1;
-  }
-  let leftEnd = left.length - 1;
-  let rightEnd = right.length - 1;
-  while (leftEnd >= start && rightEnd >= start && left[leftEnd] === right[rightEnd]) {
-    leftEnd -= 1;
-    rightEnd -= 1;
-  }
-  const sliceStart = Math.max(0, start - radius);
-  const leftSliceEnd = Math.min(left.length, leftEnd + 1 + radius);
-  const rightSliceEnd = Math.min(right.length, rightEnd + 1 + radius);
-  return {
-    left: `${sliceStart > 0 ? "..." : ""}${left.slice(sliceStart, leftSliceEnd)}${leftSliceEnd < left.length ? "..." : ""}`,
-    right: `${sliceStart > 0 ? "..." : ""}${right.slice(sliceStart, rightSliceEnd)}${rightSliceEnd < right.length ? "..." : ""}`,
-    hasDifference: true,
-  };
-}
-
-function renderPromptDiffPanel(segment, option) {
-  const plannedPrompt = String(option?.promptText || "").trim();
-  const submittedPrompt = option?.kind === "video"
-    ? String(segment.submittedVideoPrompt || extractSubmittedPromptFromRequest(option.request) || "").trim()
-    : extractSubmittedPromptFromRequest(option.request);
-  const hasSubmittedPrompt = Boolean(submittedPrompt);
-  const isSame = hasSubmittedPrompt && plannedPrompt === submittedPrompt;
-  const snippet = hasSubmittedPrompt ? buildPromptDiffSnippet(plannedPrompt, submittedPrompt) : null;
-  return `
-    <section class="prompt-diff-panel">
-      <div class="prompt-section-head">
-        <strong>Prompt Diff</strong>
-        <span>${hasSubmittedPrompt ? (isSame ? "计划与实际一致" : "计划与实际不一致") : "提交后可比较"}</span>
-      </div>
-      <div class="prompt-diff-summary">
-        <span class="matrix-state ${isSame ? "ok" : "missing"}">${hasSubmittedPrompt ? (isSame ? "一致" : "不一致") : "暂无实际提交"}</span>
-        <span>计划 ${plannedPrompt.length} 字</span>
-        <span>实际 ${submittedPrompt.length} 字</span>
-      </div>
-      ${hasSubmittedPrompt ? `
-        <div class="prompt-diff-grid">
-          <article>
-            <strong>计划 Prompt</strong>
-            <pre class="prompt-code">${escapeHtml(snippet.left || "")}</pre>
-          </article>
-          <article>
-            <strong>实际提交 Prompt</strong>
-            <pre class="prompt-code">${escapeHtml(snippet.right || "")}</pre>
-          </article>
-        </div>
-      ` : `<p class="asset-note">当前生成点还没有实际提交 prompt。先生成一次图片或视频后，这里会显示计划与实际提交差异。</p>`}
     </section>
   `;
 }
@@ -461,6 +419,7 @@ function buildSegmentRequestInspectorSections(segment, option = resolveSelectedS
     return [
       renderMotionContractSection(segment.motionContract),
       renderMotionPlanSection(segment.motionPlan),
+      renderVideoFrameContinuitySection(segment),
       renderPromptSection("Seedance 画面推进摘录", segment.seedanceMotionPrompt, "最终提交 prompt 中的参考图绑定与画面推进"),
       renderPromptSection(
         "视频实际提交 Prompt",
@@ -576,7 +535,6 @@ export function renderRequestInspectorPanel(segment, option = resolveSelectedSeg
         </div>
       </div>
       <div class="prompt-panel-body">
-        ${renderPromptDiffPanel(segment, option)}
         ${renderSegmentDiagnosticsPanel(segment)}
         ${sections.length ? sections.join("") : `<p class="asset-note">该片段还没有实际提交请求。</p>`}
       </div>

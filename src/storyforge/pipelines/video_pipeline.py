@@ -150,6 +150,8 @@ def run_scene_image_pipeline(
         planning.manifest_path,
         selected_segment_ids=set(),
     )
+    _sync_cross_scene_reused_master_frames(planning.project_package.scenes, merged_scene_images)
+    _sync_scene_master_references(merged_scene_images, merged_manifest)
     planning.project_package.scene_images = merged_scene_images
     planning.project_package.seedance_manifest = merged_manifest
     planning.manifest = merged_manifest
@@ -489,13 +491,21 @@ def run_video_render_pipeline(
         )
 
     manifest = planning.manifest
+    _sync_cross_scene_reused_master_frames(
+        planning.project_package.scenes,
+        planning.project_package.scene_images,
+    )
+    _sync_v2_seedance_references(manifest, planning.project_package)
     _sync_v2_seedance_references(planning.project_package.seedance_manifest, planning.project_package)
+    planning.project_package.seedance_manifest = manifest
     selected_segment_ids = _resolve_selected_segment_ids(
         planning.project_package,
         segment_id=segment_id,
         scene_id=scene_id,
         segment_ids=segment_ids,
     )
+    _sync_seedance_tail_frame_handoffs(manifest, planning.project_package.scenes)
+    write_json(manifest_path, manifest)
     if submit_seedance or config.seedance.auto_submit:
         validate_manifest_ready_for_video(manifest, selected_segment_ids)
     seedance_client = SeedanceClient(config.seedance)
@@ -509,6 +519,8 @@ def run_video_render_pipeline(
         manifest_path,
         selected_segment_ids=selected_segment_ids,
     )
+    _sync_scene_master_references(planning.project_package.scene_images, merged_manifest)
+    _sync_seedance_tail_frame_handoffs(merged_manifest, planning.project_package.scenes)
     planning.project_package.seedance_manifest = merged_manifest
     planning.manifest = merged_manifest
 
@@ -545,9 +557,18 @@ def run_video_render_pipeline(
 
 
 def _sync_v2_seedance_references(manifest: SeedanceManifest, project_package: object) -> None:
-    scene_by_segment = {
-        item.segment_id: item
-        for item in getattr(project_package, "scene_images", [])
+    scene_images = list(getattr(project_package, "scene_images", []) or [])
+    _sync_cross_scene_reused_master_frames(
+        list(getattr(project_package, "scenes", []) or []),
+        scene_images,
+    )
+    _sync_scene_master_references(scene_images, manifest)
+    scene_by_segment = {item.segment_id: item for item in scene_images}
+    scene_by_id = _best_scene_master_task_by_scene(scene_images)
+    scene_contract_by_id = {
+        getattr(scene, "scene_id", ""): scene
+        for scene in getattr(project_package, "scenes", []) or []
+        if getattr(scene, "scene_id", "")
     }
     character_url_by_path = {
         item.output_path: item.generated_url
@@ -560,10 +581,14 @@ def _sync_v2_seedance_references(manifest: SeedanceManifest, project_package: ob
         if getattr(item, "character_name", "") and getattr(item, "generated_url", "")
     }
     for clip in manifest.clips:
-        scene_task = scene_by_segment.get(clip.segment_id)
+        scene_task = scene_by_segment.get(clip.segment_id) or scene_by_id.get(clip.scene_id)
         if scene_task is not None:
             clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
             clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
+        scene_contract = scene_contract_by_id.get(clip.scene_id)
+        if scene_contract is not None:
+            clip.scene_master_url = clip.scene_master_url or getattr(scene_contract, "scene_master_frame_url", "")
+            clip.scene_master_path = clip.scene_master_path or getattr(scene_contract, "scene_master_frame_path", "")
         resolved_character_urls = [
             character_url_by_path.get(path, "")
             for path in clip.character_image_paths
@@ -573,7 +598,129 @@ def _sync_v2_seedance_references(manifest: SeedanceManifest, project_package: ob
                 character_url_by_name.get(name, "")
                 for name in clip.visible_characters
             ]
-        clip.character_image_urls = [url for url in resolved_character_urls if url]
+        resolved_character_urls = [url for url in resolved_character_urls if url]
+        if resolved_character_urls:
+            clip.character_image_urls = resolved_character_urls
+
+
+def _sync_cross_scene_reused_master_frames(
+    scenes: list[object],
+    scene_images: list[SceneImageTask],
+) -> None:
+    latest_master_scene: object | None = None
+    for scene in scenes:
+        if not getattr(scene, "scene_id", ""):
+            continue
+        if _scene_has_master_url(scene):
+            latest_master_scene = scene
+        elif latest_master_scene is not None and _scene_reuses_previous_master_frame(scene):
+            _copy_scene_master_reference(scene, latest_master_scene)
+        if _scene_has_master_url(scene):
+            latest_master_scene = scene
+    scene_by_id = {
+        getattr(scene, "scene_id", ""): scene
+        for scene in scenes
+        if getattr(scene, "scene_id", "")
+    }
+    for task in scene_images:
+        scene = scene_by_id.get(task.scene_id)
+        if scene is None:
+            continue
+        task.scene_master_frame_url = task.scene_master_frame_url or getattr(scene, "scene_master_frame_url", "")
+        task.scene_master_frame_path = task.scene_master_frame_path or getattr(scene, "scene_master_frame_path", "")
+        task.scene_master_frame_status = _prefer_nondefault_status(
+            task.scene_master_frame_status,
+            getattr(scene, "scene_master_frame_status", ""),
+        )
+        if getattr(scene, "scene_master_frame_url", ""):
+            task.status = _prefer_nondefault_status(task.status, "completed")
+
+
+def _scene_has_master_url(scene: object) -> bool:
+    return bool(str(getattr(scene, "scene_master_frame_url", "") or "").strip())
+
+
+def _scene_reuses_previous_master_frame(scene: object) -> bool:
+    contract = getattr(scene, "scene_transition_contract", None)
+    mode = str(getattr(contract, "scene_spatial_continuity_mode", "") or "").strip().lower()
+    if mode in {
+        "same_space_progression",
+        "same_location_new_angle",
+        "time_jump_same_location",
+    }:
+        return True
+    return False
+
+
+def _copy_scene_master_reference(scene: object, source_scene: object) -> None:
+    source_url = str(getattr(source_scene, "scene_master_frame_url", "") or "").strip()
+    source_path = str(getattr(source_scene, "scene_master_frame_path", "") or "").strip()
+    if not source_url and not source_path:
+        return
+    scene.scene_master_frame_url = source_url
+    scene.scene_master_frame_path = source_path or str(getattr(scene, "scene_master_frame_path", "") or "")
+    scene.scene_master_frame_status = getattr(source_scene, "scene_master_frame_status", "") or "completed"
+    scene.scene_master_frame_error = ""
+    scene.scene_master_reference_images = []
+    scene.scene_master_request_info = {
+        "provider": "storyforge",
+        "variant": "reuse_previous_scene_master",
+        "payload": {
+            "reused_from_scene_id": getattr(source_scene, "scene_id", ""),
+            "scene_master_url": source_url,
+            "scene_master_path": source_path,
+        },
+        "reference_bindings": [],
+    }
+
+
+def _sync_scene_master_references(
+    scene_images: list[SceneImageTask],
+    manifest: SeedanceManifest | None = None,
+) -> None:
+    scene_master_by_scene = _best_scene_master_task_by_scene(scene_images)
+    for task in scene_images:
+        scene_master = scene_master_by_scene.get(task.scene_id)
+        if scene_master is None or scene_master is task:
+            continue
+        task.scene_master_frame_url = task.scene_master_frame_url or scene_master.scene_master_frame_url
+        task.scene_master_frame_path = task.scene_master_frame_path or scene_master.scene_master_frame_path
+        task.scene_master_frame_status = _prefer_nondefault_status(
+            task.scene_master_frame_status,
+            scene_master.scene_master_frame_status,
+        )
+        task.status = _prefer_nondefault_status(task.status, scene_master.status)
+    if manifest is None:
+        return
+    task_by_segment = {task.segment_id: task for task in scene_images}
+    for clip in manifest.clips:
+        scene_task = task_by_segment.get(clip.segment_id) or scene_master_by_scene.get(clip.scene_id)
+        if scene_task is None:
+            continue
+        clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
+        clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
+
+
+def _best_scene_master_task_by_scene(
+    scene_images: list[SceneImageTask],
+) -> dict[str, SceneImageTask]:
+    best_by_scene: dict[str, SceneImageTask] = {}
+    for task in scene_images:
+        scene_id = str(task.scene_id or "").strip()
+        if not scene_id:
+            continue
+        current = best_by_scene.get(scene_id)
+        if current is None or _scene_master_task_score(task) > _scene_master_task_score(current):
+            best_by_scene[scene_id] = task
+    return best_by_scene
+
+
+def _scene_master_task_score(task: SceneImageTask) -> tuple[int, int, int]:
+    return (
+        1 if task.scene_master_frame_url else 0,
+        1 if task.scene_master_frame_path else 0,
+        1 if task.scene_master_frame_status not in {"", "planned"} else 0,
+    )
 
 
 def run_video_merge_pipeline(
@@ -813,6 +960,55 @@ def _merge_seedance_manifest_for_write(
     )
 
 
+def _sync_seedance_tail_frame_handoffs(
+    manifest: SeedanceManifest,
+    scenes: list[object] | None = None,
+) -> None:
+    previous_by_scene: dict[str, SeedanceClipTask] = {}
+    scene_by_id = {
+        getattr(scene, "scene_id", ""): scene
+        for scene in (scenes or [])
+        if getattr(scene, "scene_id", "")
+    }
+    previous_timeline_clip: SeedanceClipTask | None = None
+    for clip in manifest.clips:
+        scene_id = str(clip.scene_id or "").strip()
+        previous_clip: SeedanceClipTask | None = None
+        if clip.previous_clip_segment_id:
+            previous_clip = next(
+                (item for item in manifest.clips if item.segment_id == clip.previous_clip_segment_id),
+                None,
+            )
+        elif scene_id:
+            previous_clip = previous_by_scene.get(scene_id)
+            if previous_clip is None and _scene_allows_previous_tail_frame(scene_by_id.get(scene_id)):
+                previous_clip = previous_timeline_clip
+        if previous_clip is not None:
+            if previous_clip.segment_id and not clip.previous_clip_segment_id:
+                clip.previous_clip_segment_id = previous_clip.segment_id
+            if previous_clip.video_url and not clip.previous_clip_video_url:
+                clip.previous_clip_video_url = previous_clip.video_url
+            if previous_clip.last_frame_url and not clip.first_frame_url:
+                clip.first_frame_url = previous_clip.last_frame_url
+        if scene_id:
+            previous_by_scene[scene_id] = clip
+        previous_timeline_clip = clip
+
+
+def _scene_allows_previous_tail_frame(scene: object | None) -> bool:
+    if scene is None:
+        return False
+    contract = getattr(scene, "scene_transition_contract", None)
+    mode = str(getattr(contract, "scene_spatial_continuity_mode", "") or "").strip().lower()
+    if mode in {
+        "same_space_progression",
+        "same_location_new_angle",
+        "time_jump_same_location",
+    }:
+        return True
+    return False
+
+
 def _should_prefer_current_segment_state(
     *,
     segment_id: str,
@@ -884,6 +1080,11 @@ def _merge_seedance_clip_task(
         "remote_task_id",
         "video_url",
         "cover_url",
+        "first_frame_url",
+        "last_frame_url",
+        "last_frame_path",
+        "previous_clip_segment_id",
+        "previous_clip_video_url",
         "downloaded_path",
     ):
         payload[field_name] = _prefer_nonempty_string(
@@ -1264,6 +1465,8 @@ def _reset_seedance_clip_task_for_repair(task: SeedanceClipTask) -> SeedanceClip
         "remote_status": "planned",
         "video_url": "",
         "cover_url": "",
+        "last_frame_url": "",
+        "last_frame_path": "",
         "downloaded_path": "",
         "error": "",
     }

@@ -18,7 +18,7 @@ if str(TESTS) not in sys.path:
     sys.path.insert(0, str(TESTS))
 
 from storyforge.core.config import AppConfig  # noqa: E402
-from storyforge.core.io import read_json  # noqa: E402
+from storyforge.core.io import read_json, to_jsonable  # noqa: E402
 from storyforge.agents.base import PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief, StorySourcePackage  # noqa: E402
 from storyforge.domains.novel.errors import (  # noqa: E402
@@ -40,8 +40,8 @@ from storyforge.domains.novel.schemas import (  # noqa: E402
     StoryDraftSetSchema,
 )
 from storyforge.domains.novel.service import NovelGeneratorService  # noqa: E402
-from storyforge.domains.video.contracts import ContinuityLink, MotionPlan, SceneBible, SceneTransitionContract, ShotState, StoryMemoryPackage, VideoScene, VideoSegment  # noqa: E402
-from storyforge.domains.video.errors import SegmentActionSplitRequiredError, VideoStructuredGenerationError  # noqa: E402
+from storyforge.domains.video.contracts import ContinuityLink, MotionPlan, SceneBible, SceneImageTask, SceneTransitionContract, SeedanceClipTask, SeedanceManifest, ShotState, StoryMemoryPackage, VideoScene, VideoSegment  # noqa: E402
+from storyforge.domains.video.errors import SegmentActionSplitRequiredError, SegmentSpeechSplitRequiredError, VideoStructuredGenerationError  # noqa: E402
 from storyforge.domains.video.schemas import (  # noqa: E402
     ChapterCoveragePlanSchema,
     ChapterCoverageEventSplitPlanSchema,
@@ -49,6 +49,7 @@ from storyforge.domains.video.schemas import (  # noqa: E402
     ChapterSceneStructureSchema,
     CharacterVisualBibleSchema,
     SceneSegmentChunkPlanSchema,
+    SceneSegmentChunkSchema,
     SceneSegmentContractBatchSchema,
     VideoSegmentPlanSchema,
 )  # noqa: E402
@@ -63,19 +64,22 @@ from storyforge.pipelines.story_pipeline import (  # noqa: E402
 )
 from storyforge.pipelines.story_files import clear_story_derived_artifacts  # noqa: E402
 from storyforge.pipelines.video_pipeline import (  # noqa: E402
+    _merge_seedance_manifest_for_write,
     reset_scene_execution_contracts_for_repair,
     run_character_image_pipeline,
     run_scene_continuity_repair_pipeline,
     run_scene_image_pipeline,
     run_video_merge_pipeline,
     run_video_render_pipeline,
+    _sync_v2_seedance_references,
+    _sync_seedance_tail_frame_handoffs,
 )
 from storyforge.pipelines.video_planning import (  # noqa: E402
     build_video_planning_artifacts,
     load_segment_contract_progress,
     load_video_planning_artifacts,
 )
-from storyforge.pipelines.video_support import should_skip_seedance_after_seedream  # noqa: E402
+from storyforge.pipelines.video_support import should_skip_seedance_after_seedream, validate_manifest_ready_for_video  # noqa: E402
 from _deterministic_backends import (  # noqa: E402
     DeterministicStoryBackend,
     DeterministicVideoBackend,
@@ -2699,6 +2703,85 @@ class PipelineTestCase(unittest.TestCase):
         mock_concat_manifest_clips.assert_not_called()
 
     @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
+    def test_run_video_render_pipeline_backfills_scene_master_from_scene_plan_before_validation(
+        self,
+        mock_execute_manifest,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        manifest_payload = read_json(story_result.seedance_manifest_path)
+        selected_segment_id = manifest_payload["clips"][0]["segment_id"]
+        scene_id = manifest_payload["clips"][0]["scene_id"]
+        manifest_payload["clips"][0]["scene_master_url"] = ""
+        manifest_payload["clips"][0]["character_image_urls"] = ["https://example.com/character.png"]
+        story_result.seedance_manifest_path.write_text(
+            json.dumps(manifest_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        scene_manifest = read_json(story_result.scene_images_path)
+        for item in scene_manifest:
+            if item["scene_id"] == scene_id:
+                item["scene_master_frame_url"] = ""
+                item["scene_master_frame_status"] = "planned"
+        story_result.scene_images_path.write_text(
+            json.dumps(scene_manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        scene_plan = read_json(story_result.scene_plan_path)
+        for scene in scene_plan["scenes"]:
+            if scene["scene_id"] == scene_id:
+                scene["scene_master_frame_url"] = "https://example.com/scene-plan-master.png"
+                scene["scene_master_frame_status"] = "completed"
+        story_result.scene_plan_path.write_text(
+            json.dumps(scene_plan, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        def fake_execute_manifest(manifest, force_submit=False, segment_ids=None):
+            self.assertTrue(force_submit)
+            self.assertEqual(segment_ids, {selected_segment_id})
+            clip = next(item for item in manifest.clips if item.segment_id == selected_segment_id)
+            self.assertEqual(clip.scene_master_url, "https://example.com/scene-plan-master.png")
+            mark_runtime_manifest_clips_completed(
+                manifest,
+                segment_ids={selected_segment_id},
+                remote_status="succeeded",
+                write_bytes=b"selected clip",
+            )
+            return SeedanceExecutionReport(
+                submitted=True,
+                manifest_title=manifest.title,
+                completed_count=1,
+                failed_count=0,
+                pending_count=0,
+                note="ok",
+            )
+
+        mock_execute_manifest.side_effect = fake_execute_manifest
+
+        video_result = run_video_render_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_seedance=True,
+            segment_id=selected_segment_id,
+        )
+
+        persisted_manifest = read_json(video_result.manifest_path)
+        selected_clip = next(
+            item for item in persisted_manifest["clips"] if item["segment_id"] == selected_segment_id
+        )
+        self.assertEqual(selected_clip["scene_master_url"], "https://example.com/scene-plan-master.png")
+
+    @patch("storyforge.pipelines.video_pipeline.SeedanceClient.execute_manifest")
     def test_run_video_render_pipeline_preserves_newer_disk_frame_urls_for_other_segments(
         self,
         mock_execute_manifest,
@@ -2790,6 +2873,1029 @@ class PipelineTestCase(unittest.TestCase):
             preserved_clip["scene_master_url"],
             "https://disk.example/preserved_scene_master.png",
         )
+
+    def test_seedance_tail_frame_handoff_syncs_planned_next_segment(self) -> None:
+        previous_clip = SeedanceClipTask(
+            segment_id="ch01-sc01-seg01",
+            scene_id="ch01-sc01",
+            title="上一段",
+            prompt="上一段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc01-seg01.mp4",
+            video_url="https://example.com/seg01.mp4",
+            last_frame_url="https://example.com/seg01-last.png",
+            submit_status="completed",
+            remote_status="succeeded",
+        )
+        next_clip = SeedanceClipTask(
+            segment_id="ch01-sc01-seg02",
+            scene_id="ch01-sc01",
+            title="下一段",
+            prompt="下一段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc01-seg02.mp4",
+            previous_clip_segment_id="ch01-sc01-seg01",
+        )
+        manifest = SeedanceManifest(
+            title="尾帧同步测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[previous_clip, next_clip],
+        )
+
+        _sync_seedance_tail_frame_handoffs(manifest)
+
+        self.assertEqual(next_clip.first_frame_url, "https://example.com/seg01-last.png")
+        self.assertEqual(next_clip.previous_clip_video_url, "https://example.com/seg01.mp4")
+
+    def test_seedance_tail_frame_handoff_crosses_same_space_scene_boundary(self) -> None:
+        previous_clip = SeedanceClipTask(
+            segment_id="ch01-sc01-seg02",
+            scene_id="ch01-sc01",
+            title="上一场尾段",
+            prompt="上一场尾段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc01-seg02.mp4",
+            video_url="https://example.com/sc01-seg02.mp4",
+            last_frame_url="https://example.com/sc01-seg02-last.png",
+            submit_status="completed",
+            remote_status="succeeded",
+        )
+        next_scene_clip = SeedanceClipTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            title="同空间下一场首段",
+            prompt="同空间下一场首段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc02-seg01.mp4",
+        )
+        manifest = SeedanceManifest(
+            title="跨 scene 尾帧承接测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[previous_clip, next_scene_clip],
+        )
+        scenes = [
+            VideoScene(
+                scene_id="ch01-sc01",
+                chapter_number=1,
+                title="上一场",
+                summary="上一场",
+                scene_anchor="花田",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="花田"),
+            ),
+            VideoScene(
+                scene_id="ch01-sc02",
+                chapter_number=1,
+                title="同空间下一场",
+                summary="同空间下一场",
+                scene_anchor="花田",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="花田"),
+                scene_transition_contract=SceneTransitionContract(
+                    previous_scene_id="ch01-sc01",
+                    transition_mode="direct_continue",
+                    scene_spatial_continuity_mode="same_space_progression",
+                ),
+            ),
+        ]
+
+        _sync_seedance_tail_frame_handoffs(manifest, scenes)
+
+        self.assertEqual(next_scene_clip.previous_clip_segment_id, "ch01-sc01-seg02")
+        self.assertEqual(next_scene_clip.previous_clip_video_url, "https://example.com/sc01-seg02.mp4")
+        self.assertEqual(next_scene_clip.first_frame_url, "https://example.com/sc01-seg02-last.png")
+
+    def test_seedance_tail_frame_handoff_does_not_cross_hard_cut_scene_boundary(self) -> None:
+        previous_clip = SeedanceClipTask(
+            segment_id="ch01-sc01-seg02",
+            scene_id="ch01-sc01",
+            title="上一场尾段",
+            prompt="上一场尾段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc01-seg02.mp4",
+            video_url="https://example.com/sc01-seg02.mp4",
+            last_frame_url="https://example.com/sc01-seg02-last.png",
+        )
+        hard_cut_clip = SeedanceClipTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            title="新地点首段",
+            prompt="新地点首段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc02-seg01.mp4",
+        )
+        manifest = SeedanceManifest(
+            title="硬切不承接尾帧测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[previous_clip, hard_cut_clip],
+        )
+        scenes = [
+            VideoScene(
+                scene_id="ch01-sc01",
+                chapter_number=1,
+                title="上一场",
+                summary="上一场",
+                scene_anchor="花田",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="花田"),
+            ),
+            VideoScene(
+                scene_id="ch01-sc02",
+                chapter_number=1,
+                title="新地点",
+                summary="新地点",
+                scene_anchor="图书馆",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="图书馆"),
+                scene_transition_contract=SceneTransitionContract(
+                    previous_scene_id="ch01-sc01",
+                    transition_mode="hard_cut",
+                    scene_spatial_continuity_mode="hard_cut_new_location",
+                ),
+            ),
+        ]
+
+        _sync_seedance_tail_frame_handoffs(manifest, scenes)
+
+        self.assertEqual(hard_cut_clip.previous_clip_segment_id, "")
+        self.assertEqual(hard_cut_clip.first_frame_url, "")
+
+    def test_seedance_tail_frame_handoff_does_not_cross_adjacent_uncertain_scene_boundary(self) -> None:
+        previous_clip = SeedanceClipTask(
+            segment_id="ch01-sc01-seg02",
+            scene_id="ch01-sc01",
+            title="上一场尾段",
+            prompt="上一场尾段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc01-seg02.mp4",
+            video_url="https://example.com/sc01-seg02.mp4",
+            last_frame_url="https://example.com/sc01-seg02-last.png",
+        )
+        adjacent_clip = SeedanceClipTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            title="相邻但未确认同空间首段",
+            prompt="相邻但未确认同空间首段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-sc02-seg01.mp4",
+        )
+        manifest = SeedanceManifest(
+            title="相邻未知空间不承接尾帧测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[previous_clip, adjacent_clip],
+        )
+        scenes = [
+            VideoScene(
+                scene_id="ch01-sc01",
+                chapter_number=1,
+                title="上一场",
+                summary="上一场",
+                scene_anchor="花田",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="花田"),
+            ),
+            VideoScene(
+                scene_id="ch01-sc02",
+                chapter_number=1,
+                title="相邻但未确认同空间",
+                summary="相邻但未确认同空间",
+                scene_anchor="教学楼",
+                involved_characters=[],
+                covered_event_ids=[],
+                covered_event_summaries=[],
+                segments=[],
+                scene_bible=SceneBible(location="教学楼"),
+                scene_transition_contract=SceneTransitionContract(
+                    previous_scene_id="ch01-sc01",
+                    transition_mode="adjacent_move",
+                    scene_spatial_continuity_mode="uncertain",
+                ),
+            ),
+        ]
+
+        _sync_seedance_tail_frame_handoffs(manifest, scenes)
+
+        self.assertEqual(adjacent_clip.previous_clip_segment_id, "")
+        self.assertEqual(adjacent_clip.first_frame_url, "")
+
+    def test_build_seedance_manifest_links_same_space_scene_first_clip_to_previous_tail(self) -> None:
+        service = NovelToVideoService()
+        previous_scene = VideoScene(
+            scene_id="ch01-sc01",
+            chapter_number=1,
+            title="上一场",
+            summary="上一场",
+            scene_anchor="花田",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="花田"),
+        )
+        next_scene = VideoScene(
+            scene_id="ch01-sc02",
+            chapter_number=1,
+            title="同空间下一场",
+            summary="同空间下一场",
+            scene_anchor="花田",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="花田"),
+            scene_transition_contract=SceneTransitionContract(
+                previous_scene_id="ch01-sc01",
+                transition_mode="direct_continue",
+                scene_spatial_continuity_mode="same_space_progression",
+            ),
+        )
+        previous_segment = VideoSegment(
+            segment_id="ch01-sc01-seg01",
+            scene_id="ch01-sc01",
+            title="上一场尾段",
+            summary="上一场尾段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            involved_characters=[],
+            scene_title="上一场",
+            scene_summary="上一场",
+            scene_anchor="花田",
+            chapter_number=1,
+            scene_bible=SceneBible(location="花田"),
+        )
+        next_segment = VideoSegment(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            title="同空间下一场首段",
+            summary="同空间下一场首段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=8,
+            involved_characters=[],
+            scene_title="同空间下一场",
+            scene_summary="同空间下一场",
+            scene_anchor="花田",
+            chapter_number=1,
+            scene_bible=SceneBible(location="花田"),
+        )
+        scene_images = [
+            SceneImageTask(
+                segment_id="ch01-sc01-seg01",
+                scene_id="ch01-sc01",
+                scene_title="上一场",
+                scene_master_frame_prompt="上一场母图",
+                scene_master_frame_path="rendered/ch01-sc01_master.png",
+                reference_images=[],
+                provider="seedream",
+            ),
+            SceneImageTask(
+                segment_id="ch01-sc02-seg01",
+                scene_id="ch01-sc02",
+                scene_title="同空间下一场",
+                scene_master_frame_prompt="下一场母图",
+                scene_master_frame_path="rendered/ch01-sc02_master.png",
+                reference_images=[],
+                provider="seedream",
+            ),
+        ]
+
+        manifest = service._build_seedance_manifest(
+            "测试",
+            [previous_scene, next_scene],
+            [previous_segment, next_segment],
+            scene_images,
+            [],
+            "outputs/test",
+        )
+
+        next_clip = manifest.clips[1]
+        self.assertEqual(next_clip.previous_clip_segment_id, "ch01-sc01-seg01")
+
+    def test_seedance_reference_sync_shares_scene_master_across_same_scene_segments(self) -> None:
+        source_task = SceneImageTask(
+            segment_id="ch01-sc02-seg00",
+            scene_id="ch01-sc02",
+            scene_title="长椅对话",
+            scene_master_frame_prompt="长椅旁空场景",
+            scene_master_frame_path="rendered/ch01-sc02_master.png",
+            reference_images=[],
+            provider="seedream",
+            status="completed",
+            scene_master_frame_status="completed",
+            scene_master_frame_url="https://example.com/shared-scene-master.png",
+        )
+        target_task = SceneImageTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            scene_title="长椅对话",
+            scene_master_frame_prompt="长椅旁空场景",
+            scene_master_frame_path="rendered/ch01-sc02_master.png",
+            reference_images=[],
+            provider="seedream",
+        )
+        manifest = SeedanceManifest(
+            title="同 scene 共用母图测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc02-seg01",
+                    scene_id="ch01-sc02",
+                    title="不能生成视频的当前段",
+                    prompt="当前段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc02-seg01.mp4",
+                )
+            ],
+        )
+        project_package = SimpleNamespace(scene_images=[source_task, target_task], character_images=[])
+
+        _sync_v2_seedance_references(manifest, project_package)
+
+        target_clip = next(clip for clip in manifest.clips if clip.segment_id == "ch01-sc02-seg01")
+        self.assertEqual(target_task.scene_master_frame_url, "https://example.com/shared-scene-master.png")
+        self.assertEqual(target_clip.scene_master_url, "https://example.com/shared-scene-master.png")
+        validate_manifest_ready_for_video(manifest, {"ch01-sc02-seg01"})
+
+    def test_seedance_reference_sync_uses_scene_contract_master_when_task_is_empty(self) -> None:
+        scene = VideoScene(
+            scene_id="ch01-sc02",
+            chapter_number=1,
+            title="长椅对话",
+            summary="两人对话。",
+            scene_anchor="长椅旁",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="长椅旁"),
+            scene_master_frame_path="rendered/ch01-sc02_master.png",
+            scene_master_frame_url="https://example.com/scene-contract-master.png",
+            scene_master_frame_status="completed",
+        )
+        scene_task = SceneImageTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            scene_title="长椅对话",
+            scene_master_frame_prompt="长椅旁空场景",
+            scene_master_frame_path="",
+            reference_images=[],
+            provider="seedream",
+        )
+        manifest = SeedanceManifest(
+            title="scene 主记录回填测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc02-seg01",
+                    scene_id="ch01-sc02",
+                    title="当前段",
+                    prompt="当前段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc02-seg01.mp4",
+                )
+            ],
+        )
+        project_package = SimpleNamespace(
+            scenes=[scene],
+            scene_images=[scene_task],
+            character_images=[],
+        )
+
+        _sync_v2_seedance_references(manifest, project_package)
+
+        clip = manifest.clips[0]
+        self.assertEqual(clip.scene_master_url, "https://example.com/scene-contract-master.png")
+        validate_manifest_ready_for_video(manifest, {"ch01-sc02-seg01"})
+
+    def test_seedance_reference_sync_reuses_previous_scene_master_for_same_space_scene(self) -> None:
+        previous_scene = VideoScene(
+            scene_id="ch01-sc01",
+            chapter_number=1,
+            title="郁金香花田",
+            summary="第一场。",
+            scene_anchor="郁金香花田",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="郁金香花田"),
+            scene_master_frame_path="rendered/ch01-sc01_master.png",
+            scene_master_frame_url="https://example.com/sc01-master.png",
+            scene_master_frame_status="completed",
+        )
+        current_scene = VideoScene(
+            scene_id="ch01-sc02",
+            chapter_number=1,
+            title="同一花田继续",
+            summary="第二场继续在同一地点。",
+            scene_anchor="郁金香花田",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="郁金香花田"),
+            scene_transition_contract=SceneTransitionContract(
+                previous_scene_id="ch01-sc01",
+                transition_mode="direct_continue",
+                scene_spatial_continuity_mode="same_space_progression",
+            ),
+            scene_master_frame_path="rendered/ch01-sc02_master.png",
+        )
+        current_task = SceneImageTask(
+            segment_id="ch01-sc02-seg01",
+            scene_id="ch01-sc02",
+            scene_title="同一花田继续",
+            scene_master_frame_prompt="同一花田空场景",
+            scene_master_frame_path="rendered/ch01-sc02_master.png",
+            reference_images=[],
+            provider="seedream",
+        )
+        manifest = SeedanceManifest(
+            title="跨 scene 复用母图测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc02-seg01",
+                    scene_id="ch01-sc02",
+                    title="第二场第一段",
+                    prompt="第二场第一段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc02-seg01.mp4",
+                )
+            ],
+        )
+        project_package = SimpleNamespace(
+            scenes=[previous_scene, current_scene],
+            scene_images=[current_task],
+            character_images=[],
+        )
+
+        _sync_v2_seedance_references(manifest, project_package)
+
+        self.assertEqual(current_scene.scene_master_frame_url, "https://example.com/sc01-master.png")
+        self.assertEqual(current_task.scene_master_frame_url, "https://example.com/sc01-master.png")
+        self.assertEqual(manifest.clips[0].scene_master_url, "https://example.com/sc01-master.png")
+        validate_manifest_ready_for_video(manifest, {"ch01-sc02-seg01"})
+
+    def test_seedance_reference_sync_does_not_reuse_previous_master_for_adjacent_uncertain_scene(self) -> None:
+        previous_scene = VideoScene(
+            scene_id="ch01-sc01",
+            chapter_number=1,
+            title="郁金香花田",
+            summary="第一场。",
+            scene_anchor="郁金香花田",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="郁金香花田"),
+            scene_master_frame_path="rendered/ch01-sc01_master.png",
+            scene_master_frame_url="https://example.com/sc01-master.png",
+            scene_master_frame_status="completed",
+        )
+        current_scene = VideoScene(
+            scene_id="ch01-sc03",
+            chapter_number=1,
+            title="教学楼走廊",
+            summary="第三场在教学楼走廊。",
+            scene_anchor="教学楼走廊",
+            involved_characters=[],
+            covered_event_ids=[],
+            covered_event_summaries=[],
+            segments=[],
+            scene_bible=SceneBible(location="教学楼走廊"),
+            scene_transition_contract=SceneTransitionContract(
+                previous_scene_id="ch01-sc01",
+                transition_mode="adjacent_move",
+                scene_spatial_continuity_mode="uncertain",
+            ),
+            scene_master_frame_path="rendered/ch01-sc03_master.png",
+        )
+        current_task = SceneImageTask(
+            segment_id="ch01-sc03-seg01",
+            scene_id="ch01-sc03",
+            scene_title="教学楼走廊",
+            scene_master_frame_prompt="教学楼走廊空场景",
+            scene_master_frame_path="rendered/ch01-sc03_master.png",
+            reference_images=[],
+            provider="seedream",
+        )
+        manifest = SeedanceManifest(
+            title="未知空间不复用母图测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc03-seg01",
+                    scene_id="ch01-sc03",
+                    title="第三场第一段",
+                    prompt="第三场第一段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc03-seg01.mp4",
+                )
+            ],
+        )
+        project_package = SimpleNamespace(
+            scenes=[previous_scene, current_scene],
+            scene_images=[current_task],
+            character_images=[],
+        )
+
+        _sync_v2_seedance_references(manifest, project_package)
+
+        self.assertEqual(current_scene.scene_master_frame_url, "")
+        self.assertEqual(current_task.scene_master_frame_url, "")
+        self.assertEqual(manifest.clips[0].scene_master_url, "")
+
+    def test_seedance_manifest_merge_preserves_tail_frame_handoff_fields(self) -> None:
+        manifest_path = self.temp_root / "seedance_manifest.json"
+        latest_manifest = SeedanceManifest(
+            title="尾帧 merge 测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc01-seg01",
+                    scene_id="ch01-sc01",
+                    title="上一段",
+                    prompt="上一段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc01-seg01.mp4",
+                    video_url="https://example.com/seg01.mp4",
+                    last_frame_url="https://example.com/seg01-last.png",
+                    submit_status="completed",
+                    remote_status="succeeded",
+                ),
+                SeedanceClipTask(
+                    segment_id="ch01-sc01-seg02",
+                    scene_id="ch01-sc01",
+                    title="下一段",
+                    prompt="下一段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc01-seg02.mp4",
+                    previous_clip_segment_id="ch01-sc01-seg01",
+                ),
+            ],
+        )
+        manifest_path.write_text(
+            json.dumps(to_jsonable(latest_manifest), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        current_manifest = SeedanceManifest(
+            title="尾帧 merge 测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[
+                SeedanceClipTask(
+                    segment_id="ch01-sc01-seg02",
+                    scene_id="ch01-sc01",
+                    title="下一段",
+                    prompt="下一段",
+                    narration="",
+                    dialogue_lines=[],
+                    subtitle_lines=[],
+                    sound_effects=[],
+                    music_direction="",
+                    timed_beats=[],
+                    duration_seconds=8,
+                    aspect_ratio="16:9",
+                    with_audio=True,
+                    output_path="rendered/ch01-sc01-seg02.mp4",
+                    previous_clip_segment_id="ch01-sc01-seg01",
+                    first_frame_url="https://example.com/seg01-last.png",
+                    previous_clip_video_url="https://example.com/seg01.mp4",
+                )
+            ],
+        )
+
+        merged = _merge_seedance_manifest_for_write(
+            current_manifest,
+            manifest_path,
+            selected_segment_ids={"ch01-sc01-seg02"},
+        )
+        merged_clip = next(item for item in merged.clips if item.segment_id == "ch01-sc01-seg02")
+
+        self.assertEqual(merged_clip.first_frame_url, "https://example.com/seg01-last.png")
+        self.assertEqual(merged_clip.previous_clip_video_url, "https://example.com/seg01.mp4")
+
+    def test_overflow_repair_chains_to_timeline_repair_for_tail_gap(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc02",
+                "chapter_number": 1,
+                "title": "初次对话",
+                "summary": "两人在长椅旁完成第一轮对话。",
+                "scene_anchor": "郁金香花园长椅",
+                "involved_characters": ["林叙", "苏晚"],
+                "covered_event_ids": ["ch01-ev02"],
+                "scene_bible": {
+                    "location": "郁金香花园长椅",
+                    "background_anchors": ["长椅", "郁金香花丛"],
+                    "spatial_layout": "长椅位于花丛旁",
+                    "character_blocking": "两人在长椅旁面对面站立",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc02-chunk01",
+                "order_index": 1,
+                "title": "第一轮对话",
+                "summary": "林叙和苏晚开始对话。",
+                "must_cover": ["林叙开口", "苏晚回应"],
+                "transition_goal": "两人完成第一轮对话。",
+                "expected_segment_count": 2,
+            }
+        )
+        failed_contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc02",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc02-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc02",
+                        "title": "对话停顿",
+                        "summary": "林叙说完后苏晚短暂停顿。",
+                        "involved_characters": ["林叙", "苏晚"],
+                        "timed_beats": ["0-6秒：林叙说完后苏晚短暂停顿。"],
+                        "duration_seconds": 10,
+                        "transition_hint": "start",
+                        "shot_state": {
+                            "framing": "双人中景",
+                            "camera_motion": "固定镜头",
+                            "blocking": "两人面对面站立",
+                            "action_progression": "林叙说完，苏晚停顿",
+                            "emotion_progression": "紧张到安静",
+                            "prop_continuity": "无特殊持物",
+                            "screen_direction": "保持面对面轴线",
+                            "end_state_lock": "两人完成第一轮对话。",
+                        },
+                        "continuity_link": {
+                            "transition_mode": "start",
+                            "opening_match": "两人在长椅旁面对面站立。",
+                            "carry_over_elements": ["长椅", "郁金香花丛"],
+                            "allowed_changes": "林叙开口，苏晚回应。",
+                            "transition_reason": "chunk 起始。",
+                        },
+                        "motion_plan": {
+                            "scene_motion": "两人在长椅旁完成对话。",
+                            "beat_progression": "0-6秒林叙说完后苏晚停顿。",
+                            "camera_path": "固定镜头。",
+                            "character_motion": "两人保持面对面。",
+                            "continuity_guard": "保持同一长椅空间。",
+                        },
+                    }
+                ],
+            }
+        )
+        split_error = SegmentSpeechSplitRequiredError(
+            segment_id="ch01-sc02-seg02",
+            required_duration_seconds=14,
+            current_duration_seconds=10,
+            max_duration_seconds=12,
+            required_segment_count=2,
+        )
+        timeline_error = ValueError(
+            "segment ch01-sc02-seg02 的 timed_beats 最后结束时间 6s "
+            "早于当前片段时长 10s，尾部约 4s 缺少明确动作或收束节拍。"
+        )
+        structured_error = RuntimeError(
+            "Structured repair failed for task=video-scene-segment-overflow-repair "
+            "schema=SceneSegmentContractBatchSchema after 3 attempts: "
+            f"{timeline_error}"
+        )
+
+        def fake_strict_agent(*, schema, request, validator, attempts):  # noqa: ANN001
+            try:
+                validator(failed_contracts)
+            except Exception:
+                pass
+            raise structured_error
+
+        with (
+            patch.object(service, "_run_strict_structured_agent", side_effect=fake_strict_agent),
+            patch.object(service, "_repair_scene_chunk_contract_batch_after_timeline_failure", return_value=failed_contracts) as timeline_repair,
+        ):
+            repaired = service._repair_scene_chunk_contract_batch_after_split_failure(
+                novel_package=SimpleNamespace(outline=SimpleNamespace(title="测试", characters=[])),
+                story_memory=StoryMemoryPackage(),
+                chapter_number=1,
+                scene=scene,
+                chunk=chunk,
+                previous_chunk_exit_state=None,
+                previous_tail_segment=None,
+                failed_contracts=failed_contracts,
+                split_error=split_error,
+                effective_expected_segment_count=2,
+            )
+
+        self.assertIs(repaired, failed_contracts)
+        timeline_repair.assert_called_once()
+
+    def test_overflow_repair_chains_to_split_repair_for_nested_speech_overflow(self) -> None:
+        service = NovelToVideoService()
+        scene, chunk, failed_contracts = self._build_overflow_repair_chain_fixture()
+        initial_split_error = SegmentSpeechSplitRequiredError(
+            segment_id="ch01-sc02-seg02",
+            required_duration_seconds=13,
+            current_duration_seconds=8,
+            max_duration_seconds=12,
+            required_segment_count=2,
+        )
+        structured_error = RuntimeError(
+            "Structured repair failed for task=video-scene-segment-overflow-repair "
+            "schema=SceneSegmentContractBatchSchema after 3 attempts: "
+            "segment ch01-sc02-seg02 的对白/字幕至少需要 13 秒，"
+            "但单段上限只有 12 秒，当前 chunk 必须至少拆成 2 个 segment。"
+        )
+
+        strict_calls = 0
+
+        def fake_strict_agent(*, schema, request, validator, attempts):  # noqa: ANN001
+            nonlocal strict_calls
+            strict_calls += 1
+            if strict_calls == 1:
+                raise structured_error
+            return failed_contracts
+
+        with patch.object(service, "_run_strict_structured_agent", side_effect=fake_strict_agent):
+            repaired = service._repair_scene_chunk_contract_batch_after_split_failure(
+                novel_package=SimpleNamespace(outline=SimpleNamespace(title="测试", characters=[])),
+                story_memory=StoryMemoryPackage(),
+                chapter_number=1,
+                scene=scene,
+                chunk=chunk,
+                previous_chunk_exit_state=None,
+                previous_tail_segment=None,
+                failed_contracts=failed_contracts,
+                split_error=initial_split_error,
+                effective_expected_segment_count=1,
+            )
+
+        self.assertIs(repaired, failed_contracts)
+        self.assertEqual(strict_calls, 2)
+
+    def test_overflow_repair_chains_to_focus_repair_for_nested_single_closeup(self) -> None:
+        service = NovelToVideoService()
+        scene, chunk, failed_contracts = self._build_overflow_repair_chain_fixture()
+        initial_split_error = SegmentSpeechSplitRequiredError(
+            segment_id="ch01-sc02-seg02",
+            required_duration_seconds=13,
+            current_duration_seconds=8,
+            max_duration_seconds=12,
+            required_segment_count=2,
+        )
+        structured_error = RuntimeError(
+            "Structured repair failed for task=video-scene-segment-overflow-repair "
+            "schema=SceneSegmentContractBatchSchema after 3 attempts: "
+            "segment ch01-sc02-seg02 的 shot_state.framing 在 segment "
+            "(林屿、苏晚) 多人同帧时仍要求单人特写，这会导致同一角色在画面里重复出现。"
+        )
+
+        def fake_strict_agent(*, schema, request, validator, attempts):  # noqa: ANN001
+            raise structured_error
+
+        with (
+            patch.object(service, "_run_strict_structured_agent", side_effect=fake_strict_agent),
+            patch.object(service, "_repair_scene_chunk_contract_batch_after_focus_conflict_failure", return_value=failed_contracts) as focus_repair,
+        ):
+            repaired = service._repair_scene_chunk_contract_batch_after_split_failure(
+                novel_package=SimpleNamespace(outline=SimpleNamespace(title="测试", characters=[])),
+                story_memory=StoryMemoryPackage(),
+                chapter_number=1,
+                scene=scene,
+                chunk=chunk,
+                previous_chunk_exit_state=None,
+                previous_tail_segment=None,
+                failed_contracts=failed_contracts,
+                split_error=initial_split_error,
+                effective_expected_segment_count=2,
+            )
+
+        self.assertIs(repaired, failed_contracts)
+        focus_repair.assert_called_once()
+
+    def _build_overflow_repair_chain_fixture(
+        self,
+    ) -> tuple[ChapterSceneSchema, SceneSegmentChunkSchema, SceneSegmentContractBatchSchema]:
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc02",
+                "chapter_number": 1,
+                "title": "初次对话",
+                "summary": "两人在长椅旁完成第一轮对话。",
+                "scene_anchor": "郁金香花园长椅",
+                "involved_characters": ["林屿", "苏晚"],
+                "covered_event_ids": ["ch01-ev02"],
+                "scene_bible": {
+                    "location": "郁金香花园长椅",
+                    "background_anchors": ["长椅", "郁金香花丛"],
+                    "spatial_layout": "长椅位于花丛旁",
+                    "character_blocking": "两人在长椅旁面对面站立",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc02-chunk01",
+                "order_index": 1,
+                "title": "第一轮对话",
+                "summary": "林屿和苏晚开始对话。",
+                "must_cover": ["林屿开口", "苏晚回应"],
+                "transition_goal": "两人完成第一轮对话。",
+                "expected_segment_count": 2,
+            }
+        )
+        failed_contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc02",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc02-seg02",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc02",
+                        "title": "对话停顿",
+                        "summary": "林屿说完后苏晚短暂停顿。",
+                        "involved_characters": ["林屿", "苏晚"],
+                        "timed_beats": ["0-8秒：两人面对面完成第一轮对话。"],
+                        "duration_seconds": 8,
+                        "transition_hint": "start",
+                        "shot_state": {
+                            "framing": "双人中景",
+                            "camera_motion": "固定镜头",
+                            "blocking": "两人面对面站立",
+                            "action_progression": "林屿开口，苏晚回应",
+                            "emotion_progression": "紧张到安静",
+                            "prop_continuity": "无特殊持物",
+                            "screen_direction": "保持面对面轴线",
+                            "end_state_lock": "两人完成第一轮对话。",
+                        },
+                        "continuity_link": {
+                            "transition_mode": "start",
+                            "opening_match": "两人在长椅旁面对面站立。",
+                            "carry_over_elements": ["长椅", "郁金香花丛"],
+                            "allowed_changes": "林屿开口，苏晚回应。",
+                            "transition_reason": "chunk 起始。",
+                        },
+                        "motion_plan": {
+                            "scene_motion": "两人在长椅旁完成对话。",
+                            "beat_progression": "0-8秒两人面对面完成第一轮对话。",
+                            "camera_path": "固定镜头。",
+                            "character_motion": "两人保持面对面。",
+                            "continuity_guard": "保持同一长椅空间。",
+                        },
+                    }
+                ],
+            }
+        )
+        return scene, chunk, failed_contracts
 
     def test_character_profile_requires_structured_voice_profile(self) -> None:
         with self.assertRaisesRegex(ValueError, "voice_profile"):
@@ -3139,6 +4245,48 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIn("镜湖步道", entry_match)
         self.assertIn("两人并肩进入镜湖步道", entry_match)
         self.assertIn("承接上一场的沉默", entry_match)
+
+    def test_chapter_scene_transition_entry_with_weak_overlap_is_backfilled(self) -> None:
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc03",
+                "chapter_number": 1,
+                "title": "图书馆旁花田",
+                "summary": "两人沿着花田边缘来到图书馆旁。",
+                "scene_anchor": "图书馆旁花田 / 傍晚",
+                "involved_characters": ["陈默", "林晚"],
+                "covered_event_ids": ["ch01-ev03"],
+                "scene_transition_contract": {
+                    "previous_scene_id": "ch01-sc02",
+                    "transition_mode": "adjacent_move",
+                    "previous_scene_exit_state": "两人离开镜湖步道。",
+                    "next_scene_entry_match": "继续沿着路往前走，气氛仍然安静。",
+                    "bridge_action": "两人沿路继续前行，转入图书馆旁花田。",
+                    "carry_over_elements": ["并肩关系", "安静情绪"],
+                    "screen_direction_policy": "保持向前行进。",
+                    "visual_bridge": "从步道边缘带出花田和图书馆外立面。",
+                    "transition_focus_seconds": 2,
+                },
+                "scene_bible": {
+                    "location": "图书馆旁花田",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "夕阳侧光",
+                    "background_anchors": ["图书馆外立面", "红色郁金香", "石板路"],
+                    "fixed_props": ["花田围栏"],
+                    "spatial_layout": "石板路穿过花田，远处是图书馆外立面",
+                    "character_blocking": "两人并肩停在花田边缘看向图书馆方向",
+                    "continuity_notes": "保持花田、石板路和图书馆外立面的空间关系稳定",
+                },
+            }
+        )
+
+        entry_match = scene.scene_transition_contract.next_scene_entry_match
+
+        self.assertIn("图书馆旁花田", entry_match)
+        self.assertIn("两人并肩停在花田边缘看向图书馆方向", entry_match)
+        self.assertIn("图书馆外立面", entry_match)
+        self.assertIn("继续沿着路往前走", entry_match)
 
     def test_chapter_scene_structure_accepts_filmable_transition_entry_with_current_anchor(self) -> None:
         service = NovelToVideoService()
@@ -3572,6 +4720,108 @@ class PipelineTestCase(unittest.TestCase):
                 chunk_plan,
                 scene=scene,
             )
+
+    def test_focus_repair_validator_warns_instead_of_failing_on_chunk_goal_landing(self) -> None:
+        service = NovelToVideoService()
+        scene = ChapterSceneSchema.model_validate(
+            {
+                "scene_id": "ch01-sc03",
+                "chapter_number": 1,
+                "title": "长廊相遇",
+                "summary": "林屿和苏晚在长廊边相遇，准备进入对话。",
+                "scene_anchor": "长廊出口与花圃交界处",
+                "involved_characters": ["林屿", "苏晚"],
+                "scene_bible": {
+                    "location": "长廊出口与花圃交界处",
+                    "time_window": "傍晚",
+                    "weather": "微风",
+                    "lighting": "夕阳低角度暖光",
+                    "background_anchors": ["长廊", "花圃"],
+                    "fixed_props": ["石板路"],
+                    "spatial_layout": "长廊出口连接花圃边缘",
+                    "character_blocking": "两人同框站在长廊出口附近",
+                    "continuity_notes": "保持长廊与花圃关系稳定",
+                },
+            }
+        )
+        chunk = SceneSegmentChunkSchema.model_validate(
+            {
+                "chunk_id": "ch01-sc03-chunk1",
+                "order_index": 1,
+                "title": "准备说话",
+                "summary": "两人相遇后停下，准备进入对话。",
+                "must_cover": ["两人相遇", "停下"],
+                "transition_goal": "两人进入对话。",
+                "expected_segment_count": 1,
+            }
+        )
+        contracts = SceneSegmentContractBatchSchema.model_validate(
+            {
+                "scene_id": "ch01-sc03",
+                "chapter_number": 1,
+                "segments": [
+                    {
+                        "segment_id": "ch01-sc03-seg01",
+                        "chapter_number": 1,
+                        "scene_id": "ch01-sc03",
+                        "title": "同框停下",
+                        "summary": "林屿和苏晚在长廊出口附近同框停下。",
+                        "involved_characters": ["林屿", "苏晚"],
+                        "timed_beats": [
+                            "0-3秒：林屿和苏晚在长廊出口附近同框停下。",
+                            "3-6秒：两人保持沉默，尚未进入对话。",
+                        ],
+                        "duration_seconds": 6,
+                        "transition_hint": "start",
+                        "shot_state": {
+                            "framing": "双人中景，林屿和苏晚保持同框。",
+                            "camera_motion": "固定镜头轻微呼吸感，保持两人同框。",
+                            "blocking": "两人站在长廊出口附近。",
+                            "action_progression": "两人相遇后停下，仍停在开口前的一刻。",
+                            "emotion_progression": "安静、犹豫。",
+                            "prop_continuity": "无特殊持物。",
+                            "screen_direction": "两人面对面。",
+                            "end_state_lock": "两人停在开口前的一刻。",
+                        },
+                        "continuity_link": {
+                            "transition_mode": "start",
+                            "opening_match": "长廊出口与花圃交界处，两人同框。",
+                            "carry_over_elements": ["长廊", "花圃"],
+                            "allowed_changes": "两人停下。",
+                            "transition_reason": "scene 起始段。",
+                        },
+                        "motion_plan": {
+                            "scene_motion": "两人在场景母图空间中停下。",
+                            "beat_progression": "0-3秒同框停下；3-6秒保持沉默。",
+                            "camera_path": "固定镜头。",
+                            "character_motion": "两人停步。",
+                            "continuity_guard": "保持长廊和花圃空间稳定。",
+                        },
+                    }
+                ],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "没有真正落到当前 chunk 的结果"):
+            service._validate_scene_chunk_contract_output(
+                contracts,
+                scene=scene,
+                chunk=chunk,
+                effective_expected_segment_count=1,
+            )
+
+        warnings: list[str] = []
+        validated = service._validate_scene_chunk_contract_output(
+            contracts,
+            scene=scene,
+            chunk=chunk,
+            effective_expected_segment_count=1,
+            landing_strict=False,
+            warning_sink=warnings,
+        )
+
+        self.assertEqual(validated.scene_id, "ch01-sc03")
+        self.assertTrue(any("没有真正落到当前 chunk 的结果" in item for item in warnings))
 
     def test_scene_chunk_output_rejects_excessive_total_expected_segments(self) -> None:
         service = NovelToVideoService()
@@ -5733,6 +6983,205 @@ class PipelineTestCase(unittest.TestCase):
         self.assertNotIn("固定道具：手机", prompt)
         self.assertNotIn("手机", prompt)
 
+    def test_scene_master_frame_prompt_filters_human_actions_from_spatial_transition(self) -> None:
+        service = NovelToVideoService()
+
+        prompt = service._build_scene_master_frame_prompt(
+            VideoScene(
+                scene_id="ch01-sc02",
+                chapter_number=1,
+                title="长廊出口",
+                summary="苏晚从长廊方向走近林序。",
+                scene_anchor="郁金香花园花圃边缘，长廊出口与花丛交界处",
+                involved_characters=["林序", "苏晚"],
+                covered_event_ids=[],
+                segments=[],
+                scene_transition_contract=SceneTransitionContract(
+                    previous_scene_id="ch01-sc01",
+                    scene_spatial_continuity_mode="same_space_progression",
+                    shared_environment_anchors=["红色郁金香花丛", "夕阳琥珀色光线", "操场广播声"],
+                    spatial_relation_to_previous="同一花圃，视线从林序转向长廊方向，苏晚进入画面",
+                    camera_handoff="从林序面部特写拉远，摇向长廊方向，跟随苏晚走近",
+                    allowed_environment_changes="苏晚进入场景，长廊出口纳入画面",
+                    forbidden_drift="不得改变花圃布局、夕阳光线角度或林序手中花的位置",
+                ),
+                scene_bible=SceneBible(
+                    location="教学楼后的郁金香花园，第三排红色郁金香旁",
+                    time_window="傍晚六点零七分",
+                    weather="晴朗，有微风",
+                    lighting="夕阳琥珀色光线，低角度暖光",
+                    dominant_palette=["琥珀色", "红色", "白色"],
+                    background_anchors=["操场广播方向", "红色郁金香花丛", "远处长廊入口", "教学楼轮廓"],
+                    fixed_props=["红色郁金香花丛", "白色郁金香花茎", "花圃边缘地面"],
+                    spatial_layout="郁金香花园第三排红色郁金香旁；郁金香花园攥着白色郁金香；长廊入口",
+                    continuity_notes="保持花圃和长廊出口的空间关系稳定。",
+                ),
+            )
+        )
+
+        self.assertIn("长廊入口", prompt)
+        self.assertIn("红色郁金香花丛", prompt)
+        self.assertIn("单图输入、单图输出的场景母图编辑任务", prompt)
+        self.assertIn("图片1 是上一场场景母图，必须作为视觉母版使用", prompt)
+        self.assertIn("美术风格、线条粗细、上色方式、镜头焦段、透视关系、空间尺度", prompt)
+        self.assertIn("固定道具相对位置不变", prompt)
+        self.assertIn("背景锚点应能看出属于同一地点", prompt)
+        self.assertNotIn("攥着", prompt)
+        self.assertNotIn("手中花", prompt)
+        self.assertNotIn("苏晚", prompt)
+        self.assertNotIn("林序", prompt)
+        self.assertNotIn("面部特写", prompt)
+        self.assertNotIn("进入画面", prompt)
+
+    def test_scene_master_frame_prompt_uses_previous_master_as_spatial_template_on_time_jump(self) -> None:
+        service = NovelToVideoService()
+
+        prompt = service._build_scene_master_frame_prompt(
+            VideoScene(
+                scene_id="ch01-sc03",
+                chapter_number=1,
+                title="雨后的同一花园",
+                summary="同一花园在雨后进入下一场。",
+                scene_anchor="图书馆旁花园，雨后傍晚",
+                involved_characters=["林屿", "苏晚"],
+                covered_event_ids=[],
+                segments=[],
+                scene_transition_contract=SceneTransitionContract(
+                    previous_scene_id="ch01-sc02",
+                    scene_spatial_continuity_mode="time_jump_same_location",
+                    shared_environment_anchors=["图书馆外立面", "石板路", "银杏树"],
+                    spatial_relation_to_previous="同一花园，雨后同地点",
+                    allowed_environment_changes="雨后地面反光，光线更冷",
+                    forbidden_drift="不得改变石板路与银杏树的位置关系",
+                ),
+                scene_bible=SceneBible(
+                    location="图书馆旁花园",
+                    time_window="雨后傍晚",
+                    weather="小雨刚停",
+                    lighting="冷金色天光与湿润反光",
+                    dominant_palette=["冷金色", "绿色", "灰蓝色"],
+                    background_anchors=["图书馆外立面", "石板路", "银杏树"],
+                    fixed_props=["石板路", "银杏树干", "花田围栏"],
+                    spatial_layout="银杏树在花园尽头，石板路从花田中穿过。",
+                    continuity_notes="保持图书馆、石板路和银杏树的空间关系稳定。",
+                ),
+            )
+        )
+
+        self.assertIn("单图输入、单图输出的同地点时间变化编辑任务", prompt)
+        self.assertIn("图片1 是同一地点的上一场母图，必须作为空间母版使用", prompt)
+        self.assertIn("保持图片1的透视关系、空间尺度、地面材质", prompt)
+        self.assertIn("固定道具位置关系不变", prompt)
+        self.assertIn("只允许时间、天气、光线强度和色温按本场基线变化", prompt)
+        self.assertIn("图书馆外立面", prompt)
+        self.assertNotIn("林屿", prompt)
+        self.assertNotIn("苏晚", prompt)
+
+    def test_same_space_scene_reuses_previous_scene_master_frame(self) -> None:
+        service = NovelToVideoService()
+        previous_scene = VideoScene(
+            scene_id="ch01-sc01",
+            chapter_number=1,
+            title="花丛中央",
+            summary="林叙站在花丛中央等待。",
+            scene_anchor="郁金香花园花丛中央",
+            involved_characters=["林叙"],
+            covered_event_ids=[],
+            segments=[],
+            scene_bible=SceneBible(location="郁金香花园花丛中央"),
+            scene_master_frame_path="/tmp/ch01-sc01_master.png",
+            scene_master_frame_url="https://example.com/ch01-sc01-master.png",
+            scene_master_frame_status="completed",
+        )
+        next_scene = VideoScene(
+            scene_id="ch01-sc02",
+            chapter_number=1,
+            title="入口出现",
+            summary="苏晚从同一花园入口出现。",
+            scene_anchor="同一郁金香花园入口",
+            involved_characters=["林叙", "苏晚"],
+            covered_event_ids=[],
+            segments=[],
+            scene_transition_contract=SceneTransitionContract(
+                previous_scene_id="ch01-sc01",
+                transition_mode="direct_continue",
+                scene_spatial_continuity_mode="same_space_progression",
+                shared_environment_anchors=["郁金香花丛", "夕阳天际线"],
+            ),
+            scene_bible=SceneBible(location="郁金香花园入口处"),
+            scene_master_frame_path="/tmp/ch01-sc02_master.png",
+            scene_master_frame_status="planned",
+        )
+        segment = VideoSegment(
+            segment_id="ch01-sc02-seg01",
+            chapter_number=1,
+            scene_id="ch01-sc02",
+            scene_title="入口出现",
+            scene_summary="苏晚从同一花园入口出现。",
+            scene_anchor="同一郁金香花园入口",
+            title="入口出现",
+            summary="苏晚出现。",
+            involved_characters=["林叙", "苏晚"],
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=["0-6秒：苏晚出现。"],
+            duration_seconds=6,
+            scene_bible=next_scene.scene_bible,
+            shot_state=ShotState(),
+            continuity_link=ContinuityLink(),
+            motion_plan=MotionPlan(),
+        )
+
+        tasks = service._build_scene_image_tasks(
+            [previous_scene, next_scene],
+            [segment],
+            [],
+            {},
+            str(self.temp_root),
+        )
+
+        self.assertEqual(tasks[0].scene_master_frame_url, "https://example.com/ch01-sc01-master.png")
+        self.assertEqual(tasks[0].scene_master_frame_path, "/tmp/ch01-sc01_master.png")
+        self.assertEqual(tasks[0].scene_master_frame_status, "completed")
+        self.assertEqual(tasks[0].reference_images, [])
+        self.assertEqual(next_scene.scene_master_frame_url, "https://example.com/ch01-sc01-master.png")
+        self.assertEqual(next_scene.scene_master_request_info["variant"], "reuse_previous_scene_master")
+
+    def test_scene_master_reference_images_do_not_fallback_to_local_previous_path(self) -> None:
+        service = NovelToVideoService()
+        previous_scene = VideoScene(
+            scene_id="ch01-sc01",
+            chapter_number=1,
+            title="上一场",
+            summary="上一场",
+            scene_anchor="上一场",
+            involved_characters=[],
+            covered_event_ids=[],
+            segments=[],
+            scene_master_frame_path="/tmp/local-only-master.png",
+            scene_master_frame_url="",
+        )
+        next_scene = VideoScene(
+            scene_id="ch01-sc02",
+            chapter_number=1,
+            title="下一场",
+            summary="下一场",
+            scene_anchor="下一场",
+            involved_characters=[],
+            covered_event_ids=[],
+            segments=[],
+            scene_transition_contract=SceneTransitionContract(
+                previous_scene_id="ch01-sc01",
+                transition_mode="direct_continue",
+                scene_spatial_continuity_mode="same_space_progression",
+            ),
+        )
+
+        self.assertEqual(service._scene_master_reference_images(next_scene, previous_scene), [])
+
     def test_prepare_scene_master_frame_filters_unanchored_carried_props(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         service = NovelToVideoService(
@@ -5858,10 +7307,10 @@ class PipelineTestCase(unittest.TestCase):
 
         self.assertIn("本段无对白、无旁白、无字幕", prompt)
         self.assertIn("字幕约束：本段没有可烧录字幕", prompt)
-        self.assertIn("参考图绑定：", prompt)
-        self.assertIn("图片1 是当前 scene 的场景母图", prompt)
-        self.assertIn("图片2 及之后是实际出镜角色定妆图", prompt)
-        self.assertIn("画面推进 0-3秒：先在图片1的场景母图空间里建立开场状态", prompt)
+        self.assertNotIn("参考图绑定：", prompt)
+        self.assertNotIn("提交阶段会绑定当前 scene 的场景母图", prompt)
+        self.assertNotIn("图片2 及之后是实际出镜角色定妆图", prompt)
+        self.assertIn("画面推进 0-3秒：先在场景母图锁定的空间里建立开场状态", prompt)
         self.assertIn("画面推进 3-6秒：最后在同一场景空间里自然收束到", prompt)
         self.assertIn("这一段拍出“林远在栈道入口停住，望向前方”", prompt)
         self.assertNotIn("片段标题：", prompt)

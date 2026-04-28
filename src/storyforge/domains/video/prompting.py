@@ -328,7 +328,9 @@ class VideoPromptingMixin:
 - 从第二个 scene 开始，必须显式填写 `scene_transition_contract`，说明它如何从上一场进入当前场。
 - `scene_transition_contract.transition_mode` 只能取 `direct_continue / adjacent_move / motivated_cut / hard_cut`。
 - 如果不是 `hard_cut`，就必须写清：`previous_scene_id`、`previous_scene_exit_state`、`next_scene_entry_match`、`bridge_action`、`carry_over_elements`、`visual_bridge`。
-- `next_scene_entry_match` 必须写成当前 scene 第一秒能直接拍到的开场画面：当前地点/背景锚点 + 角色站位/朝向/动作停点；不得只写“承接上一场情绪”“继续上一场沉默”或只复述上一场尾部。
+- `next_scene_entry_match` 必须写成当前 scene 第一秒能直接拍到的开场画面，必须包含当前 `scene_bible.location` 或 `scene_anchor` 里的地点词，且包含当前 `scene_bible.background_anchors` 或 `fixed_props` 里的至少一个环境锚点。
+- `next_scene_entry_match` 还必须包含当前场角色站位/朝向/动作停点，优先从当前 `scene_bible.character_blocking` 改写；不得只写“承接上一场情绪”“继续上一场沉默”或只复述上一场尾部。
+- 推荐格式：`当前场开头先建立[当前地点]，[角色站位/朝向/动作停点]，画面可见[当前场背景锚点/固定道具]`。
 - `previous_scene_exit_state` 只写上一场最后能看到什么；`bridge_action` 写上一场尾部如何过渡到当前场开头；`visual_bridge` 写当前场新环境如何 reveal。
 - `transition_focus_seconds` 通常只写 1-3 秒；不要把整场都写成过渡段。
 - 如果发生明显地点切换、时间跳转、光线大变或叙事空间切换，就必须开新 scene。
@@ -1027,6 +1029,8 @@ story memory JSON：
 - 不得回放当前 chunk 之前已经发生的事件，也不得提前写入当前 chunk 之后的剧情结果。
 - 不得为了满足拆分而制造近义重复段；拆出来的每一段都必须有新增推进。
 - 如果某段文本预算仍能在 12 秒内说完，可以直接把 `duration_seconds` 提到所需秒数；只有确实超过 12 秒时才继续拆分。
+- 每个修复后的 segment 的 `timed_beats` 必须覆盖自己的完整 `duration_seconds`；最后一条 beat 的结束秒数必须接近片段时长，不得只写到 6 秒却把 `duration_seconds` 设成 10 秒。
+- 如果拆分后尾部仍有空白时间，必须补 1 条尾部收束 beat，写清最后几秒的反应、停顿、视线、手部动作、站位或镜头停点。
 - 不要输出 `sound_effects`、`music_direction`、`character_voice_notes`。
 - 禁止在任何字段写工程注记或制作标签，例如 `第1段`、`第2段`、`当前子片段`、`重点呈现`、`收束状态`。
 {self._frame_character_rule_block()}
@@ -1337,6 +1341,7 @@ story memory JSON：
 - 当前失败字段是 `{field_name}`，冲突画面是 `{frame_label}`，当前角色组是 `{frame_names_text}`。
 - 本次优先做“镜头一致性修复”，不要大改未报错 segment 的剧情推进、对白、承接和段数。
 - 只要当前片段仍要求 `{frame_names_text}` 同框，就必须把 `shot_state.framing` 与 `shot_state.camera_motion` 都改成共享镜头语言，不要再写“{focus_name} 单人近景”“推向 {focus_name} 侧脸特写”“聚焦 {focus_name} 脸部”这类单人特写句。
+- 最后一个 segment 的 `summary`、`timed_beats` 最后一拍和 `shot_state.end_state_lock` 必须继续落到当前 chunk 的 `transition_goal`；如果上一轮尾部落点不足，只在尾部补齐目标，不要改段数。
 - 合法方向示例：
   - `shot_state.framing=双人中近景，保持 {frame_names_text} 同框`
   - `shot_state.camera_motion=轻微前推，保持 {frame_names_text} 同框，只通过站位和表情差异突出 {focus_name} 情绪变化`
@@ -2168,6 +2173,7 @@ story memory JSON：
         sections = self._scene_master_structured_prompt_sections(
             scene.scene_bible,
             scene.involved_characters,
+            scene.scene_transition_contract,
         )
         return "\n\n".join(section for section in sections if section)
 
@@ -2175,6 +2181,7 @@ story memory JSON：
         self,
         scene_bible: object,
         involved_characters: list[str],
+        scene_transition_contract: object | None = None,
     ) -> list[str]:
         baseline_lines = self._scene_master_baseline_lines(scene_bible, involved_characters)
         spatial_layout = self._scene_master_spatial_layout_line(scene_bible, involved_characters)
@@ -2194,6 +2201,7 @@ story memory JSON：
         sections = [
             "原创虚构场景母图，风格化概念插画，非真人摄影。",
             environment_constraint,
+            self._scene_master_transition_context(scene_transition_contract),
             "场景基线锁定：\n" + "\n".join(baseline_lines) if baseline_lines else "",
             "空间布局：\n" + spatial_layout if spatial_layout else "",
             f"主色调：{palette}" if palette else "",
@@ -2202,6 +2210,74 @@ story memory JSON：
             no_people_text,
         ]
         return sections
+
+    def _scene_master_transition_context(self, contract: object | None) -> str:
+        if contract is None:
+            return ""
+        previous_scene_id = self._scene_transition_value(contract, "previous_scene_id")
+        if not previous_scene_id:
+            return ""
+        mode = self._scene_spatial_continuity_mode(contract)
+        lines: list[str] = []
+        if mode in {"same_space_progression", "same_location_new_angle"}:
+            lines.append("图文生图编辑指令：若提交了图片1，本次是单图输入、单图输出的场景母图编辑任务，不是重新生成新场景。")
+            lines.append("图片1 是上一场场景母图，必须作为视觉母版使用；在图片1已有空间基础上进行视角、机位或可见范围调整。")
+            lines.append(
+                "保持图片1的美术风格、线条粗细、上色方式、镜头焦段、透视关系、空间尺度、"
+                "地面材质、植物形态、建筑外立面风格、主光方向、整体色温和固定道具相对位置不变。"
+            )
+            lines.append("只编辑同一空间的机位、取景范围、可见区域或局部环境细节；不要重画成另一个不相似的新场景。")
+            if mode == "same_space_progression":
+                lines.append("本场必须像沿图片1的空间继续推进到新机位，背景锚点应能看出属于同一地点；不要原样复制图片1构图。")
+            else:
+                lines.append("本场是同一地点的新角度，必须保持图片1的空间结构和固定道具位置关系一致，但不要原样复制图片1构图。")
+        elif mode == "time_jump_same_location":
+            lines.append("图文生图编辑指令：若提交了图片1，本次是单图输入、单图输出的同地点时间变化编辑任务，不是重新生成新场景。")
+            lines.append("图片1 是同一地点的上一场母图，必须作为空间母版使用。")
+            lines.append(
+                "保持图片1的透视关系、空间尺度、地面材质、植物形态、建筑外立面风格和固定道具位置关系不变；"
+                "只允许时间、天气、光线强度和色温按本场基线变化。"
+            )
+        elif mode == "hard_cut_new_location":
+            lines.append("跨场景空间承接：这是新地点，不继承上一场空间；不要出现上一场地点的背景锚点、道路、植物、建筑或光线特征。")
+        elif mode == "uncertain":
+            lines.append("跨场景空间承接：当前与上一场关系不确定，只按本场场景基线生成，不参考上一场构图。")
+
+        shared_anchors = self._scene_transition_list(contract, "shared_environment_anchors")
+        if shared_anchors:
+            environment_anchors = [
+                anchor
+                for anchor in shared_anchors
+                if not self._contains_scene_master_human_signal(anchor, [])
+            ]
+            if environment_anchors:
+                lines.append("必须延续的环境锚点：" + "、".join(environment_anchors[:6]))
+        for label, key in (
+            ("空间关系", "spatial_relation_to_previous"),
+            ("镜头承接", "camera_handoff"),
+            ("允许变化", "allowed_environment_changes"),
+            ("禁止漂移", "forbidden_drift"),
+        ):
+            value = self._scene_master_environment_only_text(
+                self._scene_transition_value(contract, key)
+            ).strip(" ，。；;")
+            if value:
+                lines.append(f"{label}：{value}")
+        return "\n".join(lines)
+
+    def _scene_master_environment_only_text(self, text: str) -> str:
+        clauses: list[str] = []
+        for clause in re.split(r"[，。；;]+", str(text or "")):
+            cleaned = self._strip_scene_master_human_staging(clause, [])
+            if not cleaned:
+                continue
+            if self._contains_scene_master_human_signal(cleaned, []):
+                continue
+            if not self._looks_like_scene_master_spatial_clause(cleaned):
+                continue
+            if cleaned not in clauses:
+                clauses.append(cleaned)
+        return "；".join(clauses[:4])
 
     def _scene_master_baseline_lines(
         self,
@@ -2845,6 +2921,27 @@ story memory JSON：
                 "说话",
                 "表情",
                 "情绪",
+                "手中",
+                "手里",
+                "手部",
+                "手持",
+                "手握",
+                "握着",
+                "握住",
+                "攥着",
+                "攥住",
+                "拿着",
+                "拿起",
+                "拿出",
+                "捧着",
+                "抱着",
+                "递给",
+                "接过",
+                "进入画面",
+                "进入场景",
+                "纳入画面",
+                "面部特写",
+                "脸部特写",
             )
         )
 
@@ -2864,6 +2961,35 @@ story memory JSON：
         else:
             raw = getattr(continuity_link, key, [])
         return [str(item).strip() for item in raw or [] if str(item).strip()]
+
+    def _scene_transition_value(self, contract: object, key: str) -> str:
+        if isinstance(contract, dict):
+            return str(contract.get(key, "") or "")
+        return str(getattr(contract, key, "") or "")
+
+    def _scene_transition_list(self, contract: object, key: str) -> list[str]:
+        if isinstance(contract, dict):
+            raw = contract.get(key, [])
+        else:
+            raw = getattr(contract, key, [])
+        return [str(item).strip() for item in raw or [] if str(item).strip()]
+
+    def _scene_spatial_continuity_mode(self, contract: object) -> str:
+        mode = self._scene_transition_value(contract, "scene_spatial_continuity_mode").strip().lower()
+        if mode in {
+            "same_space_progression",
+            "same_location_new_angle",
+            "hard_cut_new_location",
+            "time_jump_same_location",
+            "uncertain",
+        }:
+            return mode
+        transition_mode = self._scene_transition_value(contract, "transition_mode").strip().lower()
+        if transition_mode in {"direct_continue", "adjacent_move"}:
+            return "same_space_progression"
+        if transition_mode in {"motivated_cut", "hard_cut"}:
+            return "hard_cut_new_location"
+        return "uncertain"
 
     def _seedance_frame_prompt_text(
         self,
@@ -3092,14 +3218,13 @@ story memory JSON：
             segment=segment,
             stage_beat_specs=stage_beat_specs,
         )
-        visible_characters = self._character_set_label(self._segment_visible_characters(segment))
         entry_state = self._continuity_link_value(segment.continuity_link, "opening_match") or segment.summary
         exit_state = self._shot_state_value(segment.shot_state, "end_state_lock") or segment.summary
         for index, (time_label, beat_focus) in enumerate(stage_beat_specs):
             is_first = index == 0
             is_last = index == len(stage_beat_specs) - 1
             if is_first:
-                base = f"先在图片1的场景母图空间里建立开场状态：{entry_state}。角色参考来自图片2及之后，保持 {visible_characters} 的身份、服装和体型稳定"
+                base = f"先在场景母图锁定的空间里建立开场状态：{entry_state}。角色参考只用于身份、服装和体型稳定，若提交了上一段尾帧则必须先承接尾帧构图和动作停点"
                 motion_key = "scene_motion"
                 anchor_text = entry_state
             elif is_last:
@@ -3140,24 +3265,54 @@ story memory JSON：
             return []
 
         focus_seconds = max(int(contract.transition_focus_seconds or 0), 1)
+        spatial_mode = self._scene_spatial_continuity_mode(contract)
         entry_match = str(contract.next_scene_entry_match or "").strip()
         bridge_action = str(contract.bridge_action or "").strip()
         visual_bridge = str(contract.visual_bridge or "").strip()
+        spatial_relation = str(contract.spatial_relation_to_previous or "").strip()
+        camera_handoff = str(contract.camera_handoff or "").strip()
+        prop_bridge = str(contract.prop_bridge or "").strip()
+        action_bridge = str(contract.action_bridge or "").strip()
+        forbidden_drift = str(contract.forbidden_drift or "").strip()
+        shared_anchors = [str(item).strip() for item in contract.shared_environment_anchors if str(item).strip()]
         carry_over = [str(item).strip() for item in contract.carry_over_elements if str(item).strip()]
         screen_direction_policy = str(contract.screen_direction_policy or "").strip()
-        lines = [
-            "跨场承接：这是当前 scene 的首段，开场先承接上一场尾部，不要把图片1 当成重新开场。",
-        ]
+        mode_labels = {
+            "same_space_progression": "同一空间推进",
+            "same_location_new_angle": "同地点新角度",
+            "hard_cut_new_location": "新地点硬切",
+            "time_jump_same_location": "同地点时间跳切",
+            "uncertain": "关系不确定",
+        }
+        lines = [f"跨场承接：这是当前 scene 的首段，转场方式为{mode_labels.get(spatial_mode, spatial_mode or '未指定')}。"]
+        if spatial_mode == "hard_cut_new_location":
+            lines.append("跨场承接：这是新地点，不延续上一场背景；用自然硬切、动作桥、声音桥或物件桥切入当前场，不要混合两个地点的元素。")
+        elif spatial_mode == "uncertain":
+            lines.append("跨场承接：只按当前图片1的场景母图建立本场，不要强行把上一场空间变形接入。")
+        else:
+            lines.append("跨场承接：延续上一场的空间关系，在当前图片1的场景母图中完成自然推进或新机位建立，不要突然换成无关地点。")
         if entry_match:
-            lines.append(f"跨场承接：前 {focus_seconds} 秒先把图片1 长成“{entry_match}”。")
+            lines.append(f"跨场承接：前 {focus_seconds} 秒先建立“{entry_match}”。")
+        if shared_anchors:
+            lines.append("共享环境锚点：" + "、".join(shared_anchors[:6]))
+        if spatial_relation:
+            lines.append(f"空间关系：{spatial_relation}")
+        if camera_handoff:
+            lines.append(f"镜头承接：{camera_handoff}")
         if bridge_action:
-            lines.append(f"跨场承接：随后按“{bridge_action}”推进，再稳定落到后续关键图。")
+            lines.append(f"连接动作：{bridge_action}")
+        if action_bridge:
+            lines.append(f"动作桥：{action_bridge}")
+        if prop_bridge:
+            lines.append(f"物件桥：{prop_bridge}")
         if visual_bridge:
             lines.append(f"视觉过桥：{visual_bridge}")
         if carry_over:
             lines.append("延续元素：" + "、".join(carry_over[:4]))
         if screen_direction_policy:
             lines.append(f"方向：{screen_direction_policy}")
+        if forbidden_drift:
+            lines.append(f"禁止漂移：{forbidden_drift}")
         audio_bridge_line = self._scene_transition_audio_bridge_line(contract.audio_bridge)
         if audio_bridge_line:
             lines.append(audio_bridge_line)
@@ -3214,14 +3369,7 @@ story memory JSON：
         else:
             lines.append("本段无对白、无旁白、无字幕，只保留环境音、拟音和音乐。")
 
-        lines.append("参考图绑定：")
-        lines.append("- 图片1 是当前 scene 的场景母图，只用于锁定地点、光线、空间透视、背景锚点和固定道具，不是视频时间帧。")
-        visible_characters = self._segment_visible_characters(segment)
-        if visible_characters:
-            lines.append(
-                "- 图片2 及之后是实际出镜角色定妆图，只用于锁定角色身份、脸、发型、服装、体型和比例，不是视频时间锚点。"
-            )
-        lines.append("画面推进：在图片1的同一场景空间里，根据角色参考图生成连续表演；不要生成分镜跳图或把参考图当作时间帧。")
+        lines.append("画面推进：在场景母图锁定的同一场景空间里，根据角色参考图生成连续表演；不要生成分镜跳图，不要把角色定妆图当作时间帧。")
         lines.extend(self._seedance_transition_guard_lines(segment))
         lines.extend(self._seedance_scene_transition_lines(segment, scene))
         if narration:

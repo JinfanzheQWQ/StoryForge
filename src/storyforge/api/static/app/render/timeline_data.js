@@ -22,7 +22,7 @@ export function segmentLabel(segmentId, index) {
 
 export function buildTimelineSegments(artifacts) {
   if (artifacts?.planned_segments?.length) {
-    return artifacts.planned_segments.map((segment, index) => ({
+    const segments = artifacts.planned_segments.map((segment, index) => ({
       segmentId: segment.segment_id,
       sceneId: segment.scene_id || "",
       sceneTitle: segment.scene_title || "",
@@ -32,6 +32,7 @@ export function buildTimelineSegments(artifacts) {
       sceneTransitionContract: segment.scene_transition_contract && typeof segment.scene_transition_contract === "object"
         ? segment.scene_transition_contract
         : {},
+      sceneSpatialContinuityMode: segment.scene_spatial_continuity_mode || "uncertain",
       sceneMasterFrameStatus: segment.scene_master_frame_status || "",
       sceneMasterFrameError: segment.scene_master_frame_error || "",
       coveredEventIds: Array.isArray(segment.covered_event_ids) ? segment.covered_event_ids : [],
@@ -48,8 +49,15 @@ export function buildTimelineSegments(artifacts) {
       seedanceMotionPrompt: segment.seedance_motion_prompt || "",
       motionPlan: segment.motion_plan && typeof segment.motion_plan === "object" ? segment.motion_plan : {},
       motionContract: segment.motion_contract && typeof segment.motion_contract === "object" ? segment.motion_contract : {},
+      firstFrameUrl: segment.first_frame_url || "",
+      lastFrameUrl: segment.last_frame_url || "",
+      previousClipSegmentId: segment.previous_clip_segment_id || "",
+      previousClipVideoUrl: segment.previous_clip_video_url || "",
       characterReferences: Array.isArray(segment.character_references)
         ? segment.character_references.map((item) => ({ ...item, kind: "image" }))
+        : [],
+      sceneMasterReferenceImages: Array.isArray(segment.scene_master_reference_images)
+        ? segment.scene_master_reference_images
         : [],
       diagnostics: segment.diagnostics && typeof segment.diagnostics === "object" ? segment.diagnostics : {},
       submittedPromptVariant: segment.submitted_prompt_variant || "",
@@ -61,6 +69,7 @@ export function buildTimelineSegments(artifacts) {
       sceneReady: Boolean(segment.scene_ready),
       videoReady: Boolean(segment.video_ready),
     }));
+    return hydrateSharedSceneMasterFrames(segments);
   }
 
   const segmentMap = new Map();
@@ -74,6 +83,7 @@ export function buildTimelineSegments(artifacts) {
         sceneAnchor: "",
         sceneBible: {},
         sceneTransitionContract: {},
+        sceneSpatialContinuityMode: "uncertain",
         sceneMasterFrameStatus: "",
         sceneMasterFrameError: "",
         coveredEventIds: [],
@@ -109,6 +119,27 @@ export function buildTimelineSegments(artifacts) {
     }));
 }
 
+function hydrateSharedSceneMasterFrames(segments) {
+  const sceneMasterByScene = new Map();
+  for (const segment of segments) {
+    const sceneId = String(segment.sceneId || "").trim();
+    if (!sceneId || !segment.sceneMasterFrame) {
+      continue;
+    }
+    if (!sceneMasterByScene.has(sceneId)) {
+      sceneMasterByScene.set(sceneId, segment.sceneMasterFrame);
+    }
+  }
+  return segments.map((segment) => {
+    const sceneMasterFrame = segment.sceneMasterFrame || sceneMasterByScene.get(String(segment.sceneId || "").trim()) || null;
+    return {
+      ...segment,
+      sceneMasterFrame,
+      sceneReady: Boolean(segment.sceneReady || sceneMasterFrame),
+    };
+  });
+}
+
 export function buildSceneGroups(segments) {
   const sceneMap = new Map();
   segments.forEach((segment, index) => {
@@ -127,6 +158,8 @@ export function buildSceneGroups(segments) {
         coveredEventSummaries: segment.coveredEventSummaries || [],
         chapterNumber: segment.chapterNumber || 0,
         sceneMasterFrame: segment.sceneMasterFrame || null,
+        sceneSpatialContinuityMode: segment.sceneSpatialContinuityMode || "uncertain",
+        sceneMasterReferenceImages: segment.sceneMasterReferenceImages || [],
         sceneMasterFramePrompt: segment.sceneMasterFramePrompt || "",
         sceneMasterFrameRequest: segment.sceneMasterFrameRequest || null,
         segments: [],
@@ -149,6 +182,12 @@ export function buildSceneGroups(segments) {
     }
     if (!Object.keys(sceneMap.get(sceneId).sceneTransitionContract || {}).length && Object.keys(segment.sceneTransitionContract || {}).length) {
       sceneMap.get(sceneId).sceneTransitionContract = segment.sceneTransitionContract;
+    }
+    if (!sceneMap.get(sceneId).sceneSpatialContinuityMode && segment.sceneSpatialContinuityMode) {
+      sceneMap.get(sceneId).sceneSpatialContinuityMode = segment.sceneSpatialContinuityMode;
+    }
+    if (!sceneMap.get(sceneId).sceneMasterReferenceImages.length && segment.sceneMasterReferenceImages?.length) {
+      sceneMap.get(sceneId).sceneMasterReferenceImages = segment.sceneMasterReferenceImages;
     }
     if (!sceneMap.get(sceneId).sceneMasterFrameStatus && segment.sceneMasterFrameStatus) {
       sceneMap.get(sceneId).sceneMasterFrameStatus = segment.sceneMasterFrameStatus;

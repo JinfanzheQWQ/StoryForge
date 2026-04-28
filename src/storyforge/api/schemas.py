@@ -232,6 +232,7 @@ class PlannedSegmentArtifactResponse(BaseModel):
     scene_anchor: str = ""
     scene_bible: dict[str, Any] = Field(default_factory=dict)
     scene_transition_contract: dict[str, Any] = Field(default_factory=dict)
+    scene_spatial_continuity_mode: str = "uncertain"
     scene_master_frame_status: str = ""
     scene_master_frame_error: str = ""
     covered_event_ids: list[str] = Field(default_factory=list)
@@ -248,7 +249,12 @@ class PlannedSegmentArtifactResponse(BaseModel):
     seedance_motion_prompt: str = ""
     motion_plan: dict[str, str] = Field(default_factory=dict)
     motion_contract: dict[str, Any] = Field(default_factory=dict)
+    first_frame_url: str = ""
+    last_frame_url: str = ""
+    previous_clip_segment_id: str = ""
+    previous_clip_video_url: str = ""
     character_references: list[ArtifactItem] = Field(default_factory=list)
+    scene_master_reference_images: list[str] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     submitted_prompt_variant: str = ""
     submitted_reference_bindings: list[PromptReferenceBindingResponse] = Field(default_factory=list)

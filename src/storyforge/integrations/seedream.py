@@ -131,6 +131,7 @@ class SeedreamClient:
                 generated_count += int(generated_now)
                 failed_count += int(not success)
 
+        self._sync_cross_scene_reused_master_frames(project_package)
         self._apply_scene_urls_to_seedance_manifest(project_package)
         note = (
             "Seedream scene master frame tasks executed successfully."
@@ -240,12 +241,13 @@ class SeedreamClient:
             master_frame_url = self._create_image(
                 client,
                 prompt=scene.scene_master_frame_prompt,
+                reference_images=scene.scene_master_reference_images,
             )
             scene.scene_master_frame_url = master_frame_url
             scene.scene_master_frame_status = "completed"
             scene.scene_master_request_info = self._snapshot_last_request_info(
                 provider="seedream",
-                reference_bindings=[],
+                reference_bindings=self._scene_master_reference_bindings(scene.scene_master_reference_images),
             )
             if self.config.download_outputs and master_frame_url and scene.scene_master_frame_path:
                 self._download_image(client, master_frame_url, Path(scene.scene_master_frame_path))
@@ -269,6 +271,23 @@ class SeedreamClient:
         task.scene_master_frame_url = scene.scene_master_frame_url
         task.scene_master_frame_status = scene.scene_master_frame_status
         task.scene_master_frame_error = scene.scene_master_frame_error
+        task.reference_images = list(scene.scene_master_reference_images)
+
+    def _scene_master_reference_bindings(self, reference_images: list[str]) -> list[dict[str, str]]:
+        bindings: list[dict[str, str]] = []
+        for index, reference in enumerate(reference_images, start=1):
+            url = str(reference or "").strip()
+            if not url:
+                continue
+            bindings.append(
+                {
+                    "label": f"图片{index}",
+                    "kind": "previous_scene_master",
+                    "description": "上一场场景母图参考，仅用于同一空间或同地点连续性。",
+                    "url": url,
+                }
+            )
+        return bindings
 
     def _sync_scene_master_to_scene_tasks(
         self,
@@ -279,6 +298,52 @@ class SeedreamClient:
             if task.scene_id != scene.scene_id:
                 continue
             self._sync_scene_master_to_task(task, scene)
+
+    def _sync_cross_scene_reused_master_frames(self, project_package: VideoProjectPackage) -> None:
+        latest_master_scene: VideoScene | None = None
+        for scene in project_package.scenes:
+            if self._scene_has_master_url(scene):
+                latest_master_scene = scene
+            elif latest_master_scene is not None and self._scene_reuses_previous_master_frame(scene):
+                self._copy_scene_master_reference(scene, latest_master_scene)
+            if self._scene_has_master_url(scene):
+                latest_master_scene = scene
+            self._sync_scene_master_to_scene_tasks(project_package.scene_images, scene)
+
+    def _scene_has_master_url(self, scene: VideoScene) -> bool:
+        return bool(str(scene.scene_master_frame_url or "").strip())
+
+    def _scene_reuses_previous_master_frame(self, scene: VideoScene) -> bool:
+        contract = scene.scene_transition_contract
+        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
+        if mode in {
+            "same_space_progression",
+            "same_location_new_angle",
+            "time_jump_same_location",
+        }:
+            return True
+        return False
+
+    def _copy_scene_master_reference(self, scene: VideoScene, source_scene: VideoScene) -> None:
+        source_url = str(source_scene.scene_master_frame_url or "").strip()
+        source_path = str(source_scene.scene_master_frame_path or "").strip()
+        if not source_url and not source_path:
+            return
+        scene.scene_master_frame_url = source_url
+        scene.scene_master_frame_path = source_path or scene.scene_master_frame_path
+        scene.scene_master_frame_status = source_scene.scene_master_frame_status or "completed"
+        scene.scene_master_frame_error = ""
+        scene.scene_master_reference_images = []
+        scene.scene_master_request_info = {
+            "provider": "storyforge",
+            "variant": "reuse_previous_scene_master",
+            "payload": {
+                "reused_from_scene_id": source_scene.scene_id,
+                "scene_master_url": source_url,
+                "scene_master_path": source_path,
+            },
+            "reference_bindings": [],
+        }
 
     def _create_image(
         self,
@@ -465,7 +530,20 @@ class SeedreamClient:
         return snapshot
 
     def _apply_scene_urls_to_seedance_manifest(self, project_package: VideoProjectPackage) -> None:
-        scene_map = {item.segment_id: item for item in project_package.scene_images}
+        scene_by_segment = {item.segment_id: item for item in project_package.scene_images}
+        scene_by_id: dict[str, SceneImageTask] = {}
+        for task in project_package.scene_images:
+            scene_id = str(task.scene_id or "").strip()
+            if not scene_id:
+                continue
+            current = scene_by_id.get(scene_id)
+            if current is None or self._scene_master_task_score(task) > self._scene_master_task_score(current):
+                scene_by_id[scene_id] = task
+        scene_contract_by_id = {
+            scene.scene_id: scene
+            for scene in project_package.scenes
+            if str(scene.scene_id or "").strip()
+        }
         character_url_by_path = {
             item.output_path: item.generated_url
             for item in project_package.character_images
@@ -477,10 +555,14 @@ class SeedreamClient:
             if item.character_name and item.generated_url
         }
         for clip in project_package.seedance_manifest.clips:
-            scene = scene_map.get(clip.segment_id)
-            if scene is not None:
-                clip.scene_master_path = clip.scene_master_path or scene.scene_master_frame_path
-                clip.scene_master_url = clip.scene_master_url or scene.scene_master_frame_url
+            scene_task = scene_by_segment.get(clip.segment_id) or scene_by_id.get(clip.scene_id)
+            if scene_task is not None:
+                clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
+                clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
+            scene_contract = scene_contract_by_id.get(clip.scene_id)
+            if scene_contract is not None:
+                clip.scene_master_path = clip.scene_master_path or scene_contract.scene_master_frame_path
+                clip.scene_master_url = clip.scene_master_url or scene_contract.scene_master_frame_url
             character_urls = [
                 character_url_by_path.get(path, "")
                 for path in clip.character_image_paths
@@ -490,7 +572,16 @@ class SeedreamClient:
                     character_url_by_name.get(name, "")
                     for name in clip.visible_characters
             ]
-            clip.character_image_urls = [url for url in character_urls if url]
+            character_urls = [url for url in character_urls if url]
+            if character_urls:
+                clip.character_image_urls = character_urls
+
+    def _scene_master_task_score(self, task: SceneImageTask) -> tuple[int, int, int]:
+        return (
+            1 if task.scene_master_frame_url else 0,
+            1 if task.scene_master_frame_path else 0,
+            1 if task.scene_master_frame_status not in {"", "planned"} else 0,
+        )
 
     def _build_preflight_report(
         self,

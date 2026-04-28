@@ -22,7 +22,13 @@ const sceneGroup = {
     lighting: "夕阳斜射",
     background_anchors: ["松树", "小径"],
   },
+  sceneSpatialContinuityMode: "same_space_progression",
+  sceneMasterReferenceImages: ["/prev-scene.png"],
   sceneTransitionContract: {
+    scene_spatial_continuity_mode: "same_space_progression",
+    shared_environment_anchors: ["小径", "松树"],
+    spatial_relation_to_previous: "沿小径向松林深处推进。",
+    forbidden_drift: "不要改变小径方向。",
     next_scene_entry_match: "林屿站在入口，面向小径。",
   },
   sceneMasterFrame: { url: "/scene.png" },
@@ -94,6 +100,9 @@ assert.match(html, /data-auto-repair-scene="ch01-sc01"/);
 assert.match(html, /data-generate-scene-master="ch01-sc01"/);
 assert.match(html, /recommended-action/);
 assert.match(html, /场景母图 prompt/);
+assert.match(html, /同一空间推进|same_space_progression/);
+assert.match(html, /沿小径向松林深处推进/);
+assert.match(html, /\/prev-scene\.png/);
 assert.match(html, /ch01-sc01-seg01/);
 
 console.log("scene_workbench render tests passed");

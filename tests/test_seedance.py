@@ -74,8 +74,9 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["duration"], 5)
         self.assertFalse(payload["watermark"])
         self.assertTrue(payload["generate_audio"])
-        self.assertIn("提交素材绑定", payload["content"][0]["text"])
-        self.assertIn("图片1：场景母图", payload["content"][0]["text"])
+        self.assertTrue(payload["return_last_frame"])
+        self.assertTrue(payload["content"][0]["text"].startswith("参考图绑定（必须严格按本次提交的图片顺序理解）："))
+        self.assertIn("图片1：当前 scene 的场景母图", payload["content"][0]["text"])
         self.assertIn("图片2：角色A 的角色图", payload["content"][0]["text"])
         self.assertIn("图片3：角色B 的角色图", payload["content"][0]["text"])
         self.assertIn("角色图只用于身份参考，不是视频时间帧", payload["content"][0]["text"])
@@ -113,7 +114,8 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         payload, resolved_prompt, bindings = client._build_payload_with_metadata(clip)
 
-        self.assertIn("图片1：场景母图", resolved_prompt)
+        self.assertTrue(resolved_prompt.startswith("参考图绑定（必须严格按本次提交的图片顺序理解）："))
+        self.assertIn("图片1：当前 scene 的场景母图", resolved_prompt)
         self.assertIn("图片2：陈屿 的角色图", resolved_prompt)
         self.assertIn("图片3：苏晚 的角色图", resolved_prompt)
         self.assertIn("角色图只用于身份参考，不是视频时间帧", resolved_prompt)
@@ -122,6 +124,44 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/chen.png")
         self.assertEqual(payload["content"][3]["image_url"]["url"], "https://example.com/su.png")
         self.assertEqual([item["kind"] for item in bindings], ["scene_master", "character", "character"])
+
+    def test_build_payload_uses_previous_tail_frame_as_first_frame_reference(self) -> None:
+        client = SeedanceClient(SeedanceConfig(model="doubao-seedance-2-0-260128"))
+        clip = SeedanceClipTask(
+            segment_id="ch01-seg02",
+            scene_id="ch01-sc01",
+            title="接上一段",
+            prompt="从上一段尾帧状态继续，角色抬头说话。",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=["0-3秒：承接上一段尾帧。"],
+            scene_master_url="https://example.com/scene.png",
+            first_frame_url="https://example.com/seg01-last.png",
+            character_image_urls=["https://example.com/role.png"],
+            visible_characters=["角色"],
+            duration_seconds=6,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-seg02.mp4",
+        )
+
+        payload, resolved_prompt, bindings = client._build_payload_with_metadata(clip)
+
+        self.assertEqual(payload["first_frame"], "https://example.com/seg01-last.png")
+        self.assertTrue(payload["return_last_frame"])
+        self.assertTrue(resolved_prompt.startswith("参考图绑定（必须严格按本次提交的图片顺序理解）："))
+        self.assertIn("图片1：当前 scene 的场景母图", resolved_prompt)
+        self.assertIn("图片2：上一段视频尾帧", resolved_prompt)
+        self.assertIn("图片3：角色 的角色图", resolved_prompt)
+        self.assertIn("上一段视频尾帧", resolved_prompt)
+        self.assertIn("当前片段 0 秒开场必须优先对齐尾帧", resolved_prompt)
+        self.assertNotIn("图片2 及之后是实际出镜角色定妆图", resolved_prompt)
+        self.assertNotIn("角色参考来自图片2及之后", resolved_prompt)
+        self.assertEqual([item["kind"] for item in bindings], ["scene_master", "first_frame", "character"])
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/seg01-last.png")
 
     def test_build_payload_without_references_stays_text_only(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -201,7 +241,7 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         self.assertEqual(len(fake_client.calls), 1)
         self.assertEqual(clip.submit_variant, "scene_character_motion")
-        self.assertIn("提交素材绑定", clip.submitted_prompt)
+        self.assertIn("参考图绑定（必须严格按本次提交的图片顺序理解）", clip.submitted_prompt)
         self.assertTrue(clip.submitted_reference_bindings)
         self.assertEqual(clip.submitted_reference_bindings[0]["kind"], "scene_master")
         self.assertEqual(clip.submitted_reference_bindings[1]["kind"], "character")
@@ -216,7 +256,7 @@ class SeedanceClientTestCase(unittest.TestCase):
             [item.get("role", "text") for item in fake_client.calls[0]["payload"]["content"]],
             ["text", "reference_image", "reference_image"],
         )
-        self.assertIn("图片1：场景母图", fake_client.calls[0]["payload"]["content"][0]["text"])
+        self.assertIn("图片1：当前 scene 的场景母图", fake_client.calls[0]["payload"]["content"][0]["text"])
 
     def test_submit_clip_raises_detailed_error_after_all_payload_variants_fail(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -258,11 +298,32 @@ class SeedanceClientTestCase(unittest.TestCase):
             "status": "succeeded",
             "content": {
                 "video_url": "https://example.com/video.mp4",
+                "last_frame_url": "https://example.com/video-last.png",
             },
         }
 
         self.assertEqual(client._extract_status(payload), "succeeded")
         self.assertEqual(client._extract_video_url(payload), "https://example.com/video.mp4")
+        self.assertEqual(client._extract_last_frame_url(payload), "https://example.com/video-last.png")
+
+    def test_extract_last_frame_url_from_nested_status_shapes(self) -> None:
+        client = SeedanceClient(SeedanceConfig())
+
+        self.assertEqual(
+            client._extract_last_frame_url(
+                {
+                    "data": {
+                        "content": {
+                            "images": [
+                                {"url": "https://example.com/frame-a.png"},
+                                {"url": "https://example.com/frame-b.png"},
+                            ]
+                        }
+                    }
+                }
+            ),
+            "https://example.com/frame-b.png",
+        )
 
     def test_build_payload_rejects_invalid_duration_before_submit(self) -> None:
         client = SeedanceClient(SeedanceConfig())
@@ -284,6 +345,53 @@ class SeedanceClientTestCase(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "between 2 and 12 seconds"):
             client.build_payload(clip)
+
+    def test_apply_previous_clip_tail_frame_sets_next_clip_first_frame(self) -> None:
+        client = SeedanceClient(SeedanceConfig())
+        previous_clip = SeedanceClipTask(
+            segment_id="seg-01",
+            title="上一段",
+            prompt="上一段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=5,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/seg-01.mp4",
+            video_url="https://example.com/seg-01.mp4",
+            last_frame_url="https://example.com/seg-01-last.png",
+        )
+        next_clip = SeedanceClipTask(
+            segment_id="seg-02",
+            title="下一段",
+            prompt="下一段",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            duration_seconds=5,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/seg-02.mp4",
+            previous_clip_segment_id="seg-01",
+        )
+        manifest = SeedanceManifest(
+            title="尾帧承接测试",
+            model="doubao-seedance-2-0-260128",
+            base_url="",
+            clips=[previous_clip, next_clip],
+        )
+
+        client._apply_previous_clip_tail_frame(next_clip, manifest)
+
+        self.assertEqual(next_clip.first_frame_url, "https://example.com/seg-01-last.png")
+        self.assertEqual(next_clip.previous_clip_video_url, "https://example.com/seg-01.mp4")
 
     def test_execute_manifest_resumes_pending_clip_without_resubmitting_completed_clips(self) -> None:
         with TemporaryDirectory() as temp_dir:

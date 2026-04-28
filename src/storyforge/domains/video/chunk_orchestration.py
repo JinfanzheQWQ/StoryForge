@@ -677,17 +677,45 @@ class VideoSceneChunkOrchestrationMixin:
                 validator=validate_timeline_candidate,
                 attempts=max(2, self.structured_retry_attempts),
             )
-        except VideoStructuredGenerationError as exc:
+        except (VideoStructuredGenerationError, RuntimeError) as exc:
             last_candidate = retry_state.get("last_candidate")
-            if (
-                isinstance(exc.cause, SegmentActionSplitRequiredError)
-                and isinstance(last_candidate, SceneSegmentContractBatchSchema)
-            ):
+            failure_cause = exc.cause if isinstance(exc, VideoStructuredGenerationError) else exc
+            speech_split_error = self._parse_scene_segment_speech_split_failure(failure_cause)
+            if speech_split_error is not None:
+                retry_contracts = last_candidate if isinstance(last_candidate, SceneSegmentContractBatchSchema) else failed_contracts
                 next_limit = min(
                     self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
                     max(
                         int(effective_expected_segment_count),
-                        int(exc.cause.required_segment_count),
+                        int(speech_split_error.required_segment_count),
+                        len(retry_contracts.segments),
+                    ),
+                )
+                if (
+                    next_limit > int(effective_expected_segment_count)
+                    or retry_contracts.model_dump() != failed_contracts.model_dump()
+                ):
+                    return self._repair_scene_chunk_contract_batch_after_split_failure(
+                        novel_package=novel_package,
+                        story_memory=story_memory,
+                        chapter_number=chapter_number,
+                        scene=scene,
+                        chunk=chunk,
+                        previous_chunk_exit_state=previous_chunk_exit_state,
+                        previous_tail_segment=previous_tail_segment,
+                        failed_contracts=retry_contracts,
+                        split_error=speech_split_error,
+                        effective_expected_segment_count=next_limit,
+                    )
+            action_split_error = self._parse_scene_segment_action_split_failure(failure_cause)
+            if action_split_error is not None:
+                retry_contracts = last_candidate if isinstance(last_candidate, SceneSegmentContractBatchSchema) else failed_contracts
+                next_limit = min(
+                    self.SCENE_SEGMENT_CHUNK_MAX_SEGMENTS,
+                    max(
+                        int(effective_expected_segment_count),
+                        int(action_split_error.required_segment_count),
+                        len(retry_contracts.segments),
                     ),
                 )
                 return self._repair_scene_chunk_contract_batch_after_action_failure(
@@ -698,9 +726,43 @@ class VideoSceneChunkOrchestrationMixin:
                     chunk=chunk,
                     previous_chunk_exit_state=previous_chunk_exit_state,
                     previous_tail_segment=previous_tail_segment,
-                    failed_contracts=last_candidate,
-                    split_error=exc.cause,
+                    failed_contracts=retry_contracts,
+                    split_error=action_split_error,
                     effective_expected_segment_count=next_limit,
+                )
+            if (
+                self._should_repair_scene_chunk_contract_batch_after_timeline_failure(failure_cause)
+            ):
+                return self._repair_scene_chunk_contract_batch_after_timeline_failure(
+                    novel_package=novel_package,
+                    story_memory=story_memory,
+                    chapter_number=chapter_number,
+                    scene=scene,
+                    chunk=chunk,
+                    previous_chunk_exit_state=previous_chunk_exit_state,
+                    previous_tail_segment=previous_tail_segment,
+                    failed_contracts=last_candidate
+                    if isinstance(last_candidate, SceneSegmentContractBatchSchema)
+                    else failed_contracts,
+                    failure=failure_cause,
+                    effective_expected_segment_count=effective_expected_segment_count,
+                )
+            if self._should_repair_scene_chunk_contract_batch_after_focus_conflict_failure(
+                failure_cause
+            ):
+                return self._repair_scene_chunk_contract_batch_after_focus_conflict_failure(
+                    novel_package=novel_package,
+                    story_memory=story_memory,
+                    chapter_number=chapter_number,
+                    scene=scene,
+                    chunk=chunk,
+                    previous_chunk_exit_state=previous_chunk_exit_state,
+                    previous_tail_segment=previous_tail_segment,
+                    failed_contracts=last_candidate
+                    if isinstance(last_candidate, SceneSegmentContractBatchSchema)
+                    else failed_contracts,
+                    failure=failure_cause,
+                    effective_expected_segment_count=effective_expected_segment_count,
                 )
             raise
 
@@ -921,6 +983,57 @@ class VideoSceneChunkOrchestrationMixin:
             and "缺少明确动作或收束节拍" in normalized_error
         )
 
+    def _parse_scene_segment_speech_split_failure(
+        self,
+        error: Exception | None,
+    ) -> SegmentSpeechSplitRequiredError | None:
+        if isinstance(error, SegmentSpeechSplitRequiredError):
+            return error
+        normalized_error = " ".join(str(error or "").split()).strip()
+        match = re.search(
+            r"segment\s+(?P<segment_id>\S+)\s+的对白/字幕至少需要\s+"
+            r"(?P<required>\d+)\s+秒，但单段上限只有\s+"
+            r"(?P<max>\d+)\s+秒，当前\s+chunk\s+必须至少拆成\s+"
+            r"(?P<count>\d+)\s+个\s+segment",
+            normalized_error,
+        )
+        if match is None:
+            return None
+        required_duration_seconds = int(match.group("required"))
+        max_duration_seconds = int(match.group("max"))
+        return SegmentSpeechSplitRequiredError(
+            segment_id=str(match.group("segment_id") or "").strip(),
+            required_duration_seconds=required_duration_seconds,
+            current_duration_seconds=min(required_duration_seconds, max_duration_seconds),
+            max_duration_seconds=max_duration_seconds,
+            required_segment_count=int(match.group("count")),
+        )
+
+    def _parse_scene_segment_action_split_failure(
+        self,
+        error: Exception | None,
+    ) -> SegmentActionSplitRequiredError | None:
+        if isinstance(error, SegmentActionSplitRequiredError):
+            return error
+        normalized_error = " ".join(str(error or "").split()).strip()
+        match = re.search(
+            r"segment\s+(?P<segment_id>\S+)\s+的动作容量过载：当前约有\s+"
+            r"(?P<count>\d+)\s+个推进点，但\s+"
+            r"(?P<duration>\d+)\s+秒片段最多只允许\s+"
+            r"(?P<max>\d+)\s+个。当前\s+chunk\s+必须至少拆成\s+"
+            r"(?P<required>\d+)\s+个\s+segment",
+            normalized_error,
+        )
+        if match is None:
+            return None
+        return SegmentActionSplitRequiredError(
+            segment_id=str(match.group("segment_id") or "").strip(),
+            action_node_count=int(match.group("count")),
+            current_duration_seconds=int(match.group("duration")),
+            max_action_nodes=int(match.group("max")),
+            required_segment_count=int(match.group("required")),
+        )
+
     def _repair_scene_chunk_contract_batch_after_timeline_failure(
         self,
         *,
@@ -1101,6 +1214,7 @@ class VideoSceneChunkOrchestrationMixin:
                 chunk=current_chunk,
                 previous_tail_segment=current_previous_tail,
                 effective_expected_segment_count=current_limit,
+                landing_strict=False,
             ),
             attempts=max(2, self.structured_retry_attempts),
         )

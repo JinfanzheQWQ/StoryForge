@@ -75,16 +75,25 @@ function renderSceneTransitionPanel(sceneGroup) {
         <span>scene 到 scene 的承接要求</span>
       </div>
       ${hasContract ? renderSceneInfoRows([
-        ["模式", contract.transition_mode],
+        ["空间模式", sceneGroup.sceneSpatialContinuityMode || contract.scene_spatial_continuity_mode],
+        ["过渡模式", contract.transition_mode],
         ["上一场景", contract.previous_scene_id],
         ["上一场退出", contract.previous_scene_exit_state],
         ["本场开场匹配", contract.next_scene_entry_match],
+        ["共享环境锚点", contract.shared_environment_anchors],
+        ["空间关系", contract.spatial_relation_to_previous],
+        ["镜头承接", contract.camera_handoff],
         ["桥接动作", contract.bridge_action],
+        ["动作桥", contract.action_bridge],
+        ["物件桥", contract.prop_bridge],
         ["视觉桥", contract.visual_bridge],
         ["声音桥", contract.audio_bridge],
+        ["允许变化", contract.allowed_environment_changes],
+        ["禁止漂移", contract.forbidden_drift],
         ["方向策略", contract.screen_direction_policy],
         ["承接元素", contract.carry_over_elements],
         ["聚焦秒数", contract.transition_focus_seconds ? `${contract.transition_focus_seconds}s` : ""],
+        ["母图参考", sceneGroup.sceneMasterReferenceImages],
       ]) : `<p class="asset-note">首个 scene 或当前 scene 不需要跨场过渡合同。</p>`}
     </section>
   `;

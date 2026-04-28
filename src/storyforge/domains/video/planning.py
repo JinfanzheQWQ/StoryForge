@@ -848,6 +848,7 @@ class VideoPlanningMixin:
             scene_master_frame_url=scene.scene_master_frame_url,
             scene_master_frame_status=scene.scene_master_frame_status or "planned",
             scene_master_frame_error=scene.scene_master_frame_error,
+            scene_master_reference_images=list(scene.scene_master_reference_images),
             scene_master_request_info=dict(scene.scene_master_request_info),
         )
         prepared_scene.scene_master_frame_prompt = (
@@ -1130,20 +1131,13 @@ class VideoPlanningMixin:
         output_dir: str,
     ) -> list[SceneImageTask]:
         scene_map = {scene.scene_id: scene for scene in scenes}
-        reference_map: dict[str, list[str]] = {}
-        for item in character_images:
-            if not item.use_as_reference:
-                continue
-            reference_map.setdefault(item.character_name, []).append(item.output_path)
+        scene_sequence = list(scenes)
+        previous_scene_by_id: dict[str, VideoScene] = {}
+        for index, scene in enumerate(scene_sequence):
+            if index > 0:
+                previous_scene_by_id[scene.scene_id] = scene_sequence[index - 1]
         tasks: list[SceneImageTask] = []
         for segment in segments:
-            reference_images = self._merge_unique_paths(
-                [
-                    path
-                    for name in self._merge_unique_character_names(segment.involved_characters)
-                    for path in reference_map.get(name, [])
-                ]
-            )
             scene = scene_map.get(segment.scene_id)
             prepared_scene = (
                 scene
@@ -1164,6 +1158,18 @@ class VideoPlanningMixin:
                     output_dir,
                 )
             )
+            reference_images = self._scene_master_reference_images(
+                prepared_scene,
+                previous_scene_by_id.get(prepared_scene.scene_id),
+            )
+            reused_previous_master = self._reuse_previous_scene_master_frame(
+                prepared_scene,
+                previous_scene_by_id.get(prepared_scene.scene_id),
+            )
+            if reused_previous_master:
+                reference_images = []
+            if not prepared_scene.scene_master_reference_images and reference_images:
+                prepared_scene.scene_master_reference_images = list(reference_images)
             scene_master_frame_prompt = prepared_scene.scene_master_frame_prompt
             scene_master_frame_path = prepared_scene.scene_master_frame_path
             scene_master_frame_url = prepared_scene.scene_master_frame_url
@@ -1186,6 +1192,47 @@ class VideoPlanningMixin:
             )
         return tasks
 
+    def _reuse_previous_scene_master_frame(
+        self,
+        scene: VideoScene,
+        previous_scene: VideoScene | None,
+    ) -> bool:
+        if previous_scene is None:
+            return False
+        if not self._scene_reuses_previous_master_frame(scene):
+            return False
+        previous_url = str(previous_scene.scene_master_frame_url or "").strip()
+        previous_path = str(previous_scene.scene_master_frame_path or "").strip()
+        if not previous_url and not previous_path:
+            return False
+        scene.scene_master_frame_url = previous_url
+        scene.scene_master_frame_path = previous_path or scene.scene_master_frame_path
+        scene.scene_master_frame_status = previous_scene.scene_master_frame_status or "completed"
+        scene.scene_master_frame_error = ""
+        scene.scene_master_reference_images = []
+        scene.scene_master_request_info = {
+            "provider": "storyforge",
+            "variant": "reuse_previous_scene_master",
+            "payload": {
+                "reused_from_scene_id": previous_scene.scene_id,
+                "scene_master_url": previous_url,
+                "scene_master_path": previous_path,
+            },
+            "reference_bindings": [],
+        }
+        return True
+
+    def _scene_reuses_previous_master_frame(self, scene: VideoScene) -> bool:
+        contract = scene.scene_transition_contract
+        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
+        if mode in {
+            "same_space_progression",
+            "same_location_new_angle",
+            "time_jump_same_location",
+        }:
+            return True
+        return False
+
     def _build_seedance_manifest(
         self,
         story_title: str,
@@ -1202,14 +1249,22 @@ class VideoPlanningMixin:
             for item in character_images
             if item.output_path
         }
-        clips = [
-            SeedanceClipTask(
+        clips: list[SeedanceClipTask] = []
+        previous_clip_by_scene: dict[str, SeedanceClipTask] = {}
+        previous_timeline_clip: SeedanceClipTask | None = None
+        for item in segments:
+            previous_scene_clip = previous_clip_by_scene.get(item.scene_id)
+            current_scene = scene_by_id.get(item.scene_id)
+            previous_clip = previous_scene_clip
+            if previous_clip is None and self._scene_allows_previous_tail_frame(current_scene):
+                previous_clip = previous_timeline_clip
+            clip = SeedanceClipTask(
                 segment_id=item.segment_id,
                 scene_id=item.scene_id,
                 title=item.title,
                 prompt=self._build_seedance_clip_prompt(
                     item,
-                    scene=scene_by_id.get(item.scene_id),
+                    scene=current_scene,
                 ),
                 narration=item.narration,
                 dialogue_lines=item.dialogue_lines,
@@ -1232,8 +1287,13 @@ class VideoPlanningMixin:
                 with_audio=self.seedance_config.with_audio,
                 output_path=f"{output_dir}/rendered/{item.segment_id}.mp4",
             )
-            for item in segments
-        ]
+            if previous_clip is not None:
+                clip.previous_clip_segment_id = previous_clip.segment_id
+                clip.previous_clip_video_url = previous_clip.video_url
+                clip.first_frame_url = previous_clip.last_frame_url
+            clips.append(clip)
+            previous_clip_by_scene[item.scene_id] = clip
+            previous_timeline_clip = clip
         return SeedanceManifest(
             title=story_title.strip() or "未命名故事",
             model=self.seedance_config.model,
@@ -1245,6 +1305,19 @@ class VideoPlanningMixin:
                 "Seedance 负责生成视频与自带音频，无需单独 TTS。",
             ],
         )
+
+    def _scene_allows_previous_tail_frame(self, scene: VideoScene | None) -> bool:
+        if scene is None:
+            return False
+        contract = scene.scene_transition_contract
+        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
+        if mode in {
+            "same_space_progression",
+            "same_location_new_angle",
+            "time_jump_same_location",
+        }:
+            return True
+        return False
 
     def _build_segment_motion_contract(self, segment: VideoSegment) -> dict[str, object]:
         return {
@@ -1561,6 +1634,34 @@ class VideoPlanningMixin:
                 if normalized and normalized not in merged:
                     merged.append(normalized)
         return merged
+
+    def _scene_master_reference_images(
+        self,
+        scene: VideoScene,
+        previous_scene: VideoScene | None,
+    ) -> list[str]:
+        explicit_references = self._merge_unique_paths(list(scene.scene_master_reference_images))
+        if explicit_references:
+            return explicit_references[:1]
+        if not self._scene_allows_previous_master_reference(scene):
+            return []
+        if previous_scene is None:
+            return []
+        previous_url = str(previous_scene.scene_master_frame_url or "").strip()
+        return self._merge_unique_paths([previous_url])[:1]
+
+    def _scene_allows_previous_master_reference(self, scene: VideoScene) -> bool:
+        contract = scene.scene_transition_contract
+        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
+        if mode in {
+            "same_space_progression",
+            "same_location_new_angle",
+            "time_jump_same_location",
+        }:
+            return True
+        if mode in {"hard_cut_new_location", "uncertain"}:
+            return False
+        return False
 
     def _resolve_scene_transition_source_segment_id(
         self,

@@ -1,257 +1,138 @@
-# 架构文档
+# 架构说明
 
-StoryForge 采用分层架构：API 负责入口，application 负责任务与持久化，pipeline 负责阶段编排，domain 负责业务规则，integrations 负责外部 provider 调用。
+StoryForge 是 `FastAPI + MySQL + 异步任务队列 + Web 工作台 + LangChain 结构化工作流` 组成的分阶段媒体生产系统。
 
-## 总体结构
-
-```text
-Web 工作台 / HTTP API
-        ↓
-FastAPI routers + schemas
-        ↓
-Application container / task queue / stores
-        ↓
-Story pipeline / video planning pipeline / media pipeline
-        ↓
-Novel domain / video domain
-        ↓
-LLM provider / Seedream / Seedance / ffmpeg / MySQL / filesystem
-```
-
-## 目录职责
+## 模块边界
 
 ```text
 src/storyforge/
-├── agents/          # LLM backend 抽象与 LangChain 实现
-├── api/             # FastAPI、router、schema、artifacts、静态前端
-├── application/     # 容器、任务队列、任务运行时、项目和任务存储
-├── core/            # 配置、IO、环境变量、通用工具
-├── domains/         # 小说域和视频域业务规则
-├── integrations/    # DeepSeek、OpenAI、Seedream、Seedance、ffmpeg
-├── pipelines/       # 小说、视频规划、媒体生成阶段编排
-└── cli.py           # CLI 入口
+├── agents/              # LLM backend 抽象和 LangChain 实现
+├── api/                 # HTTP API、schema、artifact 聚合、静态工作台
+├── application/         # 任务队列、运行时、持久化、项目存储
+├── core/                # 配置、路径、环境变量和基础工具
+├── domains/
+│   ├── novel/           # 小说生成和正文包装
+│   └── video/           # 视频规划、校验、prompt、合同和编排
+├── integrations/        # Seedream、Seedance、ffmpeg 等外部集成
+└── pipelines/           # 各阶段 pipeline
 ```
 
-## 运行时组件
+## 运行时
 
-### API
+- API 层接收请求并创建任务。
+- `TaskQueue` 执行异步任务。
+- `TaskStore` 保存任务状态、结果和错误信息。
+- `ProjectStore` 保存项目、run 记录和产物索引。
+- pipeline 读取上一阶段产物，生成当前阶段产物并更新数据库。
 
-- `api/main.py` 创建 FastAPI 应用。
-- `api/routers/projects.py` 提供项目、阶段任务、prompt 保存、prompt 重置和项目删除接口。
-- `api/routers/tasks.py` 提供任务查询接口。
-- `api/artifacts.py` 根据输出目录和 manifest 组装页面产物索引。
-- `api/static/app/` 提供 Web 工作台前端模块。
+## 阶段模型
 
-### Application
+```text
+brief
+  -> story_source
+  -> scene_structure
+  -> segment_contracts
+  -> character_images
+  -> scene_master_frames
+  -> seedance_videos
+  -> merged_video
+```
 
-- `AppContainer` 装配配置、任务队列、项目存储、任务存储和 handler。
-- `AsyncTaskQueue` 执行阶段任务。
-- `TaskStore` 和 `ProjectStore` 保存项目、任务与 run 历史。
-- task handler 把 HTTP 阶段请求转换成 pipeline 调用。
+规划结构固定为：
 
-### Pipeline
+```text
+chapter -> scene -> chunk -> segment
+```
 
-- `story_pipeline.py` 生成小说正文、结构化小说包和审稿结果。
-- `video_planning.py` 生成场景结构、分段合同和规划产物。
-- `video_pipeline.py` 生成角色图、场景图、视频片段和合并总片。
+- `chapter`：章节维度。
+- `scene`：相对连续的地点、时间和空间关系。
+- `chunk`：scene 内连续动作块。
+- `segment`：可独立提交 Seedance 的视频片段。
 
-### Domain
+## 视频域代码
 
-- 小说域负责故事结构、角色结构、正文真源、角色证据和审稿规则。
-- 视频域负责 scene / chunk / segment 规划、连续性合同、动作容量、时长预算、运动合同和修复规则。
+- `domains/video/service.py`：视频域公开服务入口。
+- `domains/video/chapter_orchestration.py`：章节事件和 scene 结构编排。
+- `domains/video/chunk_orchestration.py`：chunk 和 segment 合同编排。
+- `domains/video/chapter_event_validation.py`：章节事件覆盖与粒度校验。
+- `domains/video/structure_validation.py`：scene、chunk 和过渡合同校验。
+- `domains/video/segment_validation.py`：segment 容量、节拍、对白和多人镜头校验。
+- `domains/video/structured_generation.py`：结构化 LLM 调用、重试和指标记录。
+- `domains/video/structured_retry_prompts.py`：结构化修复提示。
+- `domains/video/prompting.py`：planner prompt、媒体 prompt 和 repair prompt。
+- `domains/video/planning.py`：把结构化计划转成角色图、场景母图和视频任务清单。
+- `domains/video/repair.py`：连续性修复和局部合同修复。
 
-### Integrations
+## 媒体任务
 
-- LLM provider 通过 LangChain backend 调用。
-- Seedream client 负责图片任务提交、轮询和下载。
-- Seedance client 负责视频任务提交、轮询和下载。
-- ffmpeg 工具负责本地视频合并。
+### 角色图
 
-## 数据流
+角色图任务来自 `character_visual_bible.json`，写入 `character_image_manifest.json`。每个任务包含角色名、角色图 prompt、状态、输出路径、远程 URL 和提交请求摘要。
 
-### 1. 小说阶段
+角色图只用于锁定人物身份和外观，不参与视频时间推进。
 
-输入：brief。
+### 场景母图
 
-输出：
+场景母图任务来自 `scene_plan.json`，写入 `scene_image_manifest.json`。每个 scene 生成一张环境基准图，内容为空场景，不包含人物和文字。
 
-- `story_source.json`
-- `novel_package.json`
-- `novel_audit.json`
+同一空间连续推进时，后续 scene 可以复用或承接上一 scene 的母图。新地点、空间关系不确定或锚点不一致时生成新的母图。
 
-`story_source.json` 是正文真源。后续结构化和视频规划都基于它执行。
+### 视频片段
 
-### 2. 场景结构阶段
+视频任务写入 `seedance_manifest.json`。每个 clip 对应一个 segment，提交 Seedance 时包含：
 
-输入：`story_source.json` 和小说结构化结果。
+- 当前 scene 的场景母图。
+- 可选的上一段视频尾帧。
+- 当前 segment 实际出镜角色图。
+- 已解析的 Seedance motion prompt。
 
-输出：
+`submitted_reference_bindings` 记录真实提交顺序。业务逻辑不得假设固定图片编号，必须读取实际绑定列表。
 
-- `story_memory.json`
-- `character_visual_bible.json`
-- scene skeleton
-- scene 级过渡合同
+## 连续性
 
-这一阶段确定章节关键事件、scene 边界、角色视觉基线和跨 scene 进入方式。
+连续性分为三层：
 
-### 3. 分段合同阶段
+- 场景层：scene 通过地点、时间、光线、背景锚点、固定道具和空间连续性字段决定是否共用或承接母图。
+- 视频层：同一连续空间内的 segment 优先使用上一段视频返回的尾帧作为当前片段开场锚点。
+- Prompt 层：Seedance prompt 明确写出开场状态、推进过程、收束状态和参考图用途。
 
-输入：场景结构。
-
-输出：
-
-- `scene_plan.json`
-- `segment_plan.json`
-- `segment_contract_progress.json`
-- `continuity_report.json`
-- 媒体任务清单
-
-这一阶段确定每个 segment 的镜头、动作、时长、对白字幕、音频方向和视频 motion plan。
-
-### 4. 图片阶段
-
-输入：角色视觉设定、scene plan、segment plan 和图片 manifest。
-
-输出：
-
-- `assets/characters/*.png`
-- `assets/frames/*.png`
-- `seedream_character_execution.json`
-- `seedream_scene_execution.json`
-
-图片阶段生成角色定妆图和 scene 场景母图，视频阶段再用文字描述角色运动。
-
-### 5. 视频阶段
-
-输入：场景母图、角色图、Seedance manifest 和视频 prompt。
-
-输出：
-
-- `rendered/*.mp4`
-- `seedance_execution.json`
-- `rendered/full_story.mp4`
-
-Seedance 提交使用 scene 场景母图和当前出镜角色图作为参考图。
-
-## 视频规划合同
-
-### `scene_transition_contract`
-
-描述当前 scene 如何从上一场进入：
-
-- 当前 scene 开场可拍状态
-- 过桥动作
-- 视觉桥接
-- 声音桥接
-- 切换方式
-
-### `scene_bible`
-
-锁定 scene 的环境基线：
-
-- 地点
-- 时间
-- 天气
-- 光线
-- 空间布局
-- 背景锚点
-- 固定道具
-
-### `shot_state`
-
-锁定 segment 的镜头和动作：
-
-- 景别
-- 镜头运动
-- 角色调度
-- 动作推进
-- 情绪推进
-- 道具连续性
-- 方向
-- 尾部状态
-
-### `continuity_link`
-
-描述当前 segment 与上一段的关系：
-
-- 开场承接
-- 允许变化
-- 禁止漂移
-- 尾部状态
-
-### `motion_plan`
-
-描述角色在场景母图空间里的可见推进：
-
-- `scene_motion`
-- `beat_progression`
-- `camera_path`
-- `character_motion`
-- `continuity_guard`
-
-视频 prompt 会优先消费 `motion_plan`，并把实际提交图片写成 `图片1=场景母图，图片2+=角色图`。
+只有明确属于同一空间推进的 scene 才跨 scene 继承场景母图或尾帧。空间变化明确、地点变化明确或连续性不确定时，系统按新场景处理。
 
 ## Artifact API
 
-`GET /v1/tasks/{task_id}/artifacts` 是前端工作台的数据入口。它返回：
+`GET /v1/tasks/{task_id}/artifacts` 聚合当前 run 的可展示数据：
 
-- 文档索引
-- 角色图
-- 场景帧
-- 视频片段
-- 总片
-- planned segments
-- continuity report
-- scene / segment 连续性分组
-- prompt 和真实请求视图
-- segment diagnostics
+- 小说正文和章节信息。
+- scene / segment 结构。
+- 角色图和场景母图状态。
+- 视频状态和预览地址。
+- prompt、motion plan、请求参数和参考图绑定。
+- 风险、失败原因和修复建议。
 
-前端按这个接口渲染时间线、Prompt Editor、Request Inspector、场景工作台和分段审片台。
+前端不直接解析所有落盘 JSON，而是优先消费 artifact API 返回的规整结构。
 
 ## 前端结构
 
-```text
-api/static/app/
-├── api.js
-├── events.js
-├── refresh.js
-├── state.js
-├── render/
-│   ├── detail.js
-│   ├── detail_assets.js
-│   ├── story_structure.js
-│   ├── scene_workbench.js
-│   ├── segment_review.js
-│   ├── prompt_tools.js
-│   ├── request_debug.js
-│   ├── timeline.js
-│   ├── timeline_data.js
-│   ├── task_state.js
-│   ├── continuity_ui.js
-│   └── document_assets.js
-```
+工作台静态文件位于 `src/storyforge/api/static/app/`。
 
-前端只展示后端返回的事实数据，不在浏览器端推断业务合同。
+- `api_client.js`：HTTP 请求。
+- `state.js`：前端状态。
+- `render/`：项目详情页的各区域渲染。
+- `render/prompt_tools.js`：prompt 编辑和请求查看。
+- `render/segment_review.js`：分段审片台。
+- `render/timeline_data.js`：artifact 数据归一化。
+- `render/task_state.js`：任务状态和按钮状态。
 
-## 持久化
+页面以当前选中的 project、run、scene、segment 为上下文，只展示当前对象的可操作信息。
 
-- MySQL 保存项目、任务、任务结果和 run 历史。
-- 输出目录保存 JSON、图片、视频和执行报告。
-- 任务记录保存 payload、result、status、error 和时间戳。
-- 项目删除会清理数据库记录和安全范围内的输出目录。
+## 数据库
 
-## 失败与恢复
+MySQL 保存：
 
-- 每个阶段任务都有明确 `status` 和 `error`。
-- 结构化 LLM 输出失败会进入重试，仍失败则显式标记任务失败。
-- 分段合同阶段保存 progress，可从失败位置继续。
-- 服务启动时未完成任务会回到 `queued`。
-- 媒体任务失败会在对应 execution JSON 中记录 provider 返回和执行摘要。
+- 项目。
+- 任务。
+- run 记录。
+- 任务结果路径。
+- 产物索引。
 
-## 相关文档
-
-- [README](../README.md)
-- [使用文档](usage.md)
-- [API 文档](api.md)
-- [开发文档](development.md)
-- [产品状态](status.md)
+大文件仍写入输出目录，数据库只保存索引和状态。

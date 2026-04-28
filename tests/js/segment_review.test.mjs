@@ -56,7 +56,10 @@ const segment = {
   sceneMasterFramePrompt: "计划场景母图",
   videoPrompt: "计划视频",
   submittedVideoPrompt: "实际视频",
-  videoRequest: { payload: { content: [{ type: "text", text: "实际视频" }] }, referenceBindings: [] },
+  videoRequest: { payload: { content: [{ type: "text", text: "实际视频" }], return_last_frame: true }, referenceBindings: [] },
+  firstFrameUrl: "/seg00-last.png",
+  lastFrameUrl: "/seg01-last.png",
+  previousClipSegmentId: "ch01-sc01-seg00",
   motionPlan: { scene_motion: "从等待到抬头" },
   motionContract: { scene_master_url: "/scene.png" },
   submittedReferenceBindings: [],
@@ -84,6 +87,8 @@ assert.match(videoHtml, /data-generate-video-segment="ch01-sc01-seg01"/);
 assert.doesNotMatch(videoHtml, /data-frame-kind="video"/);
 assert.match(videoHtml, /保存并重做视频/);
 assert.match(videoHtml, /计划视频/);
+assert.match(videoHtml, /尾帧承接/);
+assert.match(videoHtml, /已返回尾帧/);
 
 const missingVideoHtml = renderSegmentReviewDetail({
   segment: { ...segment, videoReady: false, clip: null },

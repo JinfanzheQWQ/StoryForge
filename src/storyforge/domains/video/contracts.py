@@ -190,13 +190,21 @@ class ContinuityLink:
 class SceneTransitionContract:
     previous_scene_id: str = ""
     transition_mode: str = ""
+    scene_spatial_continuity_mode: str = "uncertain"
     previous_scene_exit_state: str = ""
     next_scene_entry_match: str = ""
+    shared_environment_anchors: list[str] = field(default_factory=list)
+    spatial_relation_to_previous: str = ""
+    camera_handoff: str = ""
     bridge_action: str = ""
     carry_over_elements: list[str] = field(default_factory=list)
     screen_direction_policy: str = ""
     visual_bridge: str = ""
     audio_bridge: str = "none"
+    prop_bridge: str = ""
+    action_bridge: str = ""
+    allowed_environment_changes: str = ""
+    forbidden_drift: str = ""
     transition_focus_seconds: int = 0
 
     @classmethod
@@ -212,13 +220,25 @@ class SceneTransitionContract:
         return cls(
             previous_scene_id=str(payload.get("previous_scene_id", "") or ""),
             transition_mode=str(payload.get("transition_mode", "") or ""),
+            scene_spatial_continuity_mode=str(
+                payload.get("scene_spatial_continuity_mode", "")
+                or payload.get("spatial_continuity_mode", "")
+                or "uncertain"
+            ),
             previous_scene_exit_state=str(payload.get("previous_scene_exit_state", "") or ""),
             next_scene_entry_match=str(payload.get("next_scene_entry_match", "") or ""),
+            shared_environment_anchors=list(payload.get("shared_environment_anchors", []) or []),
+            spatial_relation_to_previous=str(payload.get("spatial_relation_to_previous", "") or ""),
+            camera_handoff=str(payload.get("camera_handoff", "") or ""),
             bridge_action=str(payload.get("bridge_action", "") or ""),
             carry_over_elements=list(payload.get("carry_over_elements", [])),
             screen_direction_policy=str(payload.get("screen_direction_policy", "") or ""),
             visual_bridge=str(payload.get("visual_bridge", "") or ""),
             audio_bridge=str(payload.get("audio_bridge", "none") or "none"),
+            prop_bridge=str(payload.get("prop_bridge", "") or ""),
+            action_bridge=str(payload.get("action_bridge", "") or ""),
+            allowed_environment_changes=str(payload.get("allowed_environment_changes", "") or ""),
+            forbidden_drift=str(payload.get("forbidden_drift", "") or ""),
             transition_focus_seconds=int(payload.get("transition_focus_seconds", 0) or 0),
         )
 
@@ -300,6 +320,7 @@ class VideoScene:
     scene_master_frame_url: str = ""
     scene_master_frame_status: str = "planned"
     scene_master_frame_error: str = ""
+    scene_master_reference_images: list[str] = field(default_factory=list)
     scene_master_request_info: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -365,6 +386,7 @@ class VideoScene:
             scene_master_frame_url=str(raw.get("scene_master_frame_url", "") or ""),
             scene_master_frame_status=str(raw.get("scene_master_frame_status", "planned") or "planned"),
             scene_master_frame_error=str(raw.get("scene_master_frame_error", "") or ""),
+            scene_master_reference_images=list(raw.get("scene_master_reference_images", []) or []),
             scene_master_request_info=dict(raw.get("scene_master_request_info", {}) or {}),
         )
 
@@ -435,6 +457,11 @@ class SeedanceClipTask:
     remote_status: str = "planned"
     video_url: str = ""
     cover_url: str = ""
+    first_frame_url: str = ""
+    last_frame_url: str = ""
+    last_frame_path: str = ""
+    previous_clip_segment_id: str = ""
+    previous_clip_video_url: str = ""
     downloaded_path: str = ""
     error: str = ""
 
@@ -470,6 +497,11 @@ class SeedanceClipTask:
             remote_status=raw.get("remote_status", "planned"),
             video_url=raw.get("video_url", ""),
             cover_url=raw.get("cover_url", ""),
+            first_frame_url=raw.get("first_frame_url", ""),
+            last_frame_url=raw.get("last_frame_url", ""),
+            last_frame_path=raw.get("last_frame_path", ""),
+            previous_clip_segment_id=raw.get("previous_clip_segment_id", ""),
+            previous_clip_video_url=raw.get("previous_clip_video_url", ""),
             downloaded_path=raw.get("downloaded_path", ""),
             error=raw.get("error", ""),
         )

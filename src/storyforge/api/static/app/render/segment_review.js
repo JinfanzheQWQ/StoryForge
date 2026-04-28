@@ -113,6 +113,8 @@ export function renderSegmentReviewDetail({ segment, index, model, galleryId, ch
         <div class="detail-chip-row">
           ${chip(`场景 ${segment.sceneReady ? "已就绪" : "待生成"}`)}
           ${chip(`视频 ${segment.videoReady ? "已就绪" : "待生成"}`)}
+          ${chip(segment.firstFrameUrl ? "尾帧承接" : "独立开场")}
+          ${segment.lastFrameUrl ? chip("已返回尾帧") : ""}
           ${chip("母图+角色图")}
           ${model.segmentRepairRemainingActions.length ? chip("合同已更新") : ""}
           ${helpers.renderContinuityRiskChips(model.segmentContinuity)}

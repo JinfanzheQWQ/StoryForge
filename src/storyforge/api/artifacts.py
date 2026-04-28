@@ -62,13 +62,21 @@ def _scene_transition_contract_to_dict(contract: SceneTransitionContract) -> dic
     return {
         "previous_scene_id": contract.previous_scene_id,
         "transition_mode": contract.transition_mode,
+        "scene_spatial_continuity_mode": contract.scene_spatial_continuity_mode,
         "previous_scene_exit_state": contract.previous_scene_exit_state,
         "next_scene_entry_match": contract.next_scene_entry_match,
+        "shared_environment_anchors": contract.shared_environment_anchors,
+        "spatial_relation_to_previous": contract.spatial_relation_to_previous,
+        "camera_handoff": contract.camera_handoff,
         "bridge_action": contract.bridge_action,
         "carry_over_elements": contract.carry_over_elements,
         "screen_direction_policy": contract.screen_direction_policy,
         "visual_bridge": contract.visual_bridge,
         "audio_bridge": contract.audio_bridge,
+        "prop_bridge": contract.prop_bridge,
+        "action_bridge": contract.action_bridge,
+        "allowed_environment_changes": contract.allowed_environment_changes,
+        "forbidden_drift": contract.forbidden_drift,
         "transition_focus_seconds": contract.transition_focus_seconds,
     }
 
@@ -591,19 +599,23 @@ def _collect_planned_segments(
     clip_map = load_seedance_clip_map(output_dir)
     scene_task_by_scene: dict[str, object] = {}
     for task in scene_task_map.values():
-        if task.scene_id and task.scene_id not in scene_task_by_scene:
+        if not task.scene_id:
+            continue
+        current = scene_task_by_scene.get(task.scene_id)
+        if current is None or _scene_task_master_score(task) > _scene_task_master_score(current):
             scene_task_by_scene[task.scene_id] = task
     scene_frame_map = {item.path: item for item in scene_frames}
     rendered_clip_map = {item.path: item for item in rendered_clips}
     character_image_map = {item.path: item for item in character_images}
-    scene_master_map = {
-        scene.scene_id: _resolve_manifest_artifact(
-            getattr(scene, "scene_master_frame_path", ""),
-            output_root,
-            scene_frame_map,
+    scene_master_map = {}
+    for scene in getattr(plan, "scenes", []):
+        scene_task = scene_task_by_scene.get(scene.scene_id)
+        scene_master_map[scene.scene_id] = _resolve_scene_master_artifact(
+            scene=scene,
+            scene_task=scene_task,
+            output_root=output_root,
+            scene_frame_map=scene_frame_map,
         )
-        for scene in getattr(plan, "scenes", [])
-    }
     scene_request_map = {
         scene.scene_id: (
             _build_submitted_request_response(
@@ -612,6 +624,7 @@ def _collect_planned_segments(
             or _build_derived_scene_master_request_response(
                 prompt_text=str(getattr(scene, "scene_master_frame_prompt", "") or ""),
                 scene_master_frame=scene_master_map.get(scene.scene_id),
+                reference_images=list(getattr(scene, "scene_master_reference_images", []) or []),
                 provider=str(getattr(scene_task_by_scene.get(scene.scene_id), "provider", "") or "seedream"),
             )
         )
@@ -627,6 +640,7 @@ def _collect_planned_segments(
     for segment in segments:
         scene = scene_by_id.get(segment.scene_id)
         scene_task = scene_task_map.get(segment.segment_id)
+        scene_master_task = scene_task_by_scene.get(segment.scene_id)
         clip_task = clip_map.get(segment.segment_id)
         rendered_clip = _resolve_rendered_clip_artifact(clip_task, output_root, rendered_clip_map)
         character_references = _resolve_clip_character_reference_artifacts(
@@ -637,6 +651,8 @@ def _collect_planned_segments(
         has_scene_master_url = bool(
             (scene and getattr(scene, "scene_master_frame_url", ""))
             or (scene_task and getattr(scene_task, "scene_master_frame_url", ""))
+            or (scene_master_task and getattr(scene_master_task, "scene_master_frame_url", ""))
+            or (clip_task and getattr(clip_task, "scene_master_url", ""))
         )
         scene_ready = bool(
             has_scene_master_url
@@ -666,6 +682,11 @@ def _collect_planned_segments(
                     if scene
                     else {}
                 ),
+                scene_spatial_continuity_mode=(
+                    scene.scene_transition_contract.scene_spatial_continuity_mode
+                    if scene
+                    else "uncertain"
+                ),
                 scene_master_frame_status=(scene.scene_master_frame_status if scene else ""),
                 scene_master_frame_error=(scene.scene_master_frame_error if scene else ""),
                 covered_event_ids=(scene.covered_event_ids if scene else []),
@@ -676,7 +697,11 @@ def _collect_planned_segments(
                 duration_seconds=segment.duration_seconds,
                 scene_master_frame=scene_master_map.get(segment.scene_id),
                 rendered_clip=rendered_clip,
-                scene_master_frame_prompt=scene_task.scene_master_frame_prompt if scene_task else "",
+                scene_master_frame_prompt=(
+                    scene_task.scene_master_frame_prompt
+                    if scene_task
+                    else (scene_master_task.scene_master_frame_prompt if scene_master_task else "")
+                ),
                 video_prompt=clip_task.prompt if clip_task else "",
                 submitted_video_prompt=clip_task.submitted_prompt if clip_task else "",
                 seedance_motion_prompt=_extract_seedance_motion_prompt(
@@ -684,7 +709,16 @@ def _collect_planned_segments(
                 ),
                 motion_plan=_build_motion_plan_response(segment),
                 motion_contract=dict(getattr(clip_task, "motion_contract", {}) or {}),
+                first_frame_url=getattr(clip_task, "first_frame_url", "") if clip_task else "",
+                last_frame_url=getattr(clip_task, "last_frame_url", "") if clip_task else "",
+                previous_clip_segment_id=getattr(clip_task, "previous_clip_segment_id", "") if clip_task else "",
+                previous_clip_video_url=getattr(clip_task, "previous_clip_video_url", "") if clip_task else "",
                 character_references=character_references,
+                scene_master_reference_images=(
+                    list(scene.scene_master_reference_images)
+                    if scene
+                    else list(getattr(scene_task, "reference_images", []) or [])
+                ),
                 diagnostics=_build_segment_diagnostics(
                     segment,
                     continuity_lookup.get(segment.segment_id),
@@ -824,6 +858,7 @@ def _build_derived_scene_master_request_response(
     *,
     prompt_text: str,
     scene_master_frame: ArtifactItem | None,
+    reference_images: list[str],
     provider: str,
 ) -> SubmittedRequestResponse | None:
     prompt = str(prompt_text or "").strip()
@@ -836,9 +871,19 @@ def _build_derived_scene_master_request_response(
         payload={
             "mode": "derived_from_manifest",
             "prompt": prompt,
-            "reference_images": [],
+            "reference_images": reference_images,
         },
-        reference_bindings=[],
+        reference_bindings=[
+            PromptReferenceBindingResponse(
+                label=f"图片{index}",
+                kind="previous_scene_master",
+                description="上一场场景母图参考，仅用于同一空间或同地点连续性。",
+                url=url,
+                path=url,
+            )
+            for index, url in enumerate(reference_images, start=1)
+            if str(url or "").strip()
+        ],
     )
 
 
@@ -855,6 +900,48 @@ def _clip_character_references_ready(clip_task, character_references: list[Artif
     return len(
         [url for url in getattr(clip_task, "character_image_urls", []) if str(url).strip()]
     ) >= expected_count
+
+
+def _scene_task_master_score(task) -> tuple[int, int, int]:
+    return (
+        1 if getattr(task, "scene_master_frame_url", "") else 0,
+        1 if getattr(task, "scene_master_frame_path", "") else 0,
+        1 if getattr(task, "scene_master_frame_status", "") not in {"", "planned"} else 0,
+    )
+
+
+def _resolve_scene_master_artifact(
+    *,
+    scene,
+    scene_task,
+    output_root: Path,
+    scene_frame_map: dict[str, ArtifactItem],
+) -> ArtifactItem | None:
+    for raw_path in (
+        getattr(scene, "scene_master_frame_path", ""),
+        getattr(scene_task, "scene_master_frame_path", "") if scene_task is not None else "",
+    ):
+        artifact = _resolve_manifest_artifact(str(raw_path or ""), output_root, scene_frame_map)
+        if artifact is not None:
+            return artifact
+    url = str(
+        getattr(scene, "scene_master_frame_url", "")
+        or (getattr(scene_task, "scene_master_frame_url", "") if scene_task is not None else "")
+        or ""
+    ).strip()
+    if not url:
+        return None
+    path_text = str(
+        getattr(scene, "scene_master_frame_path", "")
+        or (getattr(scene_task, "scene_master_frame_path", "") if scene_task is not None else "")
+        or ""
+    ).strip()
+    return ArtifactItem(
+        name=Path(path_text).name if path_text else f"{getattr(scene, 'scene_id', '') or 'scene'}_master.png",
+        path=path_text,
+        url=url,
+        kind="image",
+    )
 
 
 def _resolve_clip_character_reference_artifacts(

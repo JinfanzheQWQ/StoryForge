@@ -86,6 +86,7 @@ class SeedreamClientTestCase(unittest.TestCase):
             segments=[],
             scene_master_frame_prompt="无角色场景母图",
             scene_master_frame_path="scene_01_master.png",
+            scene_master_reference_images=["https://example.com/previous-master.png"],
         )
 
         class FakeClient:
@@ -102,6 +103,11 @@ class SeedreamClientTestCase(unittest.TestCase):
         self.assertEqual(scene.scene_master_frame_url, "https://example.com/master.png")
         self.assertEqual(scene.scene_master_request_info["provider"], "seedream")
         self.assertEqual(scene.scene_master_request_info["payload"]["prompt"], "无角色场景母图")
+        self.assertEqual(scene.scene_master_request_info["payload"]["image"], "https://example.com/previous-master.png")
+        self.assertEqual(
+            scene.scene_master_request_info["reference_bindings"][0]["kind"],
+            "previous_scene_master",
+        )
 
     def test_apply_scene_urls_to_seedance_manifest_excludes_scene_master_from_video_refs(self) -> None:
         client = SeedreamClient(
@@ -263,7 +269,7 @@ class SeedreamClientTestCase(unittest.TestCase):
         self.assertEqual(create_image.call_args.kwargs["prompt"], "场景B母图")
         self.assertEqual(package.scenes[0].scene_master_frame_url, "https://example.com/scene-a-master.png")
         self.assertEqual(package.scenes[1].scene_master_frame_url, "https://example.com/scene-b-master-new.png")
-        self.assertEqual(package.scene_images[0].scene_master_frame_url, "")
+        self.assertEqual(package.scene_images[0].scene_master_frame_url, "https://example.com/scene-a-master.png")
         self.assertEqual(package.scene_images[1].scene_master_frame_url, "https://example.com/scene-b-master-new.png")
 
     def test_generate_scene_images_syncs_scene_master_to_unselected_tasks_in_same_scene(self) -> None:
@@ -642,6 +648,35 @@ class SeedreamClientTestCase(unittest.TestCase):
                 "https://example.com/ref-b.png",
             ],
         )
+
+    def test_create_image_uses_image_payload_first_for_single_reference_editing(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+        client.api_key = "test-key"
+        http_client = Mock()
+        http_client.post.return_value = FakeSeedreamResponse(
+            payload={"data": [{"url": "https://example.com/edited.png"}]}
+        )
+
+        with patch.object(
+            client,
+            "_candidate_endpoints",
+            return_value=["https://seedream.example.com/images/generations"],
+        ):
+            image_url = client._create_image(
+                http_client,
+                prompt="图文生图编辑指令：基于图片1调整视角。",
+                reference_images=["https://example.com/previous-master.png"],
+            )
+
+        payload = http_client.post.call_args.kwargs["json"]
+        self.assertEqual(image_url, "https://example.com/edited.png")
+        self.assertEqual(payload["image"], "https://example.com/previous-master.png")
+        self.assertNotIn("reference_images", payload)
 
     def test_create_image_reduces_reference_count_after_full_multi_ref_failures(self) -> None:
         client = SeedreamClient(

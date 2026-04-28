@@ -284,6 +284,8 @@ def _reset_seedance_clip_after_prompt_change(clip: dict[str, object]) -> None:
     clip["remote_status"] = "planned"
     clip["video_url"] = ""
     clip["cover_url"] = ""
+    clip["last_frame_url"] = ""
+    clip["last_frame_path"] = ""
     clip["downloaded_path"] = ""
     clip["error"] = ""
 

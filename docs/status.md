@@ -1,75 +1,40 @@
-# 产品状态
+# 当前状态
 
-StoryForge 是一套分步式故事视频生产工作台。它强调阶段审阅、产物可追踪、prompt 可修改、请求参数可检查和小粒度重做，而不是把小说、图片和视频生成包装成不可检查的一键流程。
+## 产品状态
 
-## 产品能力
+StoryForge 当前是一套可运行的故事到视频工作台，主链路为：
 
-### 小说与结构
+```text
+生成小说 -> 编辑正文 -> 生成场景结构 -> 生成分段合同 -> 生成角色图 -> 生成场景母图 -> 逐段生成视频 -> 合并视频
+```
 
-- 根据 brief 创建项目并生成小说正文。
-- 使用 `story_source.json` 作为正文真源，页面可直接编辑和保存。
-- 生成结构化小说包，包括章节、角色、视觉设定和审稿结果。
-- 基于当前正文生成场景结构。
-- 基于场景结构生成分段合同。
-- 分段合同生成带进度 checkpoint，可在失败后从失败位置继续。
+## 已具备能力
 
-### 视频规划
+- Web 工作台和 FastAPI 接口。
+- MySQL 项目、任务、run 和产物索引。
+- LangChain 结构化规划、重试和修复。
+- 小说正文可编辑并作为后续阶段真源。
+- `chapter -> scene -> chunk -> segment` 视频结构规划。
+- 角色定妆图生成、prompt 编辑、候选图确认和替换。
+- 无人物场景母图生成、prompt 编辑和重做。
+- Seedance 分段视频生成，支持场景母图、上一段视频尾帧和角色图参考绑定。
+- 当前 segment 的 motion plan、Seedance prompt、提交请求和参考图绑定展示。
+- 分段视频合并。
+- Python lint、pipeline 测试和前端轻量测试。
 
-- 视频规划结构为 `chapter -> scene -> chunk -> segment`。
-- scene 带 `covered_event_ids`、紧凑事件摘要、`scene_bible` 和 `scene_transition_contract`。
-- segment 带 `shot_state`、`continuity_link`、`timed_beats` 和 `motion_plan`。
-- artifacts API 会返回 segment 诊断信息，包括动作预算、时长、`timed_beats` 覆盖、拆段状态、风险类型、修复来源和规划告警来源。
+## 当前约束
 
-### 图片与视频
+- Seedream / Seedance 长任务依赖外部 provider 稳定性和返回字段完整性。
+- 跨 scene 连续性依赖 scene 规划准确标记空间关系；空间变化不明确时按新场景处理。
+- 上一段视频尾帧只有在 provider 返回可用 `last_frame_url` 后才能用于下一段承接。
+- 工作台以当前项目输出目录为产物来源，手工改动输出文件可能导致页面状态和任务状态不一致。
 
-- 使用 Seedream 生成角色图。
-- 使用 Seedream 生成无角色场景母图。
-- 使用 Seedream 生成角色定妆图和 scene 场景母图。
-- 使用 Seedance 根据有序时间锚点图生成视频。
-- 视频 prompt 使用 `图片1=场景母图，图片2+=角色图` 绑定参考图。
-- 视频阶段不把场景母图或角色图作为 Seedance 参考图提交。
-- Seedream / Seedance 水印选项按 run 保存。
+## 推荐验证
 
-### Web 工作台
-
-- 项目列表、项目详情、任务时间线和产物浏览。
-- 小说编辑页用于维护正文真源。
-- 场景工作台用于查看 scene 分组、场景母图、过渡合同和 scene 级操作。
-- 分段审片台用于查看场景母图、角色图、视频、prompt、请求参数、诊断信息和重做入口。
-- Prompt Editor 支持修改场景母图 prompt 和视频 prompt。
-- Request Inspector 支持查看真实提交 payload、Prompt Diff、参考图绑定和 provider 请求摘要。
-
-### 持久化与恢复
-
-- MySQL 保存项目、任务和 run 历史。
-- 输出产物写入配置的输出根目录。
-- 静态产物响应使用 `no-store`，减少浏览器缓存影响。
-- 服务启动时，未完成任务会回到 `queued`。
-- 删除项目会删除数据库记录和安全范围内的输出目录。
-
-## 产品边界
-
-- 正常运行需要 MySQL。
-- 小说和视频规划需要可用的 LLM provider。
-- 图片和视频生成需要可用的 Seedream / Seedance provider。
-- 当前任务队列适合本地和单实例运行。
-- Seedream / Seedance 长任务运行时不要使用 `--reload`。
-- 媒体质量仍受 provider 能力、输入图、prompt、内容安全策略和素材质量影响。
-- 连续性审校能发现并修复部分合同级风险，但不是完整的视频理解系统。
-- 对象存储、账号体系、权限、多用户治理、计费和 webhook 不属于当前产品面。
-
-## 工程重点
-
-- prompt 合同保持短、明确，并只绑定当前阶段需要的数据。
-- 媒体请求 payload 必须能在页面检查。
-- 重做粒度优先控制在 frame、segment、scene 或 stage。
-- validator 必须围绕当前生产 schema 工作，不维护并行规划模式。
-- 前端 render 模块保持小边界，Prompt Editor、Request Inspector、时间线、场景工作台和分段审片台分别维护。
-
-## 下一步重点
-
-- 优化场景和片段风险展示，让页面直接提示下一步该做什么。
-- 继续减少 prompt 重复，同时保留 schema 和 provider 必需指令。
-- 补更多前端轻量测试，覆盖 prompt 修改、请求检查和单点重做按钮。
-- 强化场景母图、角色图和 Seedance 提交绑定的一致性检查。
-- 在大批量并发任务前评估更持久的队列执行方案。
+```bash
+uv run ruff check src tests
+uv run pytest
+node tests/js/prompt_tools.test.mjs
+node tests/js/segment_review.test.mjs
+node tests/js/timeline_data.test.mjs
+```

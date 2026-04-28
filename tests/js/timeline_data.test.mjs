@@ -19,7 +19,12 @@ const plannedArtifacts = {
       scene_summary: "林屿在入口等待。",
       scene_anchor: "松林入口石柱",
       scene_bible: { location: "松林入口" },
-      scene_transition_contract: { next_scene_entry_match: "林屿面向小径。" },
+      scene_transition_contract: {
+        scene_spatial_continuity_mode: "same_space_progression",
+        next_scene_entry_match: "林屿面向小径。",
+      },
+      scene_spatial_continuity_mode: "same_space_progression",
+      scene_master_reference_images: ["/prev-scene.png"],
       scene_master_frame_status: "ready",
       covered_event_ids: ["ch01-ev01"],
       covered_event_summaries: ["等待"],
@@ -36,6 +41,10 @@ const plannedArtifacts = {
         camera_path: "固定中景带轻微呼吸感。",
       },
       motion_contract: { continuity_guard: "始终保持同一松林入口空间。" },
+      first_frame_url: "/seg00-last.png",
+      last_frame_url: "/seg01-last.png",
+      previous_clip_segment_id: "ch01-sc01-seg00",
+      previous_clip_video_url: "/seg00.mp4",
       diagnostics: { risk: "low" },
       submitted_prompt_variant: "full_context",
       scene_master_frame_request: { provider: "seedream", payload: { content: [{ type: "text", text: "scene" }] } },
@@ -56,6 +65,36 @@ assert.equal(plannedSegments[0].clip.kind, "video");
 assert.equal(plannedSegments[0].sceneMasterFrameRequest.payload.content[0].text, "scene");
 assert.equal(plannedSegments[0].videoRequest.payload.content[0].text, "video");
 assert.deepEqual(plannedSegments[0].submittedReferenceBindings, [{ label: "图片1", path: "/scene.png" }]);
+assert.equal(plannedSegments[0].firstFrameUrl, "/seg00-last.png");
+assert.equal(plannedSegments[0].lastFrameUrl, "/seg01-last.png");
+assert.equal(plannedSegments[0].previousClipSegmentId, "ch01-sc01-seg00");
+assert.equal(plannedSegments[0].previousClipVideoUrl, "/seg00.mp4");
+
+const sharedSceneMasterSegments = buildTimelineSegments({
+  planned_segments: [
+    {
+      segment_id: "ch01-sc02-seg00",
+      scene_id: "ch01-sc02",
+      title: "同场母图来源段",
+      chapter_number: 1,
+      scene_master_frame: { name: "ch01-sc02_master.png", url: "/shared-scene.png", path: "/shared-scene.png" },
+      scene_ready: true,
+      video_ready: false,
+    },
+    {
+      segment_id: "ch01-sc02-seg01",
+      scene_id: "ch01-sc02",
+      title: "当前要生成视频的段",
+      chapter_number: 1,
+      scene_master_frame: null,
+      scene_ready: false,
+      video_ready: false,
+    },
+  ],
+});
+const sharedSceneTarget = sharedSceneMasterSegments.find((segment) => segment.segmentId === "ch01-sc02-seg01");
+assert.equal(sharedSceneTarget.sceneReady, true);
+assert.equal(sharedSceneTarget.sceneMasterFrame.url, "/shared-scene.png");
 
 const sceneGroups = buildSceneGroups(plannedSegments);
 assert.equal(sceneGroups.length, 1);
@@ -63,6 +102,8 @@ assert.equal(sceneGroups[0].sceneId, "ch01-sc01");
 assert.equal(sceneGroups[0].sceneMasterFrame.url, "/scene.png");
 assert.equal(sceneGroups[0].segments[0].segmentId, "ch01-sc01-seg01");
 assert.deepEqual(sceneGroups[0].coveredEventIds, ["ch01-ev01"]);
+assert.equal(sceneGroups[0].sceneSpatialContinuityMode, "same_space_progression");
+assert.deepEqual(sceneGroups[0].sceneMasterReferenceImages, ["/prev-scene.png"]);
 
 const plannedGalleryItems = buildTimelineGalleryItems(plannedArtifacts);
 assert.deepEqual(plannedGalleryItems.map((item) => item.url), [

@@ -38,6 +38,7 @@ class SeedanceClipExecution:
     remote_status: str = "planned"
     video_url: str = ""
     cover_url: str = ""
+    last_frame_url: str = ""
     error: str = ""
     status_payload: dict[str, Any] = field(default_factory=dict)
 
@@ -120,6 +121,7 @@ class SeedanceClient:
         clip_results: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=120) as client:
             for clip in target_clips:
+                self._apply_previous_clip_tail_frame(clip, manifest)
                 payload, resolved_prompt, reference_bindings = self._build_payload_with_metadata(clip)
                 clip.submit_variant = "timeline_only"
                 clip.submitted_prompt = resolved_prompt
@@ -213,6 +215,7 @@ class SeedanceClient:
 
         with httpx.Client(timeout=120) as client:
             for clip in target_clips:
+                self._apply_previous_clip_tail_frame(clip, manifest)
                 execution = SeedanceClipExecution(
                     segment_id=clip.segment_id,
                     title=clip.title,
@@ -285,6 +288,45 @@ class SeedanceClient:
             clip_results=clip_results,
         )
 
+    def _apply_previous_clip_tail_frame(
+        self,
+        clip: SeedanceClipTask,
+        manifest: SeedanceManifest,
+    ) -> None:
+        if clip.first_frame_url:
+            return
+        previous_clip = self._find_previous_clip_for_tail_frame(clip, manifest)
+        if previous_clip is None:
+            return
+        if previous_clip.segment_id and not clip.previous_clip_segment_id:
+            clip.previous_clip_segment_id = previous_clip.segment_id
+        if previous_clip.last_frame_url:
+            clip.first_frame_url = previous_clip.last_frame_url
+        if previous_clip.video_url and not clip.previous_clip_video_url:
+            clip.previous_clip_video_url = previous_clip.video_url
+
+    def _find_previous_clip_for_tail_frame(
+        self,
+        clip: SeedanceClipTask,
+        manifest: SeedanceManifest,
+    ) -> SeedanceClipTask | None:
+        previous_segment_id = str(clip.previous_clip_segment_id or "").strip()
+        if previous_segment_id:
+            return next(
+                (item for item in manifest.clips if item.segment_id == previous_segment_id),
+                None,
+            )
+        try:
+            index = manifest.clips.index(clip)
+        except ValueError:
+            return None
+        if index <= 0:
+            return None
+        previous_clip = manifest.clips[index - 1]
+        if previous_clip.scene_id and clip.scene_id and previous_clip.scene_id != clip.scene_id:
+            return None
+        return previous_clip
+
     def _resolve_target_clips(
         self,
         manifest: SeedanceManifest,
@@ -316,6 +358,7 @@ class SeedanceClient:
         execution.submit_status = "completed"
         execution.video_url = clip.video_url
         execution.cover_url = clip.cover_url
+        execution.last_frame_url = clip.last_frame_url
         execution.error = ""
 
     def _resolve_existing_task_id(self, clip: SeedanceClipTask) -> str:
@@ -350,10 +393,13 @@ class SeedanceClient:
     ) -> None:
         video_url = self._extract_video_url(status_payload) or clip.video_url
         cover_url = self._extract_cover_url(status_payload) or clip.cover_url
+        last_frame_url = self._extract_last_frame_url(status_payload) or clip.last_frame_url
         execution.video_url = video_url
         execution.cover_url = cover_url
+        execution.last_frame_url = last_frame_url
         clip.video_url = video_url
         clip.cover_url = cover_url
+        clip.last_frame_url = last_frame_url
         clip.submit_status = "completed"
         clip.error = ""
         execution.submit_status = "completed"
@@ -436,6 +482,9 @@ class SeedanceClient:
             "watermark": self.config.watermark,
         }
         payload["generate_audio"] = bool(clip.with_audio)
+        payload["return_last_frame"] = True
+        if clip.first_frame_url:
+            payload["first_frame"] = clip.first_frame_url
         return payload, resolved_prompt, self._describe_reference_bindings(reference_bindings)
 
     def _resolve_reference_bindings(
@@ -445,6 +494,8 @@ class SeedanceClient:
         ordered_sources: list[tuple[str, str]] = []
         if clip.scene_master_url:
             ordered_sources.append(("scene_master", clip.scene_master_url))
+        if clip.first_frame_url:
+            ordered_sources.append(("first_frame", clip.first_frame_url))
         for index, url in enumerate(clip.character_image_urls, start=1):
             character_name = ""
             if index <= len(clip.visible_characters):
@@ -473,17 +524,29 @@ class SeedanceClient:
         if not reference_bindings:
             return base_prompt
 
-        lines: list[str] = [base_prompt, "", "提交素材绑定："]
+        binding_lines: list[str] = ["参考图绑定（必须严格按本次提交的图片顺序理解）："]
+        has_first_frame = any(kind == "first_frame" for kind, _ in reference_bindings)
         for index, (kind, _) in enumerate(reference_bindings, start=1):
             label = f"图片{index}"
             if kind == "scene_master":
-                lines.append(f"- {label}：场景母图，只用于锁定环境、空间、光线和固定道具。")
+                binding_lines.append(
+                    f"- {label}：当前 scene 的场景母图，只用于锁定环境、空间、光线、背景锚点和固定道具；不是视频时间帧。"
+                )
+            elif kind == "first_frame":
+                binding_lines.append(
+                    f"- {label}：上一段视频尾帧，是当前片段的开场时间锚点；当前片段必须先从这张图的构图、角色站位、朝向、动作停点和光线状态自然继续。"
+                )
             elif kind.startswith("character"):
                 character_name = kind.partition(":")[2]
                 suffix = f"{character_name} 的角色图" if character_name else "角色图"
-                lines.append(f"- {label}：{suffix}，只用于锁定脸、发型、服装、体型和年龄感，不要复制定妆图版式。")
-        lines.append("- 视频必须在图片1的场景中拍摄，按文本中的运动轨迹推进；角色图只用于身份参考，不是视频时间帧。")
-        lines.append("- 每个实际出镜角色只能出现一次，不要复制人物、不要新增相似替身、不要把三视图或白底定妆版式带入视频。")
+                binding_lines.append(
+                    f"- {label}：{suffix}，只用于锁定脸、发型、服装、体型和年龄感；不是视频时间锚点，不要复制定妆图版式。"
+                )
+        binding_lines.append("- 视频必须在图片1的场景中拍摄，按文本中的运动轨迹推进；角色图只用于身份参考，不是视频时间帧。")
+        if has_first_frame:
+            binding_lines.append("- 因为本次提交包含上一段视频尾帧，当前片段 0 秒开场必须优先对齐尾帧，再在同一空间里自然推进新动作。")
+        binding_lines.append("- 每个实际出镜角色只能出现一次，不要复制人物、不要新增相似替身、不要把三视图或白底定妆版式带入视频。")
+        lines: list[str] = [*binding_lines, "", base_prompt]
         return "\n".join(line for line in lines if line is not None)
 
     def _describe_reference_bindings(
@@ -495,6 +558,8 @@ class SeedanceClient:
             binding_kind = kind
             if kind == "scene_master":
                 description = "场景母图参考，用于锁定当前 scene 的环境、空间、光线、背景锚点和固定道具。"
+            elif kind == "first_frame":
+                description = "上一段视频尾帧参考，用于锁定当前片段开头的构图、角色站位、动作停点和光线状态。"
             elif kind.startswith("character"):
                 character_name = kind.partition(":")[2]
                 description = (
@@ -674,6 +739,45 @@ class SeedanceClient:
             if data.get("cover_url"):
                 return str(data["cover_url"])
         return ""
+
+    def _extract_last_frame_url(self, payload: dict[str, Any]) -> str:
+        for container in self._status_payload_containers(payload):
+            for key in (
+                "last_frame_url",
+                "last_image_url",
+                "last_frame",
+                "end_frame_url",
+                "tail_frame_url",
+                "final_frame_url",
+            ):
+                value = container.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            images = container.get("images") or container.get("image_urls")
+            if isinstance(images, list) and images:
+                for item in reversed(images):
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+                    if isinstance(item, dict):
+                        url = item.get("url") or item.get("image_url")
+                        if isinstance(url, str) and url.strip():
+                            return url.strip()
+        return ""
+
+    def _status_payload_containers(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        containers: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            containers.append(payload)
+            content = payload.get("content")
+            if isinstance(content, dict):
+                containers.append(content)
+            data = payload.get("data")
+            if isinstance(data, dict):
+                containers.append(data)
+                nested_content = data.get("content")
+                if isinstance(nested_content, dict):
+                    containers.append(nested_content)
+        return containers
 
     def _extract_error_message(self, payload: dict[str, Any]) -> str:
         for key in ("message", "detail", "error"):

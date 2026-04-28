@@ -83,6 +83,10 @@ class SceneTransitionContractSchema(BaseModel):
         default="",
         description="scene 间过渡方式，可取 direct_continue / adjacent_move / motivated_cut / hard_cut",
     )
+    scene_spatial_continuity_mode: str = Field(
+        default="uncertain",
+        description="跨 scene 空间连续性模式，可取 same_space_progression / same_location_new_angle / hard_cut_new_location / time_jump_same_location / uncertain",
+    )
     previous_scene_exit_state: str = Field(
         default="",
         description="上一场尾部可拍到的退出状态",
@@ -91,6 +95,15 @@ class SceneTransitionContractSchema(BaseModel):
         default="",
         description="当前场第一段开头必须先建立的开场状态",
     )
+    shared_environment_anchors: list[str] = Field(
+        default_factory=list,
+        description="跨 scene 需要保持的环境锚点；新地点应为空",
+    )
+    spatial_relation_to_previous: str = Field(
+        default="",
+        description="当前场与上一场的空间关系，例如沿道路推进、同地点换角度或新地点硬切",
+    )
+    camera_handoff: str = Field(default="", description="上一场镜头到当前场镜头的承接方式")
     bridge_action: str = Field(
         default="",
         description="上一场尾部过渡到当前场开头的连接动作或连接结果",
@@ -111,6 +124,10 @@ class SceneTransitionContractSchema(BaseModel):
         default="none",
         description="声音桥接方式，可取 none / j_cut / l_cut / ambient_bridge",
     )
+    prop_bridge: str = Field(default="", description="跨场承接物件，例如信、手机、书或花")
+    action_bridge: str = Field(default="", description="跨场动作桥，例如收起信 -> 放下信")
+    allowed_environment_changes: str = Field(default="", description="当前场允许改变的环境、机位或光线范围")
+    forbidden_drift: str = Field(default="", description="禁止出现的空间漂移、上一场元素泄漏或错误环境变化")
     transition_focus_seconds: int = Field(
         default=0,
         ge=0,
@@ -439,6 +456,10 @@ class VideoSceneSchema(BaseModel):
         default="",
         description="场景母图生成失败原因",
     )
+    scene_master_reference_images: list[str] = Field(
+        default_factory=list,
+        description="场景母图生成时使用的参考图 URL 或路径，通常只在同一空间推进时包含上一场母图",
+    )
     scene_master_request_info: dict[str, object] = Field(
         default_factory=dict,
         description="场景母图实际提交到 Seedream 的请求参数摘要",
@@ -530,6 +551,9 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
             scene_payload.get("scene_master_frame_status") or "planned"
         ).strip() or "planned"
         scene_master_frame_error = str(scene_payload.get("scene_master_frame_error") or "").strip()
+        scene_master_reference_images = _normalize_name_list(
+            scene_payload.get("scene_master_reference_images", [])
+        )
         scene_master_request_info = dict(scene_payload.get("scene_master_request_info", {}) or {})
         covered_event_ids = _normalize_name_list(scene_payload.get("covered_event_ids", []))
         covered_event_summaries = [
@@ -579,6 +603,7 @@ def _normalize_raw_scenes(raw_scenes: list[object]) -> list[dict[str, object]]:
                 "scene_master_frame_url": scene_master_frame_url,
                 "scene_master_frame_status": scene_master_frame_status,
                 "scene_master_frame_error": scene_master_frame_error,
+                "scene_master_reference_images": scene_master_reference_images,
                 "scene_master_request_info": scene_master_request_info,
                 "involved_characters": involved_characters,
                 "covered_event_ids": covered_event_ids,
@@ -762,6 +787,9 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
                     payload.get("scene_master_frame_status") or "planned"
                 ).strip() or "planned",
                 "scene_master_frame_error": str(payload.get("scene_master_frame_error") or "").strip(),
+                "scene_master_reference_images": _normalize_name_list(
+                    payload.get("scene_master_reference_images", [])
+                ),
                 "scene_master_request_info": dict(payload.get("scene_master_request_info", {}) or {}),
                 "involved_characters": [],
                 "covered_event_ids": _normalize_name_list(payload.get("covered_event_ids", [])),
@@ -794,8 +822,15 @@ def _build_scenes_from_flat_segments(raw_segments: list[object]) -> list[dict[st
             "scene_master_frame_url",
             "scene_master_frame_status",
             "scene_master_frame_error",
+            "scene_master_reference_images",
             "scene_master_request_info",
         ):
+            if key == "scene_master_reference_images":
+                current_value = list(group.get(key, []) or [])
+                incoming_value = _normalize_name_list(payload.get(key, []))
+                if incoming_value and not current_value:
+                    group[key] = incoming_value
+                continue
             if key == "scene_master_request_info":
                 current_value = dict(group.get(key, {}) or {})
                 incoming_value = dict(payload.get(key, {}) or {})
@@ -1007,11 +1042,18 @@ def _normalize_scene_transition_contract(raw_contract: object) -> dict[str, obje
     normalized["transition_mode"] = _normalize_scene_transition_mode(
         normalized.get("transition_mode", "")
     )
+    normalized["scene_spatial_continuity_mode"] = _normalize_scene_spatial_continuity_mode(
+        normalized.get("scene_spatial_continuity_mode", "")
+        or payload.get("spatial_continuity_mode", "")
+    )
     normalized["audio_bridge"] = _normalize_scene_audio_bridge(
         normalized.get("audio_bridge", "none")
     )
     normalized["carry_over_elements"] = _normalize_name_list(
         normalized.get("carry_over_elements", [])
+    )
+    normalized["shared_environment_anchors"] = _normalize_name_list(
+        normalized.get("shared_environment_anchors", [])
     )
     return normalized
 
@@ -1102,10 +1144,11 @@ def _transition_entry_has_current_scene_signal(
     anchors.extend(str(item) for item in list(scene_payload.get("background_anchors", []) or []))
     anchors.extend(str(item) for item in list(scene_payload.get("fixed_props", []) or []))
     concrete_anchors = [item.strip() for item in anchors if len(str(item).strip()) >= 2]
-    if any(anchor in normalized for anchor in concrete_anchors[:8]):
+    primary_anchors = concrete_anchors[:8]
+    if any(anchor in normalized for anchor in primary_anchors):
         return True
-    signal = " ".join([summary, scene_anchor, " ".join(concrete_anchors[:8])])
-    return _simple_text_overlap(normalized, signal) >= 0.08
+    signal = " ".join([summary, scene_anchor, " ".join(primary_anchors)])
+    return _simple_text_overlap(normalized, signal) >= 0.14
 
 
 def _simple_text_overlap(left: str, right: str) -> float:
@@ -1170,6 +1213,21 @@ def _normalize_scene_transition_mode(raw_value: object) -> str:
     if value in {"direct_continue", "adjacent_move", "motivated_cut", "hard_cut"}:
         return value
     return ""
+
+
+def _normalize_scene_spatial_continuity_mode(raw_value: object) -> str:
+    value = str(raw_value or "").strip().lower()
+    if value in {
+        "same_space_progression",
+        "same_location_new_angle",
+        "hard_cut_new_location",
+        "time_jump_same_location",
+        "uncertain",
+    }:
+        return value
+    if value in {"hard_cut", "motivated_cut", "new_location"}:
+        return "hard_cut_new_location"
+    return "uncertain"
 
 
 def _normalize_scene_audio_bridge(raw_value: object) -> str:

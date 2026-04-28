@@ -452,8 +452,10 @@ class VideoStructureValidationMixin:
         previous_tail_segment: SceneSegmentContractSchema | None = None,
         effective_expected_segment_count: int | None = None,
         creative_strict: bool = True,
+        landing_strict: bool | None = None,
         warning_sink: list[str] | None = None,
     ) -> SceneSegmentContractBatchSchema:
+        effective_landing_strict = creative_strict if landing_strict is None else landing_strict
         previous_segment: SceneSegmentContractSchema | None = None
         for segment in contracts.segments:
             if (
@@ -535,11 +537,6 @@ class VideoStructureValidationMixin:
                     chunk=chunk,
                     first_segment=contracts.segments[0],
                 )
-                self._validate_scene_chunk_result_landing(
-                    scene=scene,
-                    chunk=chunk,
-                    last_segment=contracts.segments[-1],
-                )
             else:
                 try:
                     self._validate_scene_boundary_segment_entry(
@@ -550,6 +547,14 @@ class VideoStructureValidationMixin:
                 except ValueError as exc:
                     if warning_sink is not None:
                         warning_sink.append(str(exc))
+
+            if effective_landing_strict:
+                self._validate_scene_chunk_result_landing(
+                    scene=scene,
+                    chunk=chunk,
+                    last_segment=contracts.segments[-1],
+                )
+            else:
                 try:
                     self._validate_scene_chunk_result_landing(
                         scene=scene,

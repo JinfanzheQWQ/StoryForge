@@ -5,29 +5,18 @@ from pathlib import Path
 import os
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from storyforge.api.routers.health import router as health_router
 from storyforge.api.routers.projects import router as projects_router
 from storyforge.api.routers.tasks import router as tasks_router
-from storyforge.api.routers.ui import router as ui_router
 from storyforge.application.container import AppContainer, build_container
 from storyforge.core.config import AppConfig
 from storyforge.core.env import load_env_file
 
 
 CONFIG_PATH_ENV = "STORYFORGE_CONFIG_PATH"
-
-
-class NoCacheStaticFiles(StaticFiles):
-    """Serve frontend assets without browser caching to avoid stale ES modules."""
-
-    def file_response(self, *args, **kwargs):  # type: ignore[override]
-        response = super().file_response(*args, **kwargs)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
 
 
 def resolve_project_root() -> Path:
@@ -61,11 +50,16 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
         ),
         lifespan=lifespan,
     )
-    static_dir = root / "src" / "storyforge" / "api" / "static"
+    if config.api.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(config.api.cors_origins),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     output_dir = root / config.paths.output_dir
-    app.mount("/static", NoCacheStaticFiles(directory=static_dir), name="static")
     app.mount("/outputs", StaticFiles(directory=output_dir), name="outputs")
-    app.include_router(ui_router)
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(tasks_router)

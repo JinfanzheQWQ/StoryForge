@@ -358,51 +358,6 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(segment_task["status"], "completed")
         return scene_task, segment_task
 
-    def test_web_console_bootstrap(self) -> None:
-        config_path = self._create_test_config()
-        app = create_app(project_root=ROOT, config_path=config_path)
-        with TestClient(app) as client:
-            response = client.get("/")
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("StoryForge Studio", response.text)
-
-            static_js = client.get("/static/app.js")
-            self.assertEqual(static_js.status_code, 200)
-            self.assertIn('import { initApp } from "./app/main.js";', static_js.text)
-            self.assertEqual(
-                static_js.headers.get("cache-control"),
-                "no-store, no-cache, must-revalidate",
-            )
-
-            static_main_js = client.get("/static/app/main.js")
-            self.assertEqual(static_main_js.status_code, 200)
-            self.assertIn("refreshTasks", static_main_js.text)
-            self.assertEqual(
-                static_main_js.headers.get("cache-control"),
-                "no-store, no-cache, must-revalidate",
-            )
-
-            bootstrap = client.get("/v1/ui/bootstrap")
-            self.assertEqual(bootstrap.status_code, 200)
-            payload = bootstrap.json()
-            self.assertIn("default_brief", payload)
-            self.assertIn("llm_provider", payload)
-            self.assertIn("llm_model", payload)
-            self.assertIn("continuity_review_mode", payload)
-            self.assertIn("available_llm_options", payload)
-            self.assertIn("seedream_model", payload)
-            self.assertIn("seedance_model", payload)
-            self.assertIn("seedream_watermark", payload)
-            self.assertIn("seedance_watermark", payload)
-            self.assertFalse(payload["seedream_watermark"])
-            self.assertFalse(payload["seedance_watermark"])
-            self.assertTrue(
-                any(
-                    item["provider"] == "openai" and item["model"] == "gpt-5.4"
-                    for item in payload["available_llm_options"]
-                )
-            )
-
     def test_submit_complete_job_and_keep_project_history_within_process(self) -> None:
         config_path = self._create_test_config()
         app = create_app(project_root=ROOT, config_path=config_path)
@@ -1938,11 +1893,11 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(clip["remote_status"], "planned")
                 self.assertFalse(old_clip_path.exists())
 
-                legacy_response = client.post(
+                unsupported_response = client.post(
                     f"/v1/projects/{project_id}/segment-prompts/{source_record.task_id}/{segment_id}/reset",
                     json={"field": "unsupported_prompt"},
                 )
-                self.assertEqual(legacy_response.status_code, 422)
+                self.assertEqual(unsupported_response.status_code, 422)
 
     @patch("storyforge.application.task_handlers.run_segment_continuity_repair_pipeline")
     @patch("storyforge.application.task_handlers.run_scene_image_pipeline")
@@ -2854,6 +2809,15 @@ class ApiTestCase(unittest.TestCase):
             self.assertIsNone(scene_structure_payload["result"].get("segment_plan_path"))
             self.assertIsNone(scene_structure_payload["result"].get("scene_images_path"))
             self.assertIsNone(scene_structure_payload["result"].get("seedance_manifest_path"))
+
+            scene_artifacts_response = client.get(f"/v1/tasks/{scene_structure_task_id}/artifacts")
+            self.assertEqual(scene_artifacts_response.status_code, 200)
+            scene_artifacts = scene_artifacts_response.json()
+            self.assertTrue(scene_artifacts["scenes"])
+            self.assertEqual(scene_artifacts["planned_segments"], [])
+            self.assertIn("scene_id", scene_artifacts["scenes"][0])
+            self.assertIn("scene_bible", scene_artifacts["scenes"][0])
+            self.assertIn("scene_transition_contract", scene_artifacts["scenes"][0])
 
             duplicate_scene_structure_response = client.post(
                 "/v1/projects/scene-structure",

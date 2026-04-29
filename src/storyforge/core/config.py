@@ -11,7 +11,6 @@ class LLMConfig:
     enabled: bool = False
     provider: str = "deepseek"
     model: str = "deepseek-chat"
-    available_providers: tuple[str, ...] = ("deepseek", "openai")
     temperature: float = 0.7
     max_tokens: int = 8192
     api_key_env: str = "DEEPSEEK_API_KEY"
@@ -98,6 +97,14 @@ class PathConfig:
 
 
 @dataclass(slots=True)
+class ApiConfig:
+    cors_origins: tuple[str, ...] = (
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    )
+
+
+@dataclass(slots=True)
 class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     novel: NovelConfig = field(default_factory=NovelConfig)
@@ -107,6 +114,7 @@ class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     paths: PathConfig = field(default_factory=PathConfig)
+    api: ApiConfig = field(default_factory=ApiConfig)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "AppConfig":
@@ -124,13 +132,13 @@ class AppConfig:
         database = raw.get("database", {})
         queue = raw.get("queue", {})
         paths = raw.get("paths", {})
+        api = raw.get("api", {})
 
         return cls(
             llm=LLMConfig(
                 enabled=llm.get("enabled", False),
                 provider=llm.get("provider", "deepseek"),
                 model=llm.get("model", "deepseek-chat"),
-                available_providers=tuple(llm.get("available_providers", ["deepseek", "openai"])),
                 temperature=llm.get("temperature", 0.7),
                 max_tokens=llm.get("max_tokens", 8192),
                 api_key_env=llm.get("api_key_env", "DEEPSEEK_API_KEY"),
@@ -196,6 +204,17 @@ class AppConfig:
             paths=PathConfig(
                 output_dir=paths.get("output_dir", "outputs"),
                 prompt_dir=paths.get("prompt_dir", "prompts"),
+            ),
+            api=ApiConfig(
+                cors_origins=tuple(
+                    api.get(
+                        "cors_origins",
+                        [
+                            "http://localhost:5173",
+                            "http://127.0.0.1:5173",
+                        ],
+                    )
+                ),
             ),
         )
 

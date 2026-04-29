@@ -1,8 +1,10 @@
 # 使用说明
 
-StoryForge 的主入口是 Web 工作台。推荐按阶段推进，每完成一个阶段先在页面审阅结果，再进入下一阶段。
+StoryForge 的推荐使用方式是按阶段推进。每个阶段完成后先在页面审阅结果，再进入下一阶段，避免在错误规划上继续消耗生图和生视频成本。
 
-## 启动
+## 启动服务
+
+启动后端：
 
 ```bash
 uv sync
@@ -10,129 +12,143 @@ cp .env.example .env
 uv run storyforge api serve --host 127.0.0.1 --port 8000
 ```
 
-打开：
+启动前端：
 
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/docs`
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev
+```
 
-运行 Seedream / Seedance 长任务时不要使用 `--reload`。
+常用地址：
 
-## 项目流程
+- 前端：`http://127.0.0.1:5173/`
+- API 文档：`http://127.0.0.1:8000/docs`
+- 健康检查：`http://127.0.0.1:8000/health`
 
-1. 在创建页输入 brief，生成小说正文。
-2. 在小说页审阅正文，必要时直接修改并保存。
-3. 生成场景结构，检查 scene 是否覆盖章节事件、地点和空间关系是否合理。
-4. 生成分段合同，检查每个 segment 的动作容量、对白长度、镜头关系和收束状态。
-5. 生成角色图，必要时编辑单个角色 prompt 后重做。
-6. 生成场景母图，检查是否为无人物空场景，地点、光线、背景锚点和固定道具是否稳定。
-7. 逐段生成视频，检查当前 segment 的画面推进、声音、字幕和参考图绑定。
-8. 合并已完成视频片段。
+运行 Seedream 或 Seedance 长任务时，不建议给后端开启热重载。
 
-## 角色图
+## 创建项目
 
-角色图用于锁定角色身份和外观。每个角色单独生成白底三视图，画面只包含同一角色的正面、侧面和背面。
+1. 打开首页，输入一句故事创意。
+2. 点击开始创作，进入小说转视频页。
+3. 填写项目名称、类型、气质、章节数和核心元素。
+4. 创建视频项目。
+5. 小说任务提交后，进入项目工作台等待任务完成。
 
-页面支持：
+## 工作台流程
 
-- 查看当前正式角色图。
-- 查看真实 Seedream 请求。
-- 编辑单角色 prompt。
-- 生成候选图。
-- 保存候选图并替换正式图。
-- 放弃候选图。
+### 1. 小说
 
-角色图不是视频时间帧，不用于描述动作过程。
+小说页展示 `story_source.json` 的正文真源。可以编辑故事标题、章节标题、章节摘要和章节正文。
 
-## 场景母图
+保存正文会更新 `story_source_revision`，后续结构、角色图、场景母图和视频需要基于新正文重新生成。
 
-场景母图用于锁定 scene 的环境基准。它必须是无人物、无文字的空场景参考图。
+### 2. 结构化信息
 
-场景母图 prompt 应包含：
+结构化信息阶段分两步：
 
-- 地点。
-- 时间、天气、光线。
-- 空间布局。
-- 主色调。
-- 背景锚点。
-- 固定道具。
-- 无人物、无文字、无 Logo、水印和说明性排版的约束。
+- 生成场景结构：得到章节、scene、角色视觉设定、空间合同和连续性报告。
+- 生成分段合同：得到 chunk、segment、motion plan、场景母图任务和视频任务。
 
-同一地点连续推进的 scene 可以共用或承接上一 scene 的场景母图。新地点或空间关系不确定时应生成新的场景母图。
+页面会展示 scene 和 segment 的蓝图，用于检查地点、人物、动作目标和承接关系。
 
-## 视频生成
+### 3. 角色图
 
-每个 segment 独立提交 Seedance。提交内容包括：
+角色定妆墙用于检查每个角色的正式图和 prompt。
 
-- 当前 scene 的场景母图。
-- 需要承接时的上一段视频尾帧。
-- 当前 segment 实际出镜角色的角色图。
-- 当前 segment 的 motion prompt。
+支持操作：
 
-参考图顺序以 Request Inspector 中的实际提交为准。prompt 会明确说明每张图的用途：场景母图锁定空间，上一段视频尾帧锁定开场状态，角色图锁定人物身份。
+- 切换角色。
+- 修改当前角色 prompt。
+- 保存 prompt。
+- 保存并重做当前角色。
+- 对比当前正式图和新候选图。
+- 使用候选图或保留当前图。
 
-视频 prompt 负责描述：
+角色图用于锁定脸、发型、服装、体型和年龄感，不用于描述视频动作过程。
 
-- 时长。
-- 角色运动轨迹。
-- 动作状态。
-- 镜头调度。
-- 开场状态和收束状态。
-- 对白、角色音色、环境音、音乐和硬字幕。
-- 连续性保护。
+### 4. 场景母图
 
-## Prompt 编辑
+场景空间板按 scene 展示环境母图。重点检查：
 
-分段审片台只编辑当前选中的 segment。
+- 是否是无人物空场景。
+- 地点、时间、天气和光线是否正确。
+- 空间透视、背景锚点和固定道具是否稳定。
+- 该母图被多少个 segment 引用。
 
-可编辑项：
+同一空间连续推进的 scene 可以复用母图；新地点或空间关系不确定时应生成新的母图。
 
-- 场景母图 prompt。
-- Seedance 视频 prompt。
+### 5. 分段视频
 
-保存 prompt 不会自动提交媒体任务。保存后需要手动重做对应的场景母图或视频。
+分段审片台按 segment 展示视频生产状态。
 
-## 请求查看
+每个 segment 可以查看：
 
-Request Inspector 展示当前媒体任务真实提交内容：
+- 当前视频或场景母图预览。
+- segment 标题、摘要、时长和场景。
+- 是否启用上一段尾帧承接。
+- 当前片段命中的连续性问题。
+- 提交资源图。
+- 可编辑的视频 prompt。
+- 含图片编号绑定的提交 prompt 预览。
 
-- provider。
-- model。
-- prompt。
-- size / duration / resolution / watermark 等请求参数。
-- reference images。
-- submitted reference bindings。
-- provider request summary。
-- 失败原因和诊断信息。
+未出片时按钮显示“生成当前视频”，已出片时显示“重新生成视频”。
 
-当页面结果和预期不一致时，优先检查 Request Inspector 中的实际 payload。
+### 6. 合并视频
 
-## 输出文件
+合并视频页展示完整成片和片段资产。点击合并后，系统会把已完成的 segment 视频按顺序合成为 `rendered/full_story.mp4`。
+
+## Prompt 编辑规则
+
+- 角色 prompt 在角色定妆墙编辑。
+- 视频 prompt 在分段审片台编辑。
+- 场景母图 prompt 可通过 API 更新 segment 对应的 `scene_master_frame_prompt`。
+- 保存 prompt 不会自动提交媒体任务。
+- “保存并重做”只重做当前对象，不重新跑整个项目。
+
+## 参考图绑定
+
+Seedance 视频提交会根据真实资源顺序生成绑定说明。常见顺序：
+
+- `图片1`：当前 scene 的场景母图，用于锁定地点、光线、透视、背景锚点和固定道具。
+- `图片2`：上一段视频尾帧，仅在需要承接时出现，用于锁定开场构图、站位、动作停点和光线状态。
+- 后续图片：实际出镜角色图，用于锁定角色身份、脸、发型、服装和体型。
+
+如果没有上一段尾帧，角色图会前移。判断参考图用途时必须看提交 prompt 和 `submitted_reference_bindings`，不要假设固定编号。
+
+## 常见问题
+
+生成视频按钮不可用时，通常是当前 segment 缺少场景母图、角色图，或当前任务仍在运行。
+
+视频不承接上一段时，检查上一段是否已有 `last_frame_url`，再检查当前 segment 是否把该尾帧作为参考图提交。
+
+场景跳变明显时，检查 scene 是否被错误标记为同一空间；新地点应生成新场景母图。
+
+角色换脸或年龄感变化时，优先重做角色图，再重跑相关视频片段。
+
+合并视频没有展示时，先确认至少一个 segment 已完成视频生成，再提交合并任务。
+
+## 输出目录
+
+默认输出目录是 `outputs/projects/{project_id}/runs/{task_id}/...`。
 
 常用文件：
 
-- `story_source.json`：正文真源。
-- `novel_package.json`：小说包。
-- `story_memory.json`：故事记忆。
-- `character_visual_bible.json`：角色视觉设定。
-- `scene_plan.json`：scene 结构和场景母图字段。
-- `segment_plan.json`：segment 合同和 prompt。
-- `character_image_manifest.json`：角色图任务和结果。
-- `scene_image_manifest.json`：场景母图任务和结果。
-- `seedance_manifest.json`：视频任务、参考图绑定、提交 prompt 和结果。
-- `continuity_report.json`：风险诊断。
+- `story_source.json`
+- `novel_package.json`
+- `story_memory.json`
+- `character_visual_bible.json`
+- `scene_plan.json`
+- `segment_plan.json`
+- `character_image_manifest.json`
+- `scene_image_manifest.json`
+- `seedance_manifest.json`
+- `continuity_report.json`
 
-媒体目录：
+常用媒体目录：
 
-- `assets/characters/`：角色图。
-- `assets/frames/`：场景母图。
-- `rendered/`：分段视频和合并视频。
-
-## 常见判断
-
-生成视频按钮禁用时，通常说明当前 segment 缺少可用场景母图、角色图或视频任务仍在运行。
-
-视频报缺少 scene master 时，先检查当前 scene 是否已有场景母图 URL；同地点连续推进的 scene 再检查是否正确继承了上一 scene 的场景母图。
-
-视频不承接上一段时，先检查上一段是否已有 `last_frame_url`，再检查当前 segment 的提交请求是否包含上一段视频尾帧绑定。
-
-场景母图偏移明显时，先检查 scene 的空间连续性字段和场景母图 prompt；新地点应生成新母图，同一地点应保持地点、光线、锚点和固定道具一致。
+- `assets/characters/`
+- `assets/frames/`
+- `rendered/`

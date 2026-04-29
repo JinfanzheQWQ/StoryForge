@@ -151,8 +151,6 @@ class CharacterPromptUpdateResponse(BaseModel):
     prompt: str = ""
 
 
-
-
 class SelectCharacterImageVersionRequest(BaseModel):
     version: Literal["current", "candidate"]
 
@@ -175,20 +173,6 @@ class ProjectDeletedResponse(BaseModel):
     skipped_output_paths: list[str] = Field(default_factory=list)
 
 
-class UiBootstrapResponse(BaseModel):
-    default_brief: StoryBriefInput
-    use_llm: bool
-    submit_seedance: bool
-    llm_provider: str
-    llm_model: str
-    continuity_review_mode: Literal["off", "auto", "on"] = "auto"
-    available_llm_options: list[dict[str, str]] = Field(default_factory=list)
-    seedream_model: str
-    seedance_model: str
-    seedream_watermark: bool
-    seedance_watermark: bool
-
-
 class ArtifactItem(BaseModel):
     name: str
     path: str
@@ -207,6 +191,24 @@ class CharacterArtifactItem(ArtifactItem):
     candidate_path: str = ""
     character_request: SubmittedRequestResponse | None = None
     error: str = ""
+
+
+class SceneArtifactResponse(BaseModel):
+    scene_id: str
+    chapter_number: int = 0
+    title: str = ""
+    summary: str = ""
+    scene_anchor: str = ""
+    scene_bible: dict[str, Any] = Field(default_factory=dict)
+    scene_transition_contract: dict[str, Any] = Field(default_factory=dict)
+    involved_characters: list[str] = Field(default_factory=list)
+    covered_event_ids: list[str] = Field(default_factory=list)
+    covered_event_summaries: list[str] = Field(default_factory=list)
+    segment_count: int = 0
+    scene_master_frame_status: str = ""
+    scene_master_frame_error: str = ""
+    scene_master_frame_prompt: str = ""
+    scene_master_frame: ArtifactItem | None = None
 
 
 class PromptReferenceBindingResponse(BaseModel):
@@ -318,6 +320,7 @@ class TaskArtifactsResponse(BaseModel):
     output_dir: str | None = None
     documents: list[ArtifactItem] = Field(default_factory=list)
     character_images: list[CharacterArtifactItem] = Field(default_factory=list)
+    scenes: list[SceneArtifactResponse] = Field(default_factory=list)
     scene_frames: list[ArtifactItem] = Field(default_factory=list)
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)
     full_story: ArtifactItem | None = None

@@ -526,23 +526,44 @@ class SeedanceClient:
 
         binding_lines: list[str] = ["参考图绑定（必须严格按本次提交的图片顺序理解）："]
         has_first_frame = any(kind == "first_frame" for kind, _ in reference_bindings)
+        scene_label = ""
+        first_frame_label = ""
+        character_labels: list[str] = []
         for index, (kind, _) in enumerate(reference_bindings, start=1):
             label = f"图片{index}"
             if kind == "scene_master":
+                scene_label = label
                 binding_lines.append(
                     f"- {label}：当前 scene 的场景母图，只用于锁定环境、空间、光线、背景锚点和固定道具；不是视频时间帧。"
                 )
             elif kind == "first_frame":
+                first_frame_label = label
                 binding_lines.append(
                     f"- {label}：上一段视频尾帧，是当前片段的开场时间锚点；当前片段必须先从这张图的构图、角色站位、朝向、动作停点和光线状态自然继续。"
                 )
             elif kind.startswith("character"):
+                character_labels.append(label)
                 character_name = kind.partition(":")[2]
                 suffix = f"{character_name} 的角色图" if character_name else "角色图"
                 binding_lines.append(
                     f"- {label}：{suffix}，只用于锁定脸、发型、服装、体型和年龄感；不是视频时间锚点，不要复制定妆图版式。"
                 )
-        binding_lines.append("- 视频必须在图片1的场景中拍摄，按文本中的运动轨迹推进；角色图只用于身份参考，不是视频时间帧。")
+        binding_lines.append("推进引用规则：")
+        if scene_label and first_frame_label:
+            binding_lines.append(
+                f"- 0 秒开场必须先对齐{first_frame_label}的构图、角色站位、朝向、动作停点和光线状态；随后角色运动、镜头推进和空间关系必须在{scene_label}锁定的同一场景母图空间中继续。"
+            )
+            binding_lines.append(
+                f"- {first_frame_label}只决定当前片段开头的时间状态，不能替代{scene_label}的环境设定；不要把尾帧里的构图误当成新场景母图。"
+            )
+        elif scene_label:
+            binding_lines.append(
+                f"- 视频必须从{scene_label}锁定的场景母图空间中建立开场，并按文本中的运动轨迹推进；不要突然换景或生成无关地点。"
+            )
+        if character_labels:
+            binding_lines.append(
+                f"- {', '.join(character_labels)}只用于锁定角色身份、脸、发型、服装、体型和年龄感，不是视频时间帧。"
+            )
         if has_first_frame:
             binding_lines.append("- 因为本次提交包含上一段视频尾帧，当前片段 0 秒开场必须优先对齐尾帧，再在同一空间里自然推进新动作。")
         binding_lines.append("- 每个实际出镜角色只能出现一次，不要复制人物、不要新增相似替身、不要把三视图或白底定妆版式带入视频。")

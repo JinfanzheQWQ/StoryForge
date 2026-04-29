@@ -79,7 +79,8 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertIn("图片1：当前 scene 的场景母图", payload["content"][0]["text"])
         self.assertIn("图片2：角色A 的角色图", payload["content"][0]["text"])
         self.assertIn("图片3：角色B 的角色图", payload["content"][0]["text"])
-        self.assertIn("角色图只用于身份参考，不是视频时间帧", payload["content"][0]["text"])
+        self.assertIn("视频必须从图片1锁定的场景母图空间中建立开场", payload["content"][0]["text"])
+        self.assertIn("图片2, 图片3只用于锁定角色身份", payload["content"][0]["text"])
         self.assertEqual(
             [item.get("role", "text") for item in payload["content"]],
             ["text", "reference_image", "reference_image", "reference_image"],
@@ -118,7 +119,8 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertIn("图片1：当前 scene 的场景母图", resolved_prompt)
         self.assertIn("图片2：陈屿 的角色图", resolved_prompt)
         self.assertIn("图片3：苏晚 的角色图", resolved_prompt)
-        self.assertIn("角色图只用于身份参考，不是视频时间帧", resolved_prompt)
+        self.assertIn("视频必须从图片1锁定的场景母图空间中建立开场", resolved_prompt)
+        self.assertIn("图片2, 图片3只用于锁定角色身份", resolved_prompt)
         self.assertNotIn("严格按 图片1 -> 图片2", resolved_prompt)
         self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/scene.png")
         self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/chen.png")
@@ -157,6 +159,9 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertIn("图片2：上一段视频尾帧", resolved_prompt)
         self.assertIn("图片3：角色 的角色图", resolved_prompt)
         self.assertIn("上一段视频尾帧", resolved_prompt)
+        self.assertIn("0 秒开场必须先对齐图片2", resolved_prompt)
+        self.assertIn("在图片1锁定的同一场景母图空间中继续", resolved_prompt)
+        self.assertIn("图片2只决定当前片段开头的时间状态", resolved_prompt)
         self.assertIn("当前片段 0 秒开场必须优先对齐尾帧", resolved_prompt)
         self.assertNotIn("图片2 及之后是实际出镜角色定妆图", resolved_prompt)
         self.assertNotIn("角色参考来自图片2及之后", resolved_prompt)

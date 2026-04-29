@@ -1,32 +1,37 @@
 # API 说明
 
-默认服务地址：`http://127.0.0.1:8000`
+默认后端地址：`http://127.0.0.1:8000`
+
+FastAPI 只提供 API、健康检查和 `/outputs` 媒体访问。React 前端通过这些接口调度项目生产。
+
+## 通用返回
+
+阶段任务提交成功返回：
+
+```json
+{
+  "project_id": "project-id",
+  "task_id": "task-id",
+  "status": "queued"
+}
+```
+
+常见任务状态：
+
+- `queued`
+- `running`
+- `completed`
+- `failed`
 
 ## 健康检查
 
 ### `GET /health`
-
-返回：
 
 ```json
 {
   "status": "ok"
 }
 ```
-
-## UI
-
-### `GET /`
-
-返回 Web 工作台。
-
-### `GET /ui`
-
-返回 Web 工作台。
-
-### `GET /v1/ui/bootstrap`
-
-返回前端启动配置，包括默认 LLM provider、模型名、水印默认值和连续性审阅模式。
 
 ## 项目
 
@@ -36,19 +41,19 @@
 
 ### `GET /v1/projects/{project_id}`
 
-返回项目详情、brief、任务列表和最近 run 摘要。
+返回项目详情、brief、任务列表和 run 摘要。
 
 ### `DELETE /v1/projects/{project_id}`
 
-删除项目、任务记录和该项目输出目录。
+删除项目记录、任务记录和项目输出目录。
 
-如果项目不存在返回 `404`。如果存在排队中或运行中的任务返回 `409`。
+如果项目不存在返回 `404`。如果项目存在排队中或运行中的任务返回 `409`。
 
-## 生成小说
+## 小说任务
 
 ### `POST /v1/projects/novel`
 
-创建小说正文任务。
+创建小说正文任务。`project_id` 可以为空，后端会创建新项目。
 
 请求示例：
 
@@ -56,15 +61,15 @@
 {
   "project_id": null,
   "brief": {
-    "title_hint": "雾站档案",
-    "idea": "一名调查员在暴雨夜追查失踪列车。",
-    "genre": "悬疑",
-    "tone": "压迫、电影感",
-    "target_audience": "成年读者",
-    "chapter_count": 6,
-    "total_word_target": 18000,
-    "must_include": ["失踪列车"],
-    "style_keywords": ["暴雨", "车站", "霓虹"]
+    "title_hint": "傍晚的花园",
+    "idea": "大学校园里，一个男生在花田边准备向喜欢的人表白。",
+    "genre": "校园情感",
+    "tone": "清新、温柔、电影感",
+    "target_audience": "年轻观众",
+    "chapter_count": 1,
+    "total_word_target": 1500,
+    "must_include": ["花田", "信纸"],
+    "style_keywords": ["青春", "傍晚", "微风"]
   },
   "use_llm": true,
   "llm_provider": "deepseek",
@@ -75,21 +80,58 @@
 }
 ```
 
-返回：
+## 正文真源
+
+### `GET /v1/projects/{project_id}/story-source/{source_task_id}`
+
+读取可编辑正文真源。
+
+返回示例：
 
 ```json
 {
-  "project_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-  "status": "queued"
+  "project_id": "project-id",
+  "source_task_id": "task-id",
+  "story_title": "傍晚的花园",
+  "story_source_revision": "revision",
+  "chapters": [
+    {
+      "number": 1,
+      "title": "第一章",
+      "summary": "章节摘要",
+      "markdown": "章节正文"
+    }
+  ]
 }
 ```
 
-## 生成场景结构
+### `PUT /v1/projects/{project_id}/story-source/{source_task_id}`
+
+保存正文真源。
+
+请求示例：
+
+```json
+{
+  "story_title": "傍晚的花园",
+  "chapters": [
+    {
+      "number": 1,
+      "title": "第一章",
+      "summary": "章节摘要",
+      "markdown": "章节正文"
+    }
+  ]
+}
+```
+
+保存后会更新 `story_source_revision`，后续结构和媒体阶段需要基于新正文重新生成。
+
+## 场景结构
 
 ### `POST /v1/projects/scene-structure`
 
-基于 `story_source.json` 生成小说包、故事记忆、角色视觉设定和 scene 结构。
+基于正文真源生成小说包、故事记忆、角色视觉设定和 scene 结构。
 
 请求示例：
 
@@ -112,11 +154,11 @@
 - `scene_plan.json`
 - `continuity_report.json`
 
-## 生成分段合同
+## 分段合同
 
 ### `POST /v1/projects/segment-contracts`
 
-基于 `scene_plan.json` 生成 chunk、segment、motion contract 和媒体任务清单。
+基于 scene 结构生成 chunk、segment、motion plan 和媒体任务清单。
 
 请求示例：
 
@@ -126,6 +168,7 @@
   "source_task_id": "scene-structure-task-id",
   "use_llm": true,
   "continuity_review_mode": "auto",
+  "resume_from_progress": false,
   "seedream_watermark": false,
   "seedance_watermark": false
 }
@@ -138,42 +181,96 @@
 - `scene_image_manifest.json`
 - `seedance_manifest.json`
 
-## 角色图
+`resume_from_progress=true` 只适用于分段合同阶段，用于从失败进度继续生成。
 
-### `POST /v1/projects/characters`
+## 连续性修复
 
-生成全部角色图，或根据请求重做指定角色。
+### `POST /v1/projects/continuity-repair`
 
-常用请求：
+修复单个 scene 或 segment 的连续性合同。
+
+请求示例：
+
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "segment-contract-task-id",
+  "segment_id": "ch01-sc01-seg01",
+  "use_llm": true,
+  "continuity_review_mode": "auto"
+}
+```
+
+`segment_id` 和 `scene_id` 必须二选一。
+
+### `POST /v1/projects/continuity-repair-batch`
+
+批量修复连续性问题。
+
+请求示例：
 
 ```json
 {
   "project_id": "project-id",
   "source_task_id": "segment-contract-task-id",
   "use_llm": true,
-  "seedream_watermark": false
+  "continuity_review_mode": "auto",
+  "severity_threshold": "medium",
+  "max_units_per_batch": 4
 }
 ```
 
-### `PUT /v1/projects/{project_id}/character-prompts/{source_task_id}/{character_name}`
+## 角色图
 
-保存单个角色的角色图 prompt。
+### `POST /v1/projects/characters`
+
+生成全部角色图，或重做指定角色。
 
 请求示例：
 
 ```json
 {
-  "portrait_prompt": "原创虚构角色白底三视图，单角色，非真人摄影。..."
+  "project_id": "project-id",
+  "source_task_id": "segment-contract-task-id",
+  "character_name": "林屿",
+  "use_llm": true,
+  "seedream_watermark": false
 }
 ```
 
-保存 prompt 不会自动重做图片。
+`character_name` 为空时生成全部角色图。
+
+### `PUT /v1/projects/{project_id}/character-prompts/{source_task_id}/{character_name}`
+
+保存单个角色图 prompt。
+
+请求示例：
+
+```json
+{
+  "prompt": "原创虚构角色白底三视图，单角色，非真人摄影。..."
+}
+```
+
+### `POST /v1/projects/{project_id}/character-images/{source_task_id}/{character_name}/select`
+
+选择正式图或候选图。
+
+请求示例：
+
+```json
+{
+  "version": "candidate"
+}
+```
+
+`version` 可取 `current` 或 `candidate`。
 
 ## 场景母图
 
 ### `POST /v1/projects/scenes`
 
-生成全部场景母图，或根据请求重做指定 scene / segment 对应的场景母图。
+生成全部场景母图，或重做指定 scene 的母图。
 
 请求示例：
 
@@ -181,20 +278,22 @@
 {
   "project_id": "project-id",
   "source_task_id": "segment-contract-task-id",
+  "scene_id": "ch01-sc01",
+  "master_only": true,
   "use_llm": true,
   "seedream_watermark": false
 }
 ```
 
-场景母图请求会使用当前 prompt 和可用的空间连续性参考图。输出写入 `scene_image_manifest.json` 和相关 scene / segment 字段。
+`scene_id` 为空时生成全部场景母图。
 
 ## 视频
 
 ### `POST /v1/projects/videos`
 
-生成全部视频，或根据请求生成指定 segment 的视频。
+生成视频片段或合并总片。
 
-请求示例：
+生成单段视频：
 
 ```json
 {
@@ -206,21 +305,25 @@
 }
 ```
 
-提交前系统会检查：
+合并视频：
 
-- 当前 segment 有可用场景母图。
-- 当前 segment 实际出镜角色都有可用角色图。
-- 当前 segment 有可提交的视频 prompt。
+```json
+{
+  "project_id": "project-id",
+  "source_task_id": "segment-contract-task-id",
+  "merge_only": true
+}
+```
 
-Seedance 请求中的参考图顺序写入 `submitted_reference_bindings`。如果上一段视频返回了可用尾帧，且当前片段需要承接，绑定列表会包含该尾帧作为开场时间锚点。
+视频提交前会检查场景母图、角色图和视频 prompt 是否可用。真实参考图顺序写入 `submitted_reference_bindings`。
 
-## Prompt
+## Segment Prompt
 
 ### `PUT /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}`
 
-保存当前 segment 的媒体 prompt。
+保存 segment 的媒体 prompt。
 
-请求字段：
+请求示例：
 
 ```json
 {
@@ -229,63 +332,41 @@ Seedance 请求中的参考图顺序写入 `submitted_reference_bindings`。如�
 }
 ```
 
-可以只提交其中一个字段。保存后会同步相关规划文件和 manifest；不会自动提交媒体任务。
+可以只提交其中一个字段。保存不会自动提交媒体任务。
 
 ### `POST /v1/projects/{project_id}/segment-prompts/{source_task_id}/{segment_id}/reset`
 
-按当前合同重新生成默认 prompt。
+按当前合同恢复默认 prompt。
 
 请求示例：
 
 ```json
 {
-  "fields": ["scene_master_frame_prompt", "video_prompt"]
+  "field": "video_prompt"
 }
 ```
 
+`field` 可取 `scene_master_frame_prompt` 或 `video_prompt`。
+
 ## 任务
+
+### `GET /v1/tasks`
+
+返回任务列表。
 
 ### `GET /v1/tasks/{task_id}`
 
-查询任务状态。
-
-返回字段包含：
-
-- `task_id`
-- `project_id`
-- `stage`
-- `status`
-- `created_at`
-- `updated_at`
-- `started_at`
-- `finished_at`
-- `error`
-- `result`
+查询单个任务状态。
 
 ### `GET /v1/tasks/{task_id}/artifacts`
 
-返回当前 run 的工作台聚合数据。
+返回当前 run 的工作台聚合数据。前端项目工作台主要消费这个接口。
 
-主要内容：
+聚合内容包括：
 
-- 小说正文。
-- scene 列表。
-- segment 列表。
-- 角色图。
-- 场景母图。
-- 视频状态和预览地址。
-- motion plan。
-- prompt。
-- request payload。
+- 小说、scene 和 segment 蓝图。
+- 角色图、场景母图和视频资源。
+- motion plan、prompt 和请求 payload。
 - reference bindings。
-- 风险和失败原因。
-
-前端项目详情页主要消费这个接口。
-
-## 合并视频
-
-### `POST /v1/projects/{project_id}/merge-videos`
-
-合并当前 run 已完成的视频片段。
-
-返回合并任务 `task_id`。合并结果写入 `rendered/full_story.mp4`。
+- 连续性问题和失败原因。
+- 合并总片。

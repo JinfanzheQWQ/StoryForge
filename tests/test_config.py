@@ -21,7 +21,6 @@ class ConfigTestCase(unittest.TestCase):
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         self.assertEqual(config.llm.provider, "deepseek")
         self.assertEqual(config.llm.model, "deepseek-chat")
-        self.assertEqual(config.llm.available_providers, ("deepseek", "openai"))
         self.assertTrue(config.llm.enabled)
         self.assertEqual(config.llm.max_tokens, 8192)
         self.assertEqual(config.video.segment_duration_seconds, 5)
@@ -40,6 +39,8 @@ class ConfigTestCase(unittest.TestCase):
         self.assertEqual(config.database.user, "root")
         self.assertEqual(config.database.database, "storyforge")
         self.assertEqual(config.queue.concurrency, 2)
+        self.assertIn("http://localhost:5173", config.api.cors_origins)
+        self.assertIn("http://127.0.0.1:5173", config.api.cors_origins)
 
     def test_load_live_config(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.live.example.toml")

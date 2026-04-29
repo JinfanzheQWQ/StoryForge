@@ -1,0 +1,458 @@
+/* Product surfaces: light commercial tech, soft glass, media-first layouts. */
+:root {
+  --sf-bg: #f6fbf8;
+  --sf-bg-soft: #eef8f4;
+  --sf-bg-cool: #f7faff;
+  --sf-surface: rgba(255, 255, 255, 0.72);
+  --sf-surface-strong: rgba(255, 255, 255, 0.88);
+  --sf-border: rgba(18, 151, 165, 0.13);
+  --sf-text: #102a43;
+  --sf-text-muted: #627887;
+  --sf-primary: #0f9f93;
+  --sf-secondary: #7dd3fc;
+  --sf-shadow-soft: 0 22px 70px rgba(31, 135, 120, 0.12);
+}
+
+body,
+.app-shell {
+  color: var(--sf-text);
+  background:
+    radial-gradient(circle at 12% 4%, rgba(220, 252, 231, 0.72), transparent 30rem),
+    radial-gradient(circle at 90% 0%, rgba(224, 242, 254, 0.78), transparent 32rem),
+    linear-gradient(135deg, #f6fbf8 0%, #eef8f4 48%, #f7faff 100%);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: "Noto Sans SC", "Space Grotesk", sans-serif;
+}
+
+pre,
+code,
+kbd,
+samp {
+  font-family: "Fira Code", monospace;
+}
+
+.library-studio::before {
+  opacity: 0;
+}
+
+.workbench-shell {
+  grid-template-columns: 212px minmax(0, 1fr);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(220, 252, 231, 0.68), transparent 30rem),
+    linear-gradient(135deg, #f6fbf8, #eef8f4 48%, #f7faff);
+}
+
+.app-side-nav {
+  color: var(--sf-text);
+  border-right: 1px solid rgba(18, 151, 165, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(239, 250, 245, 0.78)),
+    rgba(255, 255, 255, 0.62);
+  box-shadow: 14px 0 50px rgba(31, 135, 120, 0.07);
+  backdrop-filter: blur(18px);
+}
+
+.side-brand {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.side-brand strong {
+  color: var(--sf-text);
+}
+
+.side-brand em,
+.side-nav-link {
+  color: rgba(16, 42, 67, 0.62);
+}
+
+.side-nav-link:hover,
+.side-nav-link.active {
+  color: #0f766e;
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.library-studio {
+  color: var(--sf-text);
+  background:
+    radial-gradient(circle at 12% 2%, rgba(220, 252, 231, 0.72), transparent 28rem),
+    radial-gradient(circle at 88% 6%, rgba(224, 242, 254, 0.76), transparent 30rem),
+    linear-gradient(135deg, #f6fbf8 0%, #eef8f4 48%, #f7faff 100%);
+}
+
+.project-gallery {
+  padding: clamp(20px, 3.2vw, 42px);
+}
+
+.project-gallery-header {
+  margin-bottom: 18px;
+  color: var(--sf-text);
+}
+
+.project-gallery-header h2 {
+  color: var(--sf-text);
+  letter-spacing: -0.06em;
+}
+
+.project-gallery-header > span {
+  color: rgba(16, 42, 67, 0.58);
+  border: 1px solid rgba(18, 151, 165, 0.12);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 10px 28px rgba(31, 135, 120, 0.08);
+}
+
+.project-card-grid {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+.project-card {
+  position: relative;
+  min-height: 0;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  color: var(--sf-text);
+  border: 1px solid rgba(18, 151, 165, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 18px 56px rgba(31, 135, 120, 0.11);
+  transform: translateY(0);
+  transition:
+    transform 220ms ease,
+    box-shadow 220ms ease,
+    border-color 220ms ease;
+}
+
+.project-card:hover {
+  border-color: rgba(16, 185, 129, 0.28);
+  box-shadow: 0 28px 78px rgba(31, 135, 120, 0.18);
+  transform: translateY(-4px);
+}
+
+.project-card-open {
+  position: absolute;
+  inset: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.project-card-media {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 48% 24%, rgba(220, 252, 231, 0.58), transparent 14rem),
+    linear-gradient(135deg, rgba(224, 242, 254, 0.7), rgba(255, 255, 255, 0.72));
+}
+
+.project-card-media::after {
+  position: absolute;
+  inset: auto 0 0;
+  height: 48%;
+  content: "";
+  background: linear-gradient(180deg, transparent, rgba(248, 253, 251, 0.88));
+}
+
+.project-card-media img,
+.project-card-media video {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+}
+
+.project-card-badge {
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  color: #0f766e;
+  border: 1px solid rgba(16, 185, 129, 0.14);
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(12px);
+}
+
+.project-card-body {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  z-index: 2;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 14px 34px rgba(16, 42, 67, 0.1);
+  backdrop-filter: blur(18px);
+}
+
+.project-card-body strong,
+.project-gallery-empty strong {
+  color: var(--sf-text);
+  font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+}
+
+.project-card-body span {
+  color: rgba(16, 42, 67, 0.58);
+  font-family: "Noto Sans SC", sans-serif;
+}
+
+.project-card-menu-trigger {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  color: #0f766e;
+  border: 1px solid rgba(16, 185, 129, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 12px 30px rgba(16, 42, 67, 0.08);
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+
+.project-card-menu-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.project-card-menu {
+  position: absolute;
+  top: 58px;
+  left: 12px;
+  z-index: 5;
+  min-width: 138px;
+  padding: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 20px 54px rgba(16, 42, 67, 0.14);
+  backdrop-filter: blur(18px);
+}
+
+.project-card-menu button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  color: #991b1b;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.project-card-menu button:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.project-delete-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+}
+
+.project-delete-scrim {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(15, 23, 42, 0.22);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.project-delete-dialog {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: min(460px, 100%);
+  gap: 14px;
+  padding: 24px;
+  color: var(--sf-text);
+  border: 1px solid rgba(239, 68, 68, 0.12);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 34px 90px rgba(16, 42, 67, 0.2);
+  backdrop-filter: blur(20px);
+}
+
+.project-delete-dialog h3 {
+  margin: 0;
+  font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+  font-size: 34px;
+  letter-spacing: -0.05em;
+}
+
+.project-delete-dialog p:not(.eyebrow) {
+  margin: 0;
+  color: rgba(16, 42, 67, 0.68);
+  line-height: 1.7;
+}
+
+.project-delete-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.project-gallery-empty,
+.project-gallery-loading {
+  color: rgba(16, 42, 67, 0.62);
+  border-color: rgba(18, 151, 165, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--sf-shadow-soft);
+}
+
+.studio-topline,
+.studio-metrics,
+.studio-stage,
+.asset-workspace,
+.planning-workspace,
+.library-workspace,
+.overview-workspace,
+.story-workspace,
+.stage-action-rail {
+  color: var(--sf-text);
+  border-color: rgba(18, 151, 165, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 18px 58px rgba(31, 135, 120, 0.08);
+  backdrop-filter: blur(14px);
+}
+
+.workbench-shell .studio-workspace .workspace-main {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(220, 252, 231, 0.54), transparent 28rem),
+    linear-gradient(180deg, #f6fbf8, #f7faff);
+}
+
+.production-stepper {
+  gap: 8px;
+  padding: 8px;
+  border-color: rgba(18, 151, 165, 0.1);
+  border-radius: 26px;
+  background: rgba(246, 251, 248, 0.78);
+}
+
+.production-step {
+  border-right: 0;
+  border-radius: 20px;
+  background: transparent;
+}
+
+.production-step.active {
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.92), rgba(224, 242, 254, 0.82));
+  box-shadow: 0 12px 30px rgba(31, 135, 120, 0.1);
+}
+
+.production-step span,
+.studio-metrics span,
+.theater-context dt,
+.asset-line em,
+.planning-head,
+.story-editor-stats span,
+.story-chapter-meta span {
+  font-family: "Noto Sans SC", sans-serif;
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+.studio-theater {
+  gap: 18px;
+}
+
+.theater-screen {
+  border: 1px solid rgba(7, 17, 31, 0.12);
+  background:
+    radial-gradient(circle at 22% 0%, rgba(45, 212, 191, 0.12), transparent 24rem),
+    linear-gradient(135deg, #10202a, #07111f);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 24px 70px rgba(7, 17, 31, 0.16);
+}
+
+.theater-context,
+.motion-ledger,
+.segment-video-board,
+.asset-ledger,
+.planning-ledger {
+  color: var(--sf-text);
+  border-color: rgba(18, 151, 165, 0.12);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.theater-context dt {
+  color: rgba(16, 42, 67, 0.56);
+}
+
+pre {
+  color: #244152;
+  border-color: rgba(18, 151, 165, 0.12);
+  background: #f7faf9;
+}
+
+.primary-link,
+.task-button {
+  min-height: 46px;
+  color: #06332d;
+  border: 1px solid rgba(16, 185, 129, 0.16);
+  border-radius: 999px;
+  background: linear-gradient(135deg, #dcfce7 0%, #ccfbf1 46%, #bae6fd 100%);
+  box-shadow: 0 14px 34px rgba(16, 185, 129, 0.16);
+}
+
+.primary-link:hover,
+.task-button:hover:not(:disabled) {
+  box-shadow: 0 18px 44px rgba(16, 185, 129, 0.2);
+  transform: translateY(-1px);
+}
+
+.ghost-button {
+  color: #40606b;
+  border-color: rgba(18, 151, 165, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+}
+
+.status-pill {
+  color: #0f766e;
+  border: 1px solid rgba(16, 185, 129, 0.12);
+  background: #e5fbf5;
+}
+
+@media (max-width: 1080px) {
+  .workbench-shell {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+
+  .studio-theater {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .workbench-shell {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  .project-card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  }
+
+}

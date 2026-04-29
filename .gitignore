@@ -5,10 +5,13 @@
 .python-version
 .venv/
 .uv-cache/
+node_modules/
+frontend/node_modules/
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.tsbuildinfo
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

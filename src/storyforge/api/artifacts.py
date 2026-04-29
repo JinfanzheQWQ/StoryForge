@@ -14,13 +14,11 @@ from storyforge.api.schemas import (
     ContinuitySummaryResponse,
     PlannedSegmentArtifactResponse,
     PromptReferenceBindingResponse,
+    SceneArtifactResponse,
     SubmittedRequestResponse,
-    StoryBriefInput,
     TaskArtifactsResponse,
-    UiBootstrapResponse,
 )
 from storyforge.application.tasks import TaskRecord
-from storyforge.core.config import AppConfig
 from storyforge.core.io import read_json
 from storyforge.domains.video.contracts import SceneBible, SceneTransitionContract, VideoScene, VideoSegment
 from storyforge.domains.video.text_rules import (
@@ -35,7 +33,6 @@ from storyforge.pipelines.video_planning import (
     load_seedance_clip_map,
     load_video_segment_plan,
 )
-
 
 
 TIMED_BEAT_PATTERN = re.compile(
@@ -206,64 +203,6 @@ DOCUMENT_PRIORITY = {
     "seedance_execution.json": 130,
     "continuity_report.json": 140,
 }
-LLM_OPTION_LIBRARY = {
-    "deepseek": {"provider": "deepseek", "model": "deepseek-chat", "label": "DeepSeek"},
-    "openai": {"provider": "openai", "model": "gpt-5.4", "label": "ChatGPT 5.4"},
-}
-
-
-def build_ui_bootstrap(config: AppConfig) -> UiBootstrapResponse:
-    return UiBootstrapResponse(
-        default_brief=StoryBriefInput(
-            title_hint="雾站档案",
-            idea="一名调查员在暴雨夜追查失踪列车，并在封闭站台发现会提前出现的死亡播报。",
-            genre="悬疑 / 都市怪谈",
-            tone="压迫、潮湿、电影感",
-            target_audience="成年悬疑读者",
-            chapter_count=config.novel.default_chapter_count,
-            total_word_target=config.novel.default_chapter_word_target * config.novel.default_chapter_count,
-            must_include=["失踪列车", "广播站", "暴雨站台"],
-            style_keywords=["霓虹", "监控噪点", "夜雨", "旧列车"],
-        ),
-        use_llm=True,
-        submit_seedance=config.video.submit_seedance or config.seedance.auto_submit,
-        llm_provider=config.llm.provider,
-        llm_model=config.llm.model,
-        continuity_review_mode="auto",
-        available_llm_options=_build_available_llm_options(config),
-        seedream_model=config.seedream.model,
-        seedance_model=config.seedance.model,
-        seedream_watermark=config.seedream.watermark,
-        seedance_watermark=config.seedance.watermark,
-    )
-
-
-def _build_available_llm_options(config: AppConfig) -> list[dict[str, str]]:
-    configured = {
-        str(provider).strip().lower()
-        for provider in config.llm.available_providers
-        if str(provider).strip()
-    }
-    options: list[dict[str, str]] = []
-    for provider, option in LLM_OPTION_LIBRARY.items():
-        if configured and provider not in configured:
-            continue
-        payload = dict(option)
-        if provider == config.llm.provider:
-            payload["model"] = config.llm.model
-        options.append(payload)
-
-    if options:
-        return options
-    return [
-        {
-            "provider": config.llm.provider,
-            "model": config.llm.model,
-            "label": config.llm.provider.title(),
-        }
-    ]
-
-
 def build_task_artifacts(
     task: TaskRecord,
     output_root: Path,
@@ -298,6 +237,11 @@ def build_task_artifacts(
         resolved_output_root,
         allowed_suffixes=IMAGE_SUFFIXES,
     )
+    scenes = _collect_scene_artifacts(
+        output_dir=output_dir,
+        output_root=resolved_output_root,
+        scene_frames=scene_frames,
+    )
     rendered_videos = _collect_artifacts(
         output_dir / "rendered",
         resolved_output_root,
@@ -325,6 +269,7 @@ def build_task_artifacts(
         output_dir=str(output_dir),
         documents=documents,
         character_images=character_images,
+        scenes=scenes,
         scene_frames=scene_frames,
         rendered_clips=rendered_clips,
         full_story=full_story,
@@ -354,6 +299,58 @@ def _collect_artifacts(
     return items
 
 
+def _collect_scene_artifacts(
+    *,
+    output_dir: Path,
+    output_root: Path,
+    scene_frames: list[ArtifactItem],
+) -> list[SceneArtifactResponse]:
+    if not (output_dir / "scene_plan.json").exists():
+        return []
+    try:
+        plan = load_video_segment_plan(output_dir)
+    except Exception:
+        return []
+
+    scene_task_by_scene: dict[str, object] = {}
+    for task in load_scene_image_task_map(output_dir).values():
+        scene_id = str(getattr(task, "scene_id", "") or "").strip()
+        if not scene_id:
+            continue
+        current = scene_task_by_scene.get(scene_id)
+        if current is None or _scene_task_master_score(task) > _scene_task_master_score(current):
+            scene_task_by_scene[scene_id] = task
+
+    scene_frame_map = {item.path: item for item in scene_frames}
+    scene_items: list[SceneArtifactResponse] = []
+    for scene in getattr(plan, "scenes", []):
+        scene_task = scene_task_by_scene.get(scene.scene_id)
+        scene_master_frame = _resolve_scene_master_artifact(
+            scene=scene,
+            scene_task=scene_task,
+            output_root=output_root,
+            scene_frame_map=scene_frame_map,
+        )
+        scene_items.append(
+            SceneArtifactResponse(
+                scene_id=scene.scene_id,
+                chapter_number=int(getattr(scene, "chapter_number", 0) or 0),
+                title=str(getattr(scene, "title", "") or ""),
+                summary=str(getattr(scene, "summary", "") or ""),
+                scene_anchor=str(getattr(scene, "scene_anchor", "") or ""),
+                scene_bible=_scene_bible_to_dict(scene.scene_bible),
+                scene_transition_contract=_scene_transition_contract_to_dict(scene.scene_transition_contract),
+                involved_characters=list(getattr(scene, "involved_characters", []) or []),
+                covered_event_ids=list(getattr(scene, "covered_event_ids", []) or []),
+                covered_event_summaries=list(getattr(scene, "covered_event_summaries", []) or []),
+                segment_count=len(getattr(scene, "segments", []) or []),
+                scene_master_frame_status=str(getattr(scene, "scene_master_frame_status", "") or ""),
+                scene_master_frame_error=str(getattr(scene, "scene_master_frame_error", "") or ""),
+                scene_master_frame_prompt=str(getattr(scene, "scene_master_frame_prompt", "") or ""),
+                scene_master_frame=scene_master_frame,
+            )
+        )
+    return scene_items
 
 
 def _collect_character_current_artifacts(

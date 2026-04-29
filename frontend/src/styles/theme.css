@@ -1,0 +1,100 @@
+/* Product theme: soft commercial surfaces instead of hard dark panels. */
+body {
+  background:
+    radial-gradient(circle at 12% 8%, rgba(187, 247, 208, 0.32), transparent 30rem),
+    radial-gradient(circle at 88% 0%, rgba(186, 230, 253, 0.34), transparent 28rem),
+    linear-gradient(135deg, #fbfefc 0%, #f1faf6 48%, #f7fbff 100%);
+}
+
+.app-side-nav {
+  color: #164e63;
+  border-right-color: rgba(15, 126, 168, 0.12);
+  background:
+    radial-gradient(circle at 28% 0%, rgba(187, 247, 208, 0.55), transparent 18rem),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(239, 250, 245, 0.84));
+}
+
+.side-brand strong {
+  color: #102a43;
+}
+
+.side-brand em,
+.side-nav-link {
+  color: rgba(15, 23, 42, 0.58);
+}
+
+.side-nav-link:hover,
+.side-nav-link.active {
+  color: #0f766e;
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.library-studio {
+  color: #102a43;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(187, 247, 208, 0.42), transparent 28rem),
+    radial-gradient(circle at 88% 14%, rgba(186, 230, 253, 0.34), transparent 30rem),
+    linear-gradient(180deg, #fbfefc 0%, #effaf5 68%, #f8fbff 100%);
+}
+
+.library-studio::before {
+  background:
+    linear-gradient(rgba(15, 126, 168, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 126, 168, 0.035) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.project-gallery-header h2 {
+  color: #102a43;
+}
+
+.project-gallery-header > span,
+.project-card-body span,
+.project-gallery-empty,
+.project-gallery-loading {
+  color: rgba(15, 23, 42, 0.58);
+}
+
+.project-card {
+  color: #102a43;
+  border-color: rgba(15, 126, 168, 0.12);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 18px 50px rgba(15, 126, 168, 0.1);
+  backdrop-filter: blur(14px);
+}
+
+.project-card:hover {
+  border-color: rgba(16, 185, 129, 0.28);
+  box-shadow: 0 26px 70px rgba(15, 126, 168, 0.16);
+}
+
+.project-card-media,
+.project-card-placeholder {
+  background:
+    radial-gradient(circle at 50% 30%, rgba(187, 247, 208, 0.34), transparent 14rem),
+    linear-gradient(135deg, rgba(224, 242, 254, 0.72), rgba(255, 255, 255, 0.72));
+}
+
+.project-card-body strong,
+.project-gallery-empty strong {
+  color: #102a43;
+}
+
+.project-card-placeholder span {
+  color: #0f766e;
+  border-color: rgba(16, 185, 129, 0.18);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.project-gallery-empty,
+.project-gallery-loading {
+  border-color: rgba(15, 126, 168, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.workbench-shell .workspace-main {
+  background:
+    radial-gradient(circle at 8% 0%, rgba(187, 247, 208, 0.2), transparent 26rem),
+    linear-gradient(180deg, #fbfefc, #f7fbff);
+}

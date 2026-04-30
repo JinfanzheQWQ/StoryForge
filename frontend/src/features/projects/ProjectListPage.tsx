@@ -6,18 +6,26 @@ import { queryKeys } from "../../api/queryKeys";
 import type { ProjectSummary } from "../../types";
 import { ProjectCard } from "./ProjectCard";
 import { ProjectGalleryHeader } from "./ProjectGalleryHeader";
-import { getProjectTitle } from "./projectGalleryModel";
+import {
+  countProjectsByProduct,
+  filterProjectsByProduct,
+  getProjectTitle,
+  type ProjectProductFilter
+} from "./projectGalleryModel";
 
 export function ProjectListPage() {
   const queryClient = useQueryClient();
   const [deleteTarget, setDeleteTarget] = useState<ProjectSummary | null>(null);
+  const [productFilter, setProductFilter] = useState<ProjectProductFilter>("all");
   const projectsQuery = useQuery({
     queryKey: queryKeys.projects(),
     queryFn: listProjects
   });
   const projects = projectsQuery.data || [];
+  const counts = countProjectsByProduct(projects);
+  const visibleProjects = filterProjectsByProduct(projects, productFilter);
   const artifactQueries = useQueries({
-    queries: projects.map((project) => ({
+    queries: visibleProjects.map((project) => ({
       enabled: Boolean(project.latest_task_id),
       queryFn: () => getTaskArtifacts(project.latest_task_id as string),
       queryKey: queryKeys.projectCardArtifacts(project.latest_task_id),
@@ -34,21 +42,33 @@ export function ProjectListPage() {
 
   return (
     <section className="library-studio project-gallery" aria-labelledby="library-title">
-      <ProjectGalleryHeader projectCount={projects.length} />
+      <ProjectGalleryHeader
+        counts={counts}
+        filter={productFilter}
+        projectCount={visibleProjects.length}
+        onFilterChange={setProductFilter}
+      />
 
       {projectsQuery.isError ? <div className="error-callout project-gallery-error">项目列表加载失败，请确认后端 API 已启动。</div> : null}
       {projectsQuery.isLoading ? <div className="project-gallery-loading">正在加载项目...</div> : null}
 
       {!projectsQuery.isLoading && projects.length === 0 ? (
         <div className="project-gallery-empty">
-          <strong>还没有项目</strong>
-          <span>完成生产后，项目会以视频或图片封面展示在这里。</span>
+          <strong>还没有作品</strong>
+          <span>完成小说转视频或生图后，作品会以视频或图片封面展示在这里。</span>
         </div>
       ) : null}
 
-      {projects.length > 0 ? (
+      {!projectsQuery.isLoading && projects.length > 0 && visibleProjects.length === 0 ? (
+        <div className="project-gallery-empty">
+          <strong>当前分类没有作品</strong>
+          <span>切换到全部作品，或先完成对应类型的生产。</span>
+        </div>
+      ) : null}
+
+      {visibleProjects.length > 0 ? (
         <div className="project-card-grid" aria-label="项目列表">
-          {projects.map((project, index) => (
+          {visibleProjects.map((project, index) => (
             <ProjectCard
               key={project.project_id}
               artifacts={artifactQueries[index]?.data}

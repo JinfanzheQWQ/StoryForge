@@ -86,24 +86,80 @@ samp {
 }
 
 .project-gallery {
-  padding: clamp(20px, 3.2vw, 42px);
+  padding: clamp(18px, 2.4vw, 34px);
 }
 
 .project-gallery-header {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   color: var(--sf-text);
+}
+
+.project-gallery-toolbar {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
 }
 
 .project-gallery-header h2 {
   color: var(--sf-text);
-  letter-spacing: -0.06em;
+  font-size: clamp(22px, 2.2vw, 28px);
+  line-height: 1.12;
+  letter-spacing: -0.035em;
 }
 
-.project-gallery-header > span {
+.project-gallery-header .eyebrow {
+  margin-bottom: 5px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.project-gallery-toolbar > span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
   color: rgba(16, 42, 67, 0.58);
   border: 1px solid rgba(18, 151, 165, 0.12);
+  border-radius: 999px;
   background: rgba(255, 255, 255, 0.62);
   box-shadow: 0 10px 28px rgba(31, 135, 120, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.project-filter-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(18, 151, 165, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: 0 12px 34px rgba(31, 135, 120, 0.08);
+}
+
+.project-filter-tabs button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  color: rgba(16, 42, 67, 0.58);
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.project-filter-tabs button.active {
+  color: #064e3b;
+  background: linear-gradient(135deg, #d1fae5, #bae6fd);
+}
+
+.project-filter-tabs em {
+  font-style: normal;
+  opacity: 0.68;
 }
 
 .project-card-grid {
@@ -175,6 +231,24 @@ samp {
   border: 1px solid rgba(16, 185, 129, 0.14);
   background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(12px);
+  font-weight: 700;
+}
+
+.project-card-kind {
+  position: absolute;
+  top: 12px;
+  right: auto;
+  left: 12px;
+  z-index: 2;
+  min-height: 24px;
+  padding: 6px 9px;
+  color: rgba(16, 42, 67, 0.58);
+  border: 1px solid rgba(18, 151, 165, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  backdrop-filter: blur(12px);
 }
 
 .project-card-body {
@@ -183,9 +257,10 @@ samp {
   bottom: 12px;
   left: 12px;
   z-index: 2;
-  padding: 14px;
+  gap: 8px;
+  padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.64);
-  border-radius: 20px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.74);
   box-shadow: 0 14px 34px rgba(16, 42, 67, 0.1);
   backdrop-filter: blur(18px);
@@ -195,11 +270,16 @@ samp {
 .project-gallery-empty strong {
   color: var(--sf-text);
   font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
+  font-size: 14px;
+  line-height: 1.28;
+  letter-spacing: -0.025em;
 }
 
 .project-card-body span {
   color: rgba(16, 42, 67, 0.58);
   font-family: "Noto Sans SC", sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
 }
 
 .project-card-menu-trigger {
@@ -294,8 +374,9 @@ samp {
 .project-delete-dialog h3 {
   margin: 0;
   font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
-  font-size: 34px;
-  letter-spacing: -0.05em;
+  font-size: 22px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
 }
 
 .project-delete-dialog p:not(.eyebrow) {
@@ -317,6 +398,7 @@ samp {
   border-color: rgba(18, 151, 165, 0.12);
   background: rgba(255, 255, 255, 0.72);
   box-shadow: var(--sf-shadow-soft);
+  font-size: 13px;
 }
 
 .studio-topline,
@@ -447,6 +529,20 @@ pre {
 }
 
 @media (max-width: 720px) {
+  .project-gallery-header {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .project-gallery-toolbar {
+    justify-items: start;
+  }
+
+  .project-filter-tabs {
+    flex-wrap: wrap;
+    border-radius: 18px;
+  }
+
   .workbench-shell {
     grid-template-columns: 72px minmax(0, 1fr);
   }

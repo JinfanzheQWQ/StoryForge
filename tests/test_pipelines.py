@@ -1587,14 +1587,14 @@ class PipelineTestCase(unittest.TestCase):
             brief=brief,
             config=config,
             project_root=ROOT,
-            output_root=self.temp_root / "compat-source",
+            output_root=self.temp_root / "structure-source",
         )
 
         split_scene_structure = run_story_scene_structure_pipeline(
             story_source=generation.story_source,
             config=config,
             project_root=ROOT,
-            output_root=self.temp_root / "compat-split",
+            output_root=self.temp_root / "structure-split",
             backend=self.story_backend,
             video_backend=self.video_backend,
         )
@@ -3912,10 +3912,10 @@ class PipelineTestCase(unittest.TestCase):
                 }
             )
 
-    def test_resume_from_progress_rejects_legacy_checkpoint_without_chunks(self) -> None:
+    def test_resume_from_progress_rejects_checkpoint_without_chunks(self) -> None:
         config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
         brief = StoryBrief(
-            title_hint="旧进度拒绝恢复",
+            title_hint="缺少 chunk 的进度拒绝恢复",
             idea="毕业前夕，两个人在校园里逐步靠近彼此。",
             genre="校园情感",
             tone="克制、温柔",
@@ -3926,7 +3926,7 @@ class PipelineTestCase(unittest.TestCase):
             brief=brief,
             config=config,
             project_root=ROOT,
-            output_root=self.temp_root / "legacy-progress-source",
+            output_root=self.temp_root / "incomplete-progress-source",
         )
         scene_structure = run_story_scene_structure_pipeline(
             story_source=generation.story_source,
@@ -3962,7 +3962,7 @@ class PipelineTestCase(unittest.TestCase):
                     "completed_scene_count": 0,
                     "segment_count": 0,
                     "failed_scene_id": scene_structure.scene_structure.scene_plan.scenes[0].scene_id,
-                    "error": "legacy checkpoint",
+                    "error": "missing chunk checkpoint",
                     "scenes": [
                         {
                             "scene_id": scene.scene_id,
@@ -3973,7 +3973,7 @@ class PipelineTestCase(unittest.TestCase):
                             "completed_chunk_count": 0,
                             "segment_count": 0,
                             "failed_chunk_id": "",
-                            "error": "legacy checkpoint" if index == 0 else "",
+                            "error": "missing chunk checkpoint" if index == 0 else "",
                             "chunks": [],
                         }
                         for index, scene in enumerate(scene_structure.scene_structure.scene_plan.scenes)

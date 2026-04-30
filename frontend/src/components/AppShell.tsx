@@ -1,9 +1,10 @@
 import { Link, Outlet, useLocation } from "react-router-dom";
-import { Clapperboard, FolderKanban, Sparkles } from "lucide-react";
+import { Clapperboard, FolderKanban, ImageIcon, Sparkles } from "lucide-react";
 
 export function AppShell() {
   const location = useLocation();
   const isLanding = location.pathname === "/";
+  const isImageRoute = location.pathname.startsWith("/console/images") || location.pathname.startsWith("/console/image-projects");
   const landingNavItems = [
     { href: "#create", label: "开始创作" },
     { href: "#workflow", label: "生产流程" },
@@ -61,6 +62,13 @@ export function AppShell() {
             <Link className={location.pathname === "/console/new" ? "side-nav-link active" : "side-nav-link"} to="/console/new">
               <Clapperboard size={18} aria-hidden="true" />
               <span>小说转视频</span>
+            </Link>
+            <Link
+              className={isImageRoute ? "side-nav-link active" : "side-nav-link"}
+              to="/console/images"
+            >
+              <ImageIcon size={18} aria-hidden="true" />
+              <span>生图</span>
             </Link>
           </nav>
         </aside>

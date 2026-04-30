@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from storyforge.api.routers.health import router as health_router
+from storyforge.api.routers.images import router as images_router
 from storyforge.api.routers.projects import router as projects_router
 from storyforge.api.routers.tasks import router as tasks_router
 from storyforge.application.container import AppContainer, build_container
@@ -61,6 +62,7 @@ def create_app(project_root: Path | None = None, config_path: Path | None = None
     output_dir = root / config.paths.output_dir
     app.mount("/outputs", StaticFiles(directory=output_dir), name="outputs")
     app.include_router(health_router)
+    app.include_router(images_router)
     app.include_router(projects_router)
     app.include_router(tasks_router)
     return app

@@ -68,6 +68,7 @@ def _build_project_summary_response(
     return ProjectSummaryResponse(
         project_id=project.project_id,
         title_hint=project.title_hint,
+        product_type=_resolve_project_product_type(project),
         story_title=project.story_title,
         created_at=project.created_at,
         updated_at=project.updated_at,
@@ -116,3 +117,10 @@ def _logical_run_id(task: TaskRecord) -> str:
 
 def _select_latest_task(tasks: list[TaskRecord]) -> TaskRecord:
     return max(tasks, key=lambda item: (item.created_at, item.finished_at or ""))
+
+
+def _resolve_project_product_type(project: ProjectRecord) -> str:
+    project_kind = str(project.brief.get("project_kind", ""))
+    if project_kind in {"image_generation", "image_studio"}:
+        return "image_generation"
+    return "novel_to_video"

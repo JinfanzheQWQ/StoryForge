@@ -19,6 +19,8 @@ export function NewProjectPage() {
       idea: ideaFromLanding
     };
   });
+  const [mustIncludeText, setMustIncludeText] = useState(() => initialBrief.must_include.join("，"));
+  const [styleKeywordsText, setStyleKeywordsText] = useState(() => initialBrief.style_keywords.join("，"));
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const mutation = useMutation({
@@ -33,13 +35,15 @@ export function NewProjectPage() {
     setBrief((current) => ({ ...current, [key]: value }));
   }
 
-  function updateListField(key: "must_include" | "style_keywords", value: string) {
-    updateBrief(key, parseCommaSeparatedList(value));
-  }
-
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    mutation.mutate(createNovelRequest(brief));
+    mutation.mutate(
+      createNovelRequest({
+        ...brief,
+        must_include: parseCommaSeparatedList(mustIncludeText),
+        style_keywords: parseCommaSeparatedList(styleKeywordsText)
+      })
+    );
   }
 
   return (
@@ -56,8 +60,11 @@ export function NewProjectPage() {
             brief={brief}
             isError={mutation.isError}
             isSubmitting={mutation.isPending}
+            mustIncludeText={mustIncludeText}
             onBriefChange={updateBrief}
-            onListFieldChange={updateListField}
+            onMustIncludeTextChange={setMustIncludeText}
+            onStyleKeywordsTextChange={setStyleKeywordsText}
+            styleKeywordsText={styleKeywordsText}
           />
         </main>
       </form>

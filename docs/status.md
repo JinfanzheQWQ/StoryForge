@@ -27,6 +27,8 @@ StoryForge 当前定位为中文剧情短视频创作工作台。它不是单次
 - `chapter -> scene -> chunk -> segment` 结构化规划。
 - 角色图生成、角色 prompt 保存、单角色重做、候选图选择。
 - 场景母图生成、scene 级状态展示和引用关系展示。
+- 独立生图，单入口内支持 GPT Image 2 / Seedream 4.5 的文生图和基于参考图 URL 的图生图；前端通过能力接口只展示当前模型支持的分辨率和比例；Seedream 4.5 支持水印开关；生成结果必须保存后才会进入作品库。
+- 作品库按产品类型展示小说转视频和生图产品，生图卡片使用生成图作为封面，并进入生图作品详情页查看 Prompt、参数和请求 payload。
 - Seedance 分段视频生成。
 - 上一段尾帧承接和真实参考图绑定说明。
 - 分段审片台的视频 prompt 编辑、默认 prompt 恢复、连续性修复和重跑。
@@ -35,11 +37,12 @@ StoryForge 当前定位为中文剧情短视频创作工作台。它不是单次
 
 ## 当前约束
 
-- Seedream 和 Seedance 的稳定性依赖外部 provider。
-- 上一段尾帧承接依赖 provider 返回可用 `last_frame_url`。
+- Seedream、GPT Image 2 和 Seedance 的稳定性依赖外部模型服务。
+- 上一段尾帧承接依赖视频服务返回可用 `last_frame_url`。
 - 跨 scene 连续性依赖规划阶段准确标记空间关系。
 - 新地点会生成新的场景母图，同一地点才适合复用或承接。
 - 前端不直接修改落盘 JSON，所有生产动作应通过 API 完成。
+- 图生图当前使用可被生图服务访问的参考图 URL；本地上传需要接入对象存储或可公网访问的上传服务。
 
 ## 质量状态
 
@@ -54,11 +57,9 @@ npm --prefix frontend run build
 git diff --check
 ```
 
-当前全量 `uv run pytest -q` 仍有 5 个 pipeline 测试失败，集中在 Seedance prompt 断言、测试 mock 签名、scene repair changed fields 和 Seedream / Seedance 流程预期。它们需要单独修复，不属于本轮文档重写范围。
-
 ## 推荐下一步
 
-- 修复 `tests/test_pipelines.py` 的 5 个失败点。
+- 为独立生图补充本地上传能力。
 - 实现 scene repair 的 changed fields 收集。
 - 继续补齐场景母图 prompt 编辑在前端的入口。
 - 继续优化分段审片台的资源绑定展示和错误定位。

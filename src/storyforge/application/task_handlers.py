@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import quote
 
 from storyforge.core.io import read_json, to_jsonable
 from storyforge.application.task_support import (
@@ -23,6 +24,8 @@ from storyforge.application.task_support import (
 )
 from storyforge.application.tasks import QueuedTask, TaskExecutionError, utc_now
 from storyforge.domains.novel.contracts import StoryBrief
+from storyforge.integrations.gpt_image import GPTImageClient
+from storyforge.integrations.seedream import SeedreamClient
 from storyforge.pipelines.story_pipeline import (
     run_story_generation_pipeline,
     run_story_scene_structure_pipeline,
@@ -94,6 +97,107 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
         "seedance_watermark": seedance_watermark,
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
+    return response
+
+
+def run_image_generation_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
+    prompt = str(task.payload.get("prompt", "") or "").strip()
+    if not prompt:
+        raise ValueError("prompt 不能为空。")
+
+    mode = str(task.payload.get("mode", "text_to_image") or "text_to_image").strip()
+    if mode not in {"text_to_image", "image_to_image"}:
+        raise ValueError("mode 只能是 text_to_image 或 image_to_image。")
+
+    reference_images = _normalize_task_reference_images(task.payload.get("reference_images"))
+    if mode == "image_to_image" and not reference_images:
+        raise ValueError("图生图必须至少提交一张参考图 URL。")
+
+    image_model = str(task.payload.get("model") or context.config.gpt_image.model).strip()
+    if not image_model:
+        image_model = context.config.gpt_image.model
+    uses_gpt_image = image_model == context.config.gpt_image.model
+    uses_seedream = image_model == context.config.seedream.model
+    if not (uses_gpt_image or uses_seedream):
+        raise ValueError(
+            "当前独立生图只支持 "
+            f"{context.config.gpt_image.model} 或 {context.config.seedream.model}。"
+        )
+    image_size = str(task.payload.get("size") or "2K").strip()
+    if not image_size:
+        image_size = "2K"
+    aspect_ratio = str(task.payload.get("aspect_ratio") or "").strip()
+    seedream_watermark = (
+        resolve_media_watermark(
+            task,
+            target="seedream",
+            default=context.config.seedream.watermark,
+        )
+        if uses_seedream
+        else None
+    )
+
+    output_dir = _build_image_generation_output_root(context, task)
+    output_path = output_dir / _image_generation_output_filename(
+        context.config.gpt_image.output_format if uses_gpt_image else "png"
+    )
+    partial_response = {
+        "project_id": task.project_id,
+        "output_dir": str(output_dir),
+        "pipeline_stage": "image_generation_started",
+        "task_stage": "image_generation",
+        "provider": context.config.gpt_image.provider if uses_gpt_image else "seedream",
+        "model": image_model,
+        "mode": mode,
+        "prompt": prompt,
+        "reference_images": reference_images,
+        "size": image_size,
+        "aspect_ratio": aspect_ratio,
+        "image_saved": False,
+        "artifact_revision": utc_now(),
+    }
+    if seedream_watermark is not None:
+        partial_response["seedream_watermark"] = seedream_watermark
+    persist_task_progress(context, task, partial_response)
+
+    if uses_gpt_image:
+        image_result = GPTImageClient(context.config.gpt_image).generate_single_image(
+            mode=mode,
+            prompt=prompt,
+            reference_images=reference_images,
+            aspect_ratio=aspect_ratio,
+            output_size=image_size,
+            output_path=output_path,
+        )
+        provider_request_key = "gpt_image_request"
+    else:
+        seedream_config = replace(
+            context.config.seedream,
+            image_size=image_size,
+            watermark=bool(seedream_watermark),
+        )
+        image_result = SeedreamClient(seedream_config).generate_single_image(
+            prompt=prompt,
+            reference_images=reference_images,
+            aspect_ratio=aspect_ratio,
+            output_path=output_path,
+            force_submit=True,
+        )
+        provider_request_key = "seedream_request"
+    output_url = _build_output_file_url(context, output_path)
+    completed_response = {
+        **partial_response,
+        "pipeline_stage": "image_generation_completed",
+        "image_url": image_result.image_url or output_url,
+        "generated_url": image_result.image_url or output_url,
+        "output_path": image_result.output_path,
+        "output_url": output_url,
+        provider_request_key: image_result.request_info,
+        "request_info": image_result.request_info,
+        "note": image_result.note,
+    }
+    response = _build_completed_stage_response(completed_response)
+    _store_stage_result(context, task, response)
     return response
 
 
@@ -883,6 +987,49 @@ def _build_story_output_root(context: TaskExecutionContext, task: QueuedTask) ->
         / "runs"
         / task.task_id
     )
+
+
+def _build_image_generation_output_root(context: TaskExecutionContext, task: QueuedTask) -> Path:
+    return context.project_root / context.config.paths.output_dir / "images" / task.task_id
+
+
+def _image_generation_output_filename(output_format: str) -> str:
+    suffix = str(output_format or "").strip().lower()
+    if suffix not in {"jpg", "jpeg", "png", "webp"}:
+        suffix = "png"
+    if suffix == "jpeg":
+        suffix = "jpg"
+    return f"generated.{suffix}"
+
+
+def _build_output_file_url(context: TaskExecutionContext, path: Path) -> str:
+    if not path.exists():
+        return ""
+    output_root = (context.project_root / context.config.paths.output_dir).resolve()
+    resolved_path = path.resolve()
+    try:
+        relative_path = resolved_path.relative_to(output_root)
+    except ValueError:
+        return ""
+    encoded_path = "/".join(quote(part) for part in relative_path.parts)
+    return f"/outputs/{encoded_path}?v={int(resolved_path.stat().st_mtime_ns)}"
+
+
+def _normalize_task_reference_images(raw_value: object) -> list[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        candidates = [raw_value]
+    elif isinstance(raw_value, list):
+        candidates = [str(item or "") for item in raw_value]
+    else:
+        raise ValueError("reference_images 必须是字符串数组。")
+    normalized: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip()
+        if value and value not in normalized:
+            normalized.append(value)
+    return normalized
 
 
 def _build_runtime_config(

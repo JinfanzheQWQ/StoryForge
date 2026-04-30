@@ -6,6 +6,7 @@ from pathlib import Path
 
 from storyforge.application.projects import ProjectStore
 from storyforge.application.task_handlers import (
+    run_image_generation_task,
     run_characters_task,
     run_continuity_repair_batch_task,
     run_continuity_repair_task,
@@ -39,6 +40,7 @@ def dispatch_task(
     task: QueuedTask,
 ) -> dict[str, object]:
     handlers = {
+        "image.generate": run_image_generation_task,
         "project.story": run_story_task,
         "project.scene_structure": run_scene_structure_task,
         "project.segment_contracts": run_segment_contracts_task,

@@ -121,6 +121,37 @@ class JobAcceptedResponse(BaseModel):
     status: str
 
 
+class CreateImageGenerationRequest(BaseModel):
+    mode: Literal["text_to_image", "image_to_image"] = "text_to_image"
+    model: str | None = Field(default=None, max_length=120)
+    prompt: str = Field(min_length=1, max_length=20000)
+    reference_images: list[str] = Field(default_factory=list, max_length=4)
+    size: str | None = Field(default=None, max_length=32)
+    aspect_ratio: str | None = Field(default=None, max_length=16)
+    seedream_watermark: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_reference_images(self) -> "CreateImageGenerationRequest":
+        self.prompt = self.prompt.strip()
+        if not self.prompt:
+            raise ValueError("prompt 不能为空。")
+        if self.model is not None:
+            self.model = self.model.strip()
+        if self.size is not None:
+            self.size = self.size.strip()
+        if self.aspect_ratio is not None:
+            self.aspect_ratio = self.aspect_ratio.strip()
+        normalized: list[str] = []
+        for raw_url in self.reference_images:
+            url = str(raw_url or "").strip()
+            if url and url not in normalized:
+                normalized.append(url)
+        self.reference_images = normalized
+        if self.mode == "image_to_image" and not self.reference_images:
+            raise ValueError("图生图必须提供至少一张参考图 URL。")
+        return self
+
+
 class UpdateSegmentPromptRequest(BaseModel):
     scene_master_frame_prompt: str | None = None
     video_prompt: str | None = None
@@ -347,6 +378,7 @@ class TaskResponse(BaseModel):
 class ProjectSummaryResponse(BaseModel):
     project_id: str
     title_hint: str
+    product_type: str = "novel_to_video"
     story_title: str | None = None
     created_at: str
     updated_at: str

@@ -33,11 +33,124 @@ FastAPI 只提供 API、健康检查和 `/outputs` 媒体访问。React 前端�
 }
 ```
 
+## 生图
+
+### `POST /v1/images/generations`
+
+提交独立生图任务。前端可提交 `model = "gpt-image-2"` 或 `model = "doubao-seedream-4-5-251128"`；`text_to_image` 只需要 prompt，`image_to_image` 需要至少一张参考图 URL。
+
+`size` 和 `aspect_ratio` 必须来自 `GET /v1/images/capabilities` 返回的当前模型能力。前端不需要写死尺寸规则，也不需要让用户选择后端通道。
+
+文生图请求示例：
+
+```json
+{
+  "mode": "text_to_image",
+  "model": "gpt-image-2",
+  "prompt": "清晨的玻璃图书馆中庭，薄荷绿植物墙，柔和天光，清新科技感商业插画。",
+  "size": "1K",
+  "aspect_ratio": "1:1"
+}
+```
+
+图生图请求示例：
+
+```json
+{
+  "mode": "image_to_image",
+  "model": "gpt-image-2",
+  "prompt": "保持参考图主体构图，改成清新科技感商业插画，低饱和薄荷绿与浅青蓝配色。",
+  "reference_images": ["https://example.com/reference.png"],
+  "size": "1K",
+  "aspect_ratio": "1:1"
+}
+```
+
+Seedream 4.5 请求示例：
+
+```json
+{
+  "mode": "text_to_image",
+  "model": "doubao-seedream-4-5-251128",
+  "prompt": "傍晚的玻璃温室花园，薄荷绿与浅青蓝配色，柔和商业插画。",
+  "size": "2K",
+  "aspect_ratio": "9:16",
+  "seedream_watermark": false
+}
+```
+
+任务完成后，`GET /v1/tasks/{task_id}` 的 `result` 会包含：
+
+- `image_url`：远程图片 URL。
+- `output_url`：下载到本地后的 `/outputs/...` 访问地址，开启下载时可用。
+- `output_path`：本地输出路径。
+- `model / size / aspect_ratio`：本次选择的生图模型、分辨率档位和比例。
+- `gpt_image_request` / `seedream_request` / `request_info`：真实提交 payload、endpoint、task id、响应摘要和参考图绑定。
+- `seedream_watermark`：Seedream 4.5 请求的水印开关。
+
+前端会通过 `GET /v1/images/capabilities` 读取当前后端配置下的可选分辨率和比例。Seedream 4.5 会把水印开关写入 `payload.watermark`。
+
+独立生图结果写入 `outputs/images/{task_id}/generated.*`。Seedream 4.5 使用 `generated.png`；GPT Image 2 的后缀由 `[gpt_image].output_format` 决定。
+
+生图任务完成后不会自动进入作品库。需要保存时调用：
+
+### `POST /v1/images/generations/{task_id}/save`
+
+把已完成的生图任务保存到作品库。保存后项目摘要才会出现在 `GET /v1/projects` 中。
+
+```json
+{
+  "project_id": "image-project-id",
+  "task_id": "image-task-id",
+  "status": "completed"
+}
+```
+
+### `GET /v1/images/capabilities`
+
+返回当前后端配置下，生图页可展示的模型、分辨率和比例选项。
+
+返回示例：
+
+```json
+{
+  "models": [
+    {
+      "label": "GPT Image 2",
+      "value": "gpt-image-2",
+      "size_options": [
+        {
+          "label": "1K",
+          "value": "1K",
+          "aspect_ratios": ["1:1", "3:2", "2:3"]
+        }
+      ]
+    },
+    {
+      "label": "Seedream 4.5",
+      "value": "doubao-seedream-4-5-251128",
+      "size_options": [
+        {
+          "label": "2K",
+          "value": "2K",
+          "aspect_ratios": ["1:1", "16:9", "9:16", "4:3", "3:4"]
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## 项目
 
 ### `GET /v1/projects`
 
 返回项目摘要列表。
+
+项目摘要包含 `product_type`：
+
+- `novel_to_video`：小说转视频项目。
+- `image_generation`：独立生图产品。
 
 ### `GET /v1/projects/{project_id}`
 
@@ -370,3 +483,6 @@ FastAPI 只提供 API、健康检查和 `/outputs` 媒体访问。React 前端�
 - reference bindings。
 - 连续性问题和失败原因。
 - 合并总片。
+
+`image.generate` 任务会把生成图放在 `scene_frames` 中，供作品库作为图片封面展示。
+生图作品详情页通过项目详情读取当前作品下的 `image.generate` 任务，再通过 artifacts 展示生成图和请求参数。

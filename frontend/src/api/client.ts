@@ -17,6 +17,20 @@ export function getApiBaseUrl(): string {
   );
 }
 
+export function resolveApiAssetUrl(url: string | null | undefined): string {
+  const value = String(url || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (/^(https?:|data:|blob:)/i.test(value)) {
+    return value;
+  }
+  if (value.startsWith("/outputs/")) {
+    return `${getApiBaseUrl()}${value}`;
+  }
+  return value;
+}
+
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     headers: {

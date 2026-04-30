@@ -69,6 +69,48 @@ class SeedreamClientTestCase(unittest.TestCase):
         self.assertEqual(payload["response_format"], client.config.response_format)
         self.assertFalse(payload["watermark"])
 
+    def test_single_image_payload_can_include_aspect_ratio(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+        client.api_key = "test-key"
+
+        class FakeClient:
+            def __init__(self) -> None:
+                self.payload = {}
+
+            def post(self, endpoint, json, headers):
+                self.payload = json
+                return FakeSeedreamResponse(payload={"data": [{"url": "https://example.com/generated.png"}]})
+
+        fake_client = FakeClient()
+
+        image_url = client._create_image(
+            fake_client,
+            prompt="清新科技感商业插画",
+            aspect_ratio="16:9",
+        )
+
+        self.assertEqual(image_url, "https://example.com/generated.png")
+        self.assertEqual(fake_client.payload["size"], "2560x1440")
+        self.assertEqual(fake_client.payload["aspect_ratio"], "16:9")
+
+    def test_single_image_payload_resolves_portrait_pixel_size(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+
+        payload = client._base_payload("竖版海报", aspect_ratio="9:16")
+
+        self.assertEqual(payload["size"], "1440x2560")
+        self.assertEqual(payload["aspect_ratio"], "9:16")
+
     def test_generate_scene_master_frame_records_request_info(self) -> None:
         client = SeedreamClient(
             SeedreamConfig(

@@ -24,9 +24,9 @@
 .creator-product-main {
   position: relative;
   display: grid;
-  align-content: center;
+  align-content: start;
   min-height: 100dvh;
-  padding: clamp(28px, 5vw, 72px) clamp(20px, 6vw, 96px);
+  padding: clamp(18px, 3vh, 34px) clamp(20px, 6vw, 96px) clamp(28px, 5vh, 56px);
   color: #102a43;
   isolation: isolate;
 }
@@ -62,17 +62,17 @@
 .creator-product-hero {
   display: grid;
   justify-items: center;
-  gap: 10px;
-  width: min(920px, 100%);
+  gap: 8px;
+  width: min(840px, 100%);
   margin: 0 auto;
   text-align: center;
 }
 
 .creator-product-hero span {
   color: #0f766e;
-  font-size: 12px;
-  font-weight: 850;
-  letter-spacing: 0.12em;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
@@ -80,24 +80,24 @@
   margin: 0;
   color: #0d2b38;
   font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
-  font-size: clamp(34px, 5vw, 56px);
-  line-height: 1;
-  letter-spacing: -0.055em;
+  font-size: clamp(26px, 3.2vw, 36px);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
 }
 
 .creator-product-hero p {
-  max-width: 560px;
+  max-width: 520px;
   margin: 0;
   color: rgba(16, 42, 67, 0.62);
-  font-size: 15px;
-  line-height: 1.7;
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 .creator-composer {
   display: grid;
   gap: 0;
   width: min(980px, 100%);
-  margin: clamp(24px, 4vh, 44px) auto 0;
+  margin: clamp(14px, 2.4vh, 24px) auto 0;
   overflow: hidden;
   border: 1px solid rgba(18, 151, 165, 0.16);
   border-radius: 32px;
@@ -111,7 +111,7 @@
 .composer-title-field,
 .composer-prompt-field,
 .composer-inline-fields label,
-.composer-advanced-grid label {
+.composer-settings-grid label {
   display: grid;
   gap: 7px;
 }
@@ -128,7 +128,7 @@
 .composer-title-field span,
 .composer-prompt-field span,
 .composer-inline-fields span,
-.composer-advanced-grid span {
+.composer-settings-grid span {
   color: rgba(16, 42, 67, 0.58);
   font-size: 12px;
   font-weight: 850;
@@ -138,7 +138,7 @@
 .composer-title-field input,
 .composer-prompt-field textarea,
 .composer-inline-fields input,
-.composer-advanced-grid input {
+.composer-settings-grid input {
   width: 100%;
   color: #0e2535;
   border: 0;
@@ -150,14 +150,14 @@
 .composer-title-field input {
   min-height: 38px;
   font-family: "Space Grotesk", "Noto Sans SC", sans-serif;
-  font-size: clamp(22px, 2.5vw, 30px);
+  font-size: clamp(18px, 2vw, 24px);
   font-weight: 750;
   line-height: 1.16;
   letter-spacing: -0.035em;
 }
 
 .composer-prompt-field textarea {
-  min-height: clamp(250px, 36vh, 390px);
+  min-height: clamp(110px, 16vh, 180px);
   resize: vertical;
   font-size: 16px;
   line-height: 1.75;
@@ -166,14 +166,14 @@
 .composer-title-field input:focus,
 .composer-prompt-field textarea:focus,
 .composer-inline-fields input:focus,
-.composer-advanced-grid input:focus {
+.composer-settings-grid input:focus {
   outline: none;
 }
 
 .composer-title-field input::placeholder,
 .composer-prompt-field textarea::placeholder,
 .composer-inline-fields input::placeholder,
-.composer-advanced-grid input::placeholder {
+.composer-settings-grid input::placeholder {
   color: rgba(16, 42, 67, 0.44);
 }
 
@@ -222,56 +222,53 @@
   box-shadow: 0 16px 34px rgba(15, 159, 147, 0.2);
 }
 
-.composer-advanced {
+.composer-settings {
+  display: grid;
+  gap: 0;
   border-top: 1px solid rgba(18, 151, 165, 0.1);
 }
 
-.composer-advanced summary {
+.composer-settings-head {
   display: flex;
+  gap: 12px;
   align-items: center;
-  min-height: 46px;
-  padding: 0 clamp(20px, 3vw, 30px);
-  color: rgba(16, 42, 67, 0.66);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 800;
-  list-style: none;
+  min-height: 42px;
+  padding: 10px clamp(20px, 3vw, 30px) 0;
 }
 
-.composer-advanced summary::-webkit-details-marker {
-  display: none;
-}
-
-.composer-advanced summary::after {
-  margin-left: auto;
+.composer-settings-head span {
+  flex: 0 0 auto;
   color: #0f766e;
-  content: "+";
-  font-size: 18px;
-  line-height: 1;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
 }
 
-.composer-advanced[open] summary::after {
-  content: "-";
+.composer-settings-head p {
+  margin: 0;
+  color: rgba(16, 42, 67, 0.52);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
-.composer-advanced-grid {
+.composer-settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
-  padding: 0 clamp(20px, 3vw, 30px) 22px;
+  padding: 6px clamp(20px, 3vw, 30px) 16px;
 }
 
-.composer-advanced-grid label {
-  padding: 14px 16px 14px 0;
+.composer-settings-grid label {
+  padding: 12px 16px 12px 0;
   border-top: 1px solid rgba(18, 151, 165, 0.08);
 }
 
-.composer-advanced-grid label:nth-child(2n) {
+.composer-settings-grid label:nth-child(2n) {
   padding-right: 0;
 }
 
-.composer-advanced-grid input {
-  min-height: 32px;
+.composer-settings-grid input {
+  min-height: 30px;
   font-size: 14px;
 }
 
@@ -291,8 +288,14 @@
   }
 
   .composer-inline-fields,
-  .composer-advanced-grid {
+  .composer-settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .composer-settings-head {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .composer-inline-fields label {
@@ -321,7 +324,7 @@
   }
 
   .creator-product-hero h2 {
-    font-size: 34px;
+    font-size: 26px;
   }
 
   .creator-composer {
@@ -334,6 +337,6 @@
   }
 
   .composer-prompt-field textarea {
-    min-height: 260px;
+    min-height: 140px;
   }
 }

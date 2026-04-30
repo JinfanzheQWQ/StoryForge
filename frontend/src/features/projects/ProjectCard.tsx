@@ -1,8 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { MoreHorizontal, Trash2 } from "lucide-react";
+import { resolveApiAssetUrl } from "../../api/client";
 import type { ArtifactBundle, ProjectSummary } from "../../types";
-import { formatProjectUpdatedAt, getProjectTitle, selectProjectCover, type ProjectCover } from "./projectGalleryModel";
+import {
+  formatProjectUpdatedAt,
+  getProjectOpenPath,
+  getProjectProductLabel,
+  getProjectTitle,
+  selectProjectCover,
+  type ProjectCover
+} from "./projectGalleryModel";
 
 export function ProjectCard({
   artifacts,
@@ -20,13 +28,15 @@ export function ProjectCard({
   const [menuOpen, setMenuOpen] = useState(false);
   const title = getProjectTitle(project);
   const cover = selectProjectCover(artifacts);
+  const productLabel = getProjectProductLabel(project);
 
   return (
     <article className="project-card">
-      <Link className="project-card-open" to={`/console/projects/${project.project_id}`} aria-label={`打开项目 ${title}`}>
+      <Link className="project-card-open" to={getProjectOpenPath(project)} aria-label={`打开 ${productLabel} ${title}`}>
         <div className="project-card-media">
           <ProjectCardMedia cover={cover} loading={artifactsLoading} title={title} />
-          {cover ? <span className="project-card-badge">{cover.kind === "video" ? "视频" : "图片"}</span> : null}
+          <span className="project-card-badge">{productLabel}</span>
+          {cover ? <span className="project-card-kind">{cover.kind === "video" ? "视频" : "图片"}</span> : null}
         </div>
         <div className="project-card-body">
           <strong>{title}</strong>
@@ -64,17 +74,56 @@ export function ProjectCard({
 }
 
 function ProjectCardMedia({ cover, loading, title }: { cover: ProjectCover | null; loading?: boolean; title: string }) {
+  const [failedMedia, setFailedMedia] = useState(false);
+  const mediaUrl = resolveApiAssetUrl(cover?.url);
+  const posterUrl = resolveApiAssetUrl(cover?.posterUrl);
+
+  useEffect(() => {
+    setFailedMedia(false);
+  }, [mediaUrl]);
+
+  if (failedMedia) {
+    return <ProjectCardPlaceholder failed label="封面不可用" title={title} />;
+  }
+
   if (cover?.kind === "video") {
-    return <video aria-label={`${title} 视频预览`} muted playsInline preload="metadata" src={cover.url} />;
+    return (
+      <video
+        aria-label={`${title} 视频预览`}
+        autoPlay
+        loop
+        muted
+        playsInline
+        poster={posterUrl || undefined}
+        preload="metadata"
+        src={mediaUrl}
+        onError={() => setFailedMedia(true)}
+      />
+    );
   }
 
   if (cover?.kind === "image") {
-    return <img alt={`${title} 封面`} loading="lazy" src={cover.url} />;
+    return <img alt={`${title} 封面`} loading="lazy" src={mediaUrl} onError={() => setFailedMedia(true)} />;
   }
 
+  return <ProjectCardPlaceholder label={loading ? "加载资源" : title.slice(0, 1).toUpperCase()} loading={loading} title={title} />;
+}
+
+function ProjectCardPlaceholder({
+  failed,
+  label,
+  loading,
+  title
+}: {
+  failed?: boolean;
+  label: string;
+  loading?: boolean;
+  title: string;
+}) {
+  const className = ["project-card-placeholder", loading ? "loading" : "", failed ? "failed" : ""].filter(Boolean).join(" ");
   return (
-    <div className={loading ? "project-card-placeholder loading" : "project-card-placeholder"}>
-      <span>{loading ? "加载资源" : title.slice(0, 1).toUpperCase()}</span>
+    <div aria-label={`${title} 暂无封面`} className={className}>
+      <span>{label}</span>
     </div>
   );
 }

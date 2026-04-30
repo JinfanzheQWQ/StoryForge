@@ -223,6 +223,23 @@ def build_task_artifacts(
             note="产物目录不在当前输出根目录下，页面无法安全挂载。",
         )
 
+    if task.task_type == "image.generate":
+        image_items = _collect_artifacts(
+            output_dir,
+            resolved_output_root,
+            allowed_suffixes=IMAGE_SUFFIXES,
+        )
+        if not image_items:
+            image_items = _image_generation_fallback_artifacts(task)
+        return TaskArtifactsResponse(
+            task_id=task.task_id,
+            available=True,
+            note="生图产物已整理，可直接在页面预览或打开原文件。",
+            story_title=str(task.result.get("prompt") or "生图作品"),
+            output_dir=str(output_dir),
+            scene_frames=image_items,
+        )
+
     documents = [
         _to_artifact_item(path, resolved_output_root)
         for path in _sorted_document_paths(output_dir.iterdir())
@@ -297,6 +314,27 @@ def _collect_artifacts(
             continue
         items.append(_to_artifact_item(path, output_root))
     return items
+
+
+def _image_generation_fallback_artifacts(task: TaskRecord) -> list[ArtifactItem]:
+    if not task.result:
+        return []
+    image_url = str(
+        task.result.get("output_url")
+        or task.result.get("image_url")
+        or task.result.get("generated_url")
+        or ""
+    ).strip()
+    if not image_url:
+        return []
+    return [
+        ArtifactItem(
+            name="generated.png",
+            path=str(task.result.get("output_path") or ""),
+            url=image_url,
+            kind="image",
+        )
+    ]
 
 
 def _collect_scene_artifacts(

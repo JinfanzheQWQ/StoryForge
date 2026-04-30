@@ -1,6 +1,6 @@
 # 架构说明
 
-StoryForge 是一个分阶段 AI 媒体生产系统。前端负责产品交互，后端负责任务调度、结构化规划、媒体提交、产物聚合和持久化。
+StoryForge 是一个分阶段 AI 媒体生产系统。前端负责产品交互，后端负责任务调度、结构化规划、媒体提交、产物聚合和持久化。小说转视频是主链路，独立生图是同一任务系统下的独立能力。
 
 ## 总览
 
@@ -8,8 +8,8 @@ StoryForge 是一个分阶段 AI 媒体生产系统。前端负责产品交互�
 React Frontend
   -> FastAPI
   -> Task Queue
-  -> Domain Pipelines
-  -> LLM / Seedream / Seedance / ffmpeg
+  -> Domain Pipelines / Image Tasks
+  -> LLM / Seedream / GPT Image 2 / Seedance / ffmpeg
   -> MySQL + outputs/
 ```
 
@@ -17,10 +17,10 @@ React Frontend
 
 ```text
 frontend/
-├── src/app/             # 路由和全局 provider
+├── src/app/             # 路由和全局状态装配
 ├── src/api/             # FastAPI client
 ├── src/components/      # 通用 UI 组件
-├── src/features/        # 首页、项目库、创作器、项目工作台
+├── src/features/        # 首页、项目库、创作器、项目工作台、生图工作区
 ├── src/styles/          # 视觉系统和页面样式
 └── src/types/           # API 与 artifact 类型
 
@@ -32,7 +32,7 @@ src/storyforge/
 ├── domains/
 │   ├── novel/           # 小说生成、结构化合同和 prompt
 │   └── video/           # 视频规划、校验、prompt、修复和媒体任务构建
-├── integrations/        # Seedream、Seedance、ffmpeg、LLM 集成
+├── integrations/        # Seedream、GPT Image 2、Seedance、ffmpeg、LLM 集成
 └── pipelines/           # 阶段 pipeline 编排
 ```
 
@@ -91,6 +91,8 @@ chapter -> scene -> chunk -> segment
 
 ## 媒体任务
 
+独立生图任务使用 `image.generate`，通过 `/v1/images/generations` 提交，模型可选 `gpt-image-2` 或 `doubao-seedream-4-5-251128`。每次提交都会创建独立的生图项目记录承载任务和文件外键；保存前不出现在作品库，保存后成为可打开的生图作品。文生图不带参考图，图生图提交参考图 URL。GPT Image 2 和 Seedream 4.5 的尺寸选项由 `/v1/images/capabilities` 返回，Seedream 4.5 支持水印开关。输出写入 `outputs/images/{task_id}/generated.*`。
+
 角色图任务写入 `character_image_manifest.json`。它们只锁定人物身份和外观。
 
 场景母图任务写入 `scene_image_manifest.json`。它们锁定环境，不包含人物和文字。
@@ -117,11 +119,13 @@ chapter -> scene -> chunk -> segment
 - scene 和 segment 蓝图。
 - 角色图、场景母图和视频资源。
 - motion plan 和媒体 prompt。
-- 提交请求、参考图绑定和 provider 摘要。
+- 提交请求、参考图绑定和请求摘要。
 - 连续性问题和失败原因。
 - 合并总片。
 
 前端应消费 artifacts 中的规整字段，不在页面层重新解析落盘 JSON。
+
+作品库使用项目摘要的 `product_type` 区分小说转视频和生图产品。未保存的生图结果不会进入项目列表。`image.generate` 任务的 artifacts 会把生成图作为图片资源返回，供作品库封面和生图作品详情页使用。生图详情页读取当前作品项目下的 `image.generate` 任务，并展示图片、Prompt、参考图、参数和真实提交请求 payload。
 
 ## 数据库与文件
 
@@ -131,6 +135,7 @@ MySQL 保存项目、任务、run 记录和产物索引。大文件写入 `outpu
 
 ```text
 outputs/projects/{project_id}/runs/{task_id}/
+outputs/images/{task_id}/
 ```
 
 ## 配置
@@ -139,8 +144,8 @@ outputs/projects/{project_id}/runs/{task_id}/
 
 关键配置：
 
-- LLM provider、model、base URL 和 API key env。
-- Seedream / Seedance model、base URL、watermark、auto submit。
+- LLM 服务、model、base URL 和 API key env。
+- Seedream / GPT Image 2 / Seedance model、base URL、watermark、auto submit。
 - MySQL 连接参数。
 - 输出目录。
 - CORS origin。

@@ -32,6 +32,22 @@ response_format = "url"
 watermark = false
 download_outputs = true
 
+[gpt_image]
+enabled = true
+provider = "kie" # "kie" or "openai"
+model = "gpt-image-2"
+kie_base_url = "https://api.kie.ai"
+kie_api_key_env = "KIE_API_KEY"
+kie_text_to_image_model = "gpt-image-2-text-to-image"
+kie_image_to_image_model = "gpt-image-2-image-to-image"
+openai_base_url = "https://api.openai.com/v1"
+openai_api_key_env = "OPENAI_API_KEY"
+quality = "auto"
+output_format = "png"
+download_outputs = true
+poll_interval_seconds = 3.0
+max_wait_seconds = 900
+
 [seedance]
 enabled = true
 base_url = ""

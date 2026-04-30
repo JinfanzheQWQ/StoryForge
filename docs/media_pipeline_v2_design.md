@@ -9,7 +9,7 @@ StoryForge 的媒体管线围绕三个核心资源运行：角色定妆图、场
 - 分段视频可单独生成、审阅和重做。
 - 同一空间内尽量减少画面跳变。
 - 新地点明确建立新的环境基准。
-- 每次 provider 提交都有可审计的 prompt、payload 和参考图绑定。
+- 每次媒体提交都有可审计的 prompt、payload 和参考图绑定。
 
 ## 资源类型
 
@@ -71,8 +71,8 @@ Seedream 负责角色图和场景母图。
 - `reference_images`：场景母图、可选上一段尾帧、实际出镜角色图。
 - `submitted_reference_bindings`：每张图的用途说明。
 - `prompt`：最终 Seedance prompt。
-- `duration`、`resolution`、`watermark` 等 provider 参数。
-- `return_last_frame`：请求 provider 返回尾帧供后续片段承接。
+- `duration`、`resolution`、`watermark` 等提交参数。
+- `return_last_frame`：请求视频服务返回尾帧供后续片段承接。
 
 最终 prompt 必须按真实提交顺序写清图片用途。业务逻辑不得假设角色图永远从 `图片2` 开始。
 
@@ -112,7 +112,7 @@ Seedream 负责角色图和场景母图。
 常见失败分三类：
 
 - 资源未就绪：缺场景母图、角色图或视频 prompt。
-- provider 失败：Seedream 或 Seedance 返回错误、超时或缺少结果 URL。
+- 媒体服务失败：Seedream 或 Seedance 返回错误、超时或缺少结果 URL。
 - 连续性失败：规划合同不满足时长、对白、动作容量、多人镜头或空间承接要求。
 
-资源未就绪应先补齐上游产物。provider 失败应保留请求 payload 便于重试。连续性失败应先修复合同，再重跑媒体阶段。
+资源未就绪应先补齐上游产物。媒体服务失败应保留请求 payload 便于重试。连续性失败应先修复合同，再重跑媒体阶段。

@@ -29,6 +29,8 @@ from storyforge.application.task_runtime import TaskExecutionContext, build_task
 from storyforge.application.tasks import AsyncTaskQueue, QueuedTask, TaskRecord, TaskStore, utc_now  # noqa: E402
 from storyforge.domains.video.errors import VideoStructuredGenerationError  # noqa: E402
 from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
+from storyforge.integrations.gpt_image import GPTImageResult  # noqa: E402
+from storyforge.integrations.seedream import SeedreamSingleImageResult  # noqa: E402
 from _deterministic_backends import (  # noqa: E402
     DeterministicStoryBackend,
     DeterministicVideoBackend,
@@ -357,6 +359,234 @@ class ApiTestCase(unittest.TestCase):
         segment_task = self._wait_for_completion(client, segment_response.json()["task_id"])
         self.assertEqual(segment_task["status"], "completed")
         return scene_task, segment_task
+
+    def test_submit_gpt_image_generation_job(self) -> None:
+        config_path = self._create_test_config()
+        with patch(
+            "storyforge.integrations.gpt_image.GPTImageClient.generate_single_image",
+            return_value=GPTImageResult(
+                submitted=True,
+                image_url="https://example.com/generated.png",
+                output_path="",
+                request_info={
+                    "provider": "kie",
+                    "payload": {
+                        "model": "gpt-image-2-text-to-image",
+                        "prompt": "一座薄荷色未来图书馆",
+                    },
+                    "reference_bindings": [
+                        {
+                            "label": "图片1",
+                            "kind": "source_image",
+                            "description": "参考图",
+                            "url": "https://example.com/reference.png",
+                        }
+                    ],
+                },
+                note="GPT Image 2 generation completed.",
+            ),
+        ) as generate_image:
+            app = create_app(project_root=ROOT, config_path=config_path)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/images/generations",
+                    json={
+                        "mode": "image_to_image",
+                        "model": "gpt-image-2",
+                        "prompt": "保持构图，把画面改成清新科技感商业插画",
+                        "reference_images": ["https://example.com/reference.png"],
+                        "size": "2K",
+                        "aspect_ratio": "16:9",
+                    },
+                )
+                self.assertEqual(response.status_code, 202)
+                task_id = response.json()["task_id"]
+                task = self._wait_for_completion(client, task_id)
+
+                self.assertEqual(task["status"], "completed")
+                self.assertEqual(task["task_type"], "image.generate")
+                self.assertEqual(task["result"]["mode"], "image_to_image")
+                self.assertEqual(task["result"]["model"], "gpt-image-2")
+                self.assertEqual(task["result"]["provider"], "kie")
+                self.assertEqual(task["result"]["size"], "2K")
+                self.assertEqual(task["result"]["aspect_ratio"], "16:9")
+                self.assertFalse(task["result"]["image_saved"])
+                self.assertEqual(task["result"]["image_url"], "https://example.com/generated.png")
+                self.assertEqual(
+                    task["result"]["reference_images"],
+                    ["https://example.com/reference.png"],
+                )
+                self.assertEqual(
+                    task["result"]["gpt_image_request"]["reference_bindings"][0]["kind"],
+                    "source_image",
+                )
+                generate_image.assert_called_once()
+
+                projects_response = client.get("/v1/projects")
+                self.assertEqual(projects_response.status_code, 200)
+                self.assertEqual(projects_response.json(), [])
+
+                save_response = client.post(f"/v1/images/generations/{task_id}/save")
+                self.assertEqual(save_response.status_code, 200)
+                self.assertEqual(save_response.json()["project_id"], response.json()["project_id"])
+                saved_task = client.get(f"/v1/tasks/{task_id}").json()
+                self.assertTrue(saved_task["result"]["image_saved"])
+
+                projects_response = client.get("/v1/projects")
+                self.assertEqual(projects_response.status_code, 200)
+                projects = projects_response.json()
+                self.assertEqual(len(projects), 1)
+                self.assertEqual(projects[0]["product_type"], "image_generation")
+                self.assertEqual(projects[0]["latest_task_id"], task_id)
+
+                artifacts_response = client.get(f"/v1/tasks/{task_id}/artifacts")
+                self.assertEqual(artifacts_response.status_code, 200)
+                artifacts = artifacts_response.json()
+                self.assertTrue(artifacts["available"])
+                self.assertEqual(artifacts["scene_frames"][0]["name"], "generated.png")
+
+    def test_submit_seedream_image_generation_job(self) -> None:
+        config_path = self._create_test_config()
+        with patch(
+            "storyforge.integrations.seedream.SeedreamClient.generate_single_image",
+            return_value=SeedreamSingleImageResult(
+                submitted=True,
+                image_url="https://example.com/seedream.png",
+                output_path="",
+                request_info={
+                    "provider": "seedream",
+                    "payload": {
+                        "model": "doubao-seedream-4-5-251128",
+                        "prompt": "一座薄荷色未来图书馆",
+                        "size": "1440x2560",
+                        "watermark": True,
+                    },
+                    "reference_bindings": [
+                        {
+                            "label": "图片1",
+                            "kind": "source_image",
+                            "description": "参考图",
+                            "url": "https://example.com/reference.png",
+                        }
+                    ],
+                },
+                note="Seedream image generation completed.",
+            ),
+        ) as generate_image:
+            app = create_app(project_root=ROOT, config_path=config_path)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/images/generations",
+                    json={
+                        "mode": "image_to_image",
+                        "model": "doubao-seedream-4-5-251128",
+                        "prompt": "保持构图，把画面改成清新科技感商业插画",
+                        "reference_images": ["https://example.com/reference.png"],
+                        "size": "2K",
+                        "aspect_ratio": "9:16",
+                        "seedream_watermark": True,
+                    },
+                )
+                self.assertEqual(response.status_code, 202)
+                task_id = response.json()["task_id"]
+                task = self._wait_for_completion(client, task_id)
+
+                self.assertEqual(task["status"], "completed")
+                self.assertEqual(task["task_type"], "image.generate")
+                self.assertEqual(task["result"]["provider"], "seedream")
+                self.assertEqual(task["result"]["model"], "doubao-seedream-4-5-251128")
+                self.assertEqual(task["result"]["size"], "2K")
+                self.assertEqual(task["result"]["aspect_ratio"], "9:16")
+                self.assertTrue(task["payload"]["seedream_watermark"])
+                self.assertTrue(task["result"]["seedream_watermark"])
+                self.assertEqual(task["result"]["image_url"], "https://example.com/seedream.png")
+                self.assertEqual(
+                    task["result"]["reference_images"],
+                    ["https://example.com/reference.png"],
+                )
+                self.assertEqual(
+                    task["result"]["seedream_request"]["reference_bindings"][0]["kind"],
+                    "source_image",
+                )
+                self.assertEqual(task["result"]["request_info"], task["result"]["seedream_request"])
+                generate_image.assert_called_once()
+                self.assertEqual(generate_image.call_args.kwargs["aspect_ratio"], "9:16")
+                self.assertTrue(generate_image.call_args.kwargs["force_submit"])
+
+    def test_image_to_image_requires_reference_image(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/images/generations",
+                json={
+                    "mode": "image_to_image",
+                    "prompt": "保持构图，替换成清新科技感配色",
+                    "reference_images": [],
+                },
+            )
+
+        self.assertEqual(response.status_code, 422)
+
+    def test_image_generation_creates_separate_project_per_submission(self) -> None:
+        config_path = self._create_test_config()
+        with patch(
+            "storyforge.integrations.gpt_image.GPTImageClient.generate_single_image",
+            return_value=GPTImageResult(
+                submitted=True,
+                image_url="https://example.com/generated.png",
+                output_path="",
+                request_info={
+                    "provider": "kie",
+                    "payload": {
+                        "model": "gpt-image-2-text-to-image",
+                    },
+                },
+                note="GPT Image 2 generation completed.",
+            ),
+        ):
+            app = create_app(project_root=ROOT, config_path=config_path)
+            with TestClient(app) as client:
+                first_response = client.post(
+                    "/v1/images/generations",
+                    json={
+                        "mode": "text_to_image",
+                        "prompt": "薄荷色玻璃图书馆中庭",
+                    },
+                )
+                second_response = client.post(
+                    "/v1/images/generations",
+                    json={
+                        "mode": "text_to_image",
+                        "prompt": "浅青蓝未来咖啡馆",
+                    },
+                )
+                self.assertEqual(first_response.status_code, 202)
+                self.assertEqual(second_response.status_code, 202)
+                self.assertNotEqual(first_response.json()["project_id"], second_response.json()["project_id"])
+                first_task = self._wait_for_completion(client, first_response.json()["task_id"])
+                second_task = self._wait_for_completion(client, second_response.json()["task_id"])
+                self.assertEqual(first_task["status"], "completed")
+                self.assertEqual(second_task["status"], "completed")
+
+                projects_response = client.get("/v1/projects")
+                self.assertEqual(projects_response.status_code, 200)
+                self.assertEqual(projects_response.json(), [])
+
+                first_save_response = client.post(f"/v1/images/generations/{first_response.json()['task_id']}/save")
+                second_save_response = client.post(f"/v1/images/generations/{second_response.json()['task_id']}/save")
+                self.assertEqual(first_save_response.status_code, 200)
+                self.assertEqual(second_save_response.status_code, 200)
+
+                projects_response = client.get("/v1/projects")
+                self.assertEqual(projects_response.status_code, 200)
+                projects = projects_response.json()
+                self.assertEqual(len(projects), 2)
+                self.assertEqual({project["product_type"] for project in projects}, {"image_generation"})
+                self.assertEqual(
+                    {project["latest_task_id"] for project in projects},
+                    {first_response.json()["task_id"], second_response.json()["task_id"]},
+                )
 
     def test_submit_complete_job_and_keep_project_history_within_process(self) -> None:
         config_path = self._create_test_config()

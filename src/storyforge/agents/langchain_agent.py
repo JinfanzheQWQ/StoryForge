@@ -95,10 +95,10 @@ class LangChainTextAgentBackend(AgentBackend):
         structured_model = model.with_structured_output(
             schema,
             # Provider-specific structured strategy:
-            # - DeepSeek OpenAI-compatible endpoints are more stable with
+            # - DeepSeek OpenAI-style endpoints are more stable with
             #   function_calling than full Structured Outputs.
             # - OpenAI GPT structured calls should use json_schema to avoid
-            #   chat-completions tool_choice incompatibilities on GPT-5.x.
+            #   chat-completions tool_choice conflicts on GPT-5.x.
             method=method,
             include_raw=True,
             strict=True,
@@ -181,8 +181,8 @@ class LangChainTextAgentBackend(AgentBackend):
             "timeout": self.timeout_seconds,
         }
 
-        # DeepSeek exposes an OpenAI-compatible API, so we route it through the
-        # OpenAI-compatible initializer while preserving a custom base URL.
+        # DeepSeek exposes an OpenAI-style API, so we route it through the
+        # OpenAI initializer while preserving a custom base URL.
         if self.base_url:
             kwargs.update(
                 {

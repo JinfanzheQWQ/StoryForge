@@ -2,6 +2,7 @@ import type { TaskRecord } from "./task";
 
 export interface ProjectSummary {
   project_id: string;
+  product_type?: "novel_to_video" | "image_generation" | string;
   title_hint?: string;
   story_title?: string | null;
   latest_task_id?: string | null;

@@ -49,6 +49,24 @@ class SeedreamConfig:
 
 
 @dataclass(slots=True)
+class GPTImageConfig:
+    enabled: bool = True
+    provider: str = "kie"
+    model: str = "gpt-image-2"
+    kie_base_url: str = "https://api.kie.ai"
+    kie_api_key_env: str = "KIE_API_KEY"
+    kie_text_to_image_model: str = "gpt-image-2-text-to-image"
+    kie_image_to_image_model: str = "gpt-image-2-image-to-image"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key_env: str = "OPENAI_API_KEY"
+    quality: str = "auto"
+    output_format: str = "png"
+    download_outputs: bool = True
+    poll_interval_seconds: float = 3.0
+    max_wait_seconds: int = 900
+
+
+@dataclass(slots=True)
 class SeedanceConfig:
     enabled: bool = True
     base_url: str = ""
@@ -110,6 +128,7 @@ class AppConfig:
     novel: NovelConfig = field(default_factory=NovelConfig)
     video: VideoConfig = field(default_factory=VideoConfig)
     seedream: SeedreamConfig = field(default_factory=SeedreamConfig)
+    gpt_image: GPTImageConfig = field(default_factory=GPTImageConfig)
     seedance: SeedanceConfig = field(default_factory=SeedanceConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
@@ -128,6 +147,7 @@ class AppConfig:
         novel = raw.get("novel", {})
         video = raw.get("video", {})
         seedream = raw.get("seedream", {})
+        gpt_image = raw.get("gpt_image", {})
         seedance = raw.get("seedance", {})
         database = raw.get("database", {})
         queue = raw.get("queue", {})
@@ -168,6 +188,28 @@ class AppConfig:
                 response_format=seedream.get("response_format", "url"),
                 watermark=seedream.get("watermark", False),
                 download_outputs=seedream.get("download_outputs", True),
+            ),
+            gpt_image=GPTImageConfig(
+                enabled=gpt_image.get("enabled", True),
+                provider=gpt_image.get("provider", "kie"),
+                model=gpt_image.get("model", "gpt-image-2"),
+                kie_base_url=gpt_image.get("kie_base_url", "https://api.kie.ai"),
+                kie_api_key_env=gpt_image.get("kie_api_key_env", "KIE_API_KEY"),
+                kie_text_to_image_model=gpt_image.get(
+                    "kie_text_to_image_model",
+                    "gpt-image-2-text-to-image",
+                ),
+                kie_image_to_image_model=gpt_image.get(
+                    "kie_image_to_image_model",
+                    "gpt-image-2-image-to-image",
+                ),
+                openai_base_url=gpt_image.get("openai_base_url", "https://api.openai.com/v1"),
+                openai_api_key_env=gpt_image.get("openai_api_key_env", "OPENAI_API_KEY"),
+                quality=gpt_image.get("quality", "auto"),
+                output_format=gpt_image.get("output_format", "png"),
+                download_outputs=gpt_image.get("download_outputs", True),
+                poll_interval_seconds=gpt_image.get("poll_interval_seconds", 3.0),
+                max_wait_seconds=gpt_image.get("max_wait_seconds", 900),
             ),
             seedance=SeedanceConfig(
                 enabled=seedance.get("enabled", True),

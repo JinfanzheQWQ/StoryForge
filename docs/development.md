@@ -7,7 +7,7 @@
 - API 层只做请求校验、任务创建和响应组装。
 - 业务规则放在 `domains/`，不要散落到 router 或前端。
 - pipeline 负责编排阶段，domain service 负责领域判断。
-- provider HTTP 细节放在 `integrations/`。
+- 模型服务 HTTP 细节放在 `integrations/`。
 - 前端消费 artifacts API，不在页面层解析落盘 JSON。
 - prompt、schema、validator 和 tests 必须围绕同一套当前生产结构维护。
 - 删除代码前先确认没有 API、pipeline、测试或前端入口引用。
@@ -136,7 +136,7 @@ git diff --check
 
 - API 行为改动要补 `tests/test_api.py` 或独立 API 测试。
 - pipeline 规则改动要补 `tests/test_pipelines.py` 或对应集成测试。
-- Seedream / Seedance 请求格式改动要补 provider 测试。
+- Seedream / GPT Image 2 / Seedance 请求格式改动要补集成测试。
 - 前端 API client、模型函数和关键 UI 状态要补 Vitest。
 - 不保留与当前产品无关的测试夹具。
 

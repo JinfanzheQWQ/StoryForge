@@ -15,11 +15,47 @@ from storyforge.domains.video.contracts import CharacterImageTask, SceneImageTas
 
 DEFAULT_SEEDREAM_BASE_URL = "https://operator.las.cn-beijing.volces.com/api/v1"
 SEEDREAM_BASE_URL_ENV = "SEEDREAM_BASE_URL"
+
+SEEDREAM_PIXEL_SIZE_BY_RESOLUTION_AND_RATIO: dict[str, dict[str, str]] = {
+    "2K": {
+        "1:1": "2048x2048",
+        "4:3": "2304x1728",
+        "3:4": "1728x2304",
+        "16:9": "2560x1440",
+        "9:16": "1440x2560",
+        "3:2": "2496x1664",
+        "2:3": "1664x2496",
+        "21:9": "3024x1296",
+        "9:21": "1296x3024",
+    },
+    "4K": {
+        "1:1": "4096x4096",
+        "4:3": "4694x3520",
+        "3:4": "3520x4694",
+        "16:9": "5404x3040",
+        "9:16": "3040x5404",
+        "3:2": "4992x3328",
+        "2:3": "3328x4992",
+        "21:9": "6198x2656",
+        "9:21": "2656x6198",
+    },
+}
+
+
 @dataclass(slots=True)
 class SeedreamExecutionReport:
     submitted: bool
     generated_count: int
     failed_count: int
+    note: str
+
+
+@dataclass(slots=True)
+class SeedreamSingleImageResult:
+    submitted: bool
+    image_url: str
+    output_path: str
+    request_info: dict[str, Any]
     note: str
 
 
@@ -35,6 +71,42 @@ class SeedreamClient:
         self.config = config
         self.api_key = os.getenv(config.api_key_env, "")
         self._last_request_info: dict[str, Any] = {}
+
+    def generate_single_image(
+        self,
+        *,
+        prompt: str,
+        reference_images: list[str] | None = None,
+        aspect_ratio: str = "",
+        output_path: Path | None = None,
+        force_submit: bool = False,
+    ) -> SeedreamSingleImageResult:
+        preflight = self._build_preflight_report(force_submit=force_submit)
+        if preflight is not None:
+            raise RuntimeError(preflight.note)
+
+        normalized_references = self._normalize_reference_images(reference_images or [])
+        with httpx.Client(timeout=120) as client:
+            self._last_request_info = {}
+            image_url = self._create_image(
+                client,
+                prompt=prompt,
+                reference_images=normalized_references,
+                aspect_ratio=aspect_ratio,
+            )
+            if self.config.download_outputs and output_path is not None:
+                self._download_image(client, image_url, output_path)
+
+        return SeedreamSingleImageResult(
+            submitted=True,
+            image_url=image_url,
+            output_path=str(output_path or ""),
+            request_info=self._snapshot_last_request_info(
+                provider="seedream",
+                reference_bindings=self._single_image_reference_bindings(normalized_references),
+            ),
+            note="Seedream image generation completed.",
+        )
 
     def generate_character_images(
         self,
@@ -350,8 +422,13 @@ class SeedreamClient:
         client: httpx.Client,
         prompt: str,
         reference_images: list[str] | None = None,
+        aspect_ratio: str = "",
     ) -> str:
-        payload_attempts = self._payload_attempts(prompt, reference_images or [])
+        payload_attempts = self._payload_attempts(
+            prompt,
+            reference_images or [],
+            aspect_ratio=aspect_ratio,
+        )
         last_error: Exception | None = None
         attempted_variants: list[str] = []
         self._last_request_info = {}
@@ -388,8 +465,10 @@ class SeedreamClient:
         self,
         prompt: str,
         reference_images: list[str],
+        *,
+        aspect_ratio: str = "",
     ) -> list[SeedreamPayloadAttempt]:
-        base_payload = self._base_payload(prompt)
+        base_payload = self._base_payload(prompt, aspect_ratio=aspect_ratio)
         attempts: list[SeedreamPayloadAttempt] = []
         seen_signatures: set[str] = set()
         for reference_variant in self._reference_image_candidates(reference_images):
@@ -409,21 +488,32 @@ class SeedreamClient:
                 )
         return attempts
 
-    def _base_payload(self, prompt: str) -> dict[str, Any]:
-        return {
+    def _base_payload(self, prompt: str, *, aspect_ratio: str = "") -> dict[str, Any]:
+        payload = {
             "model": self.config.model,
             "prompt": prompt,
-            "size": self.config.image_size,
+            "size": self._resolve_output_size(aspect_ratio),
             "response_format": self.config.response_format,
             "watermark": self.config.watermark,
         }
+        if aspect_ratio:
+            payload["aspect_ratio"] = aspect_ratio
+        return payload
+
+    def _resolve_output_size(self, aspect_ratio: str = "") -> str:
+        configured_size = str(self.config.image_size or "").strip()
+        normalized_resolution = configured_size.upper()
+        normalized_ratio = str(aspect_ratio or "").strip()
+        if normalized_ratio:
+            exact_size = SEEDREAM_PIXEL_SIZE_BY_RESOLUTION_AND_RATIO.get(normalized_resolution, {}).get(
+                normalized_ratio
+            )
+            if exact_size:
+                return exact_size
+        return configured_size
 
     def _reference_image_candidates(self, reference_images: list[str]) -> list[list[str]]:
-        normalized: list[str] = []
-        for url in reference_images:
-            normalized_url = url.strip()
-            if normalized_url and normalized_url not in normalized:
-                normalized.append(normalized_url)
+        normalized = self._normalize_reference_images(reference_images)
         if not normalized:
             return [[]]
 
@@ -443,6 +533,27 @@ class SeedreamClient:
             seen.add(signature)
             deduped.append(candidate)
         return deduped
+
+    def _normalize_reference_images(self, reference_images: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for url in reference_images:
+            normalized_url = url.strip()
+            if normalized_url and normalized_url not in normalized:
+                normalized.append(normalized_url)
+        return normalized
+
+    def _single_image_reference_bindings(self, reference_images: list[str]) -> list[dict[str, str]]:
+        bindings: list[dict[str, str]] = []
+        for index, reference in enumerate(reference_images, start=1):
+            bindings.append(
+                {
+                    "label": f"图片{index}",
+                    "kind": "source_image",
+                    "description": "图生图参考图，用于约束画面元素、构图、风格或编辑目标。",
+                    "url": reference,
+                }
+            )
+        return bindings
 
     def _reference_field_payloads(
         self,

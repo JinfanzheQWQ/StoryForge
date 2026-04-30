@@ -27,6 +27,7 @@ from storyforge.api.schemas import (
     UpdateSegmentPromptRequest,
     UpdateStorySourceRequest,
 )
+from storyforge.application.projects import ProjectRecord
 from storyforge.application.tasks import utc_now
 from storyforge.application.project_deletion import delete_project_output_dirs
 from storyforge.application.task_support import resolve_pipeline_root_task_id
@@ -402,7 +403,7 @@ def _apply_pipeline_root_task_id(
 async def list_projects(request: Request) -> list[ProjectSummaryResponse]:
     container = request.app.state.container
     return build_project_summary_responses(
-        container.project_store.list(),
+        [project for project in container.project_store.list() if _is_visible_project(project)],
         container.task_queue.store,
     )
 
@@ -1303,3 +1304,9 @@ def _build_story_source_response(
             for chapter in story_source.chapters
         ],
     )
+
+
+def _is_visible_project(project: ProjectRecord) -> bool:
+    if project.brief.get("project_kind") == "image_generation" and project.brief.get("image_saved") is False:
+        return False
+    return True

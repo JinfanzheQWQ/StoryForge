@@ -314,6 +314,16 @@
   text-transform: uppercase;
 }
 
+.project-card-placeholder.failed span {
+  min-width: auto;
+  height: auto;
+  padding: 8px 12px;
+  color: rgba(15, 23, 42, 0.58);
+  background: rgba(255, 255, 255, 0.76);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
 .project-card-body {
   display: grid;
   align-content: space-between;

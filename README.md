@@ -11,6 +11,7 @@ StoryForge 是面向中文剧情短视频生产的 AI 创作工作台。产品�
 - 逐段生成 Seedance 视频，提交当前场景母图、实际出镜角色图和可用的上一段尾帧。
 - 在分段审片台查看每个 segment 的视频、资源图、最终提交 prompt、连续性问题和重跑入口。
 - 合并已完成的分段视频，形成项目总片。
+- 提供独立生图入口，支持 GPT Image 2 与 Seedream 4.5 的文生图和图生图；页面只展示当前模型可用的分辨率和比例，生成结果保存后进入作品库成为独立生图作品。
 - 使用 FastAPI、MySQL 和异步任务队列保存项目、任务、run 记录和产物索引。
 
 ## 产品流程
@@ -32,7 +33,7 @@ StoryForge 是面向中文剧情短视频生产的 AI 创作工作台。产品�
 - `frontend/`：React + TypeScript + Vite 前端服务，包含商业首页、项目库、小说转视频创作器和项目工作台。
 - `src/storyforge/api/`：FastAPI 服务，提供项目、任务、正文、prompt、媒体生成和 artifacts API。
 - `src/storyforge/domains/`：小说和视频领域逻辑。
-- `src/storyforge/integrations/`：Seedream、Seedance、ffmpeg 和 LLM 集成。
+- `src/storyforge/integrations/`：Seedream、GPT Image 2、Seedance、ffmpeg 和 LLM 集成。
 - `outputs/`：项目产物目录，通过 FastAPI `/outputs` 暴露媒体文件。
 
 ## 快速开始
@@ -56,6 +57,8 @@ DEEPSEEK_API_KEY=...
 DEEPSEEK_BASE_URL=...
 OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://api.openai.com/v1
+KIE_API_KEY=...
+KIE_BASE_URL=https://api.kie.ai
 SEEDREAM_API_KEY=...
 SEEDREAM_BASE_URL=...
 SEEDANCE_API_KEY=...
@@ -89,8 +92,10 @@ npm run dev
 ## 前端页面
 
 - 首页：展示产品品牌、视频背景和创意输入入口。
-- 项目库：以媒体作品墙展示项目封面，优先展示视频，其次展示图片。
+- 作品库：以媒体作品墙展示小说转视频和生图产品，支持按类型查看，优先展示视频，其次展示图片。
 - 小说转视频：输入项目名、故事创意和生成参数，创建视频项目。
+- 生图：在一个入口内切换文生图 / 图生图，可选择 GPT Image 2 或 Seedream 4.5、分辨率和比例；Seedream 4.5 额外提供水印开关；生成结果保存后才进入作品库。
+- 生图作品详情：从作品库进入，查看图片结果、Prompt、参考图和真实提交参数。
 - 项目工作台：按“小说、结构化信息、角色图、场景母图、分段视频、合并视频”推进。
 - 角色定妆墙：查看当前角色图，编辑角色 prompt，确认候选图。
 - 场景空间板：查看当前 scene 母图、引用片段数量和生成状态。
@@ -117,6 +122,8 @@ npm run dev
 - `scene_image_manifest.json`：场景母图任务和结果。
 - `seedance_manifest.json`：视频任务、参考图绑定、提交 prompt 和结果。
 - `continuity_report.json`：结构风险和连续性诊断。
+- `outputs/images/{task_id}/generated.png`：Seedream 独立生图下载结果。
+- `outputs/images/{task_id}/generated.{png|jpg|webp}`：GPT Image 2 独立生图下载结果，后缀由 `[gpt_image].output_format` 决定。
 
 ## 验证
 

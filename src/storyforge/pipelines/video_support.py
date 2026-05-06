@@ -78,21 +78,29 @@ def validate_manifest_ready_for_video(
     segment_ids: set[str] | None = None,
 ) -> None:
     clip_tasks = resolve_selected_manifest_clips(manifest, segment_ids)
-    missing_scene_segments = [clip.segment_id for clip in clip_tasks if not clip.scene_master_url]
-    missing_character_segments = [
+    missing_storyboard_segments = [
         clip.segment_id
         for clip in clip_tasks
+        if clip.video_mode == "grid_storyboard" and not clip.storyboard_grid_url
+    ]
+    direct_clips = [clip for clip in clip_tasks if clip.video_mode != "grid_storyboard"]
+    missing_scene_segments = [clip.segment_id for clip in direct_clips if not clip.scene_master_url]
+    missing_character_segments = [
+        clip.segment_id
+        for clip in direct_clips
         if clip.scene_master_url and not _clip_character_references_ready(clip)
     ]
-    if missing_scene_segments or missing_character_segments:
+    if missing_storyboard_segments or missing_scene_segments or missing_character_segments:
         details: list[str] = []
+        if missing_storyboard_segments:
+            details.append("missing storyboard grid: " + ", ".join(missing_storyboard_segments))
         if missing_scene_segments:
             details.append("missing scene master: " + ", ".join(missing_scene_segments))
         if missing_character_segments:
             details.append("missing character references: " + ", ".join(missing_character_segments))
         raise ValueError(
             "Video references are not ready for video generation. "
-            "Generate scene master and character images first. "
+            "Generate required reference images first. "
             + "; ".join(details)
         )
 

@@ -58,7 +58,9 @@ Pipeline 层：
 
 - `pipelines/story_pipeline.py`：小说生成 pipeline。
 - `pipelines/video_planning.py`：场景结构和分段合同 pipeline。
+- `pipelines/storyboard_grid.py`：九宫格分镜图生成、九宫格 Seedance prompt 构建和 manifest 同步。
 - `pipelines/video_pipeline.py`：角色图、场景母图、视频和合并 pipeline。
+- `pipelines/video_reference_sync.py`：场景母图复用、角色图 URL 补全、segment 范围选择和尾帧承接同步。
 
 ## 前端边界
 
@@ -101,8 +103,10 @@ React 前端位于 `frontend/`。
 
 - 角色图 prompt 只描述单角色定妆图。
 - 场景母图 prompt 只描述无人物空场景。
-- 视频 prompt 只描述当前 segment 的连续表演、镜头、声音、字幕和收束。
-- Seedance 最终提交 prompt 必须按真实参考图顺序写清 `图片1 / 图片2 / 图片3`。
+- 九宫格 prompt 使用场景母图和角色图生成 3x3 连续动作分镜图，固定展开格1到格9；可用尾帧只在 Seedance 视频阶段提交。
+- 九宫格模式的视频 prompt 只描述如何根据九宫格生成视频，对白写入对应 `场景N ({start}-{end}秒): ...` 描述，不单独输出音频规则块。
+- 连续表演模式的视频 prompt 只描述当前 segment 的连续表演、镜头、声音、字幕和收束。
+- Seedance 最终提交 prompt 必须按真实参考图顺序写清 `图片1 / 图片2 / 图片3`，九宫格模式固定 `图片1` 为九宫格分镜图，需要承接上一段时 `图片2` 为上一段尾帧。
 
 修复 prompt：
 

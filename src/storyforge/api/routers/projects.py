@@ -47,6 +47,7 @@ router = APIRouter(prefix="/v1/projects", tags=["projects"])
 
 
 PROMPT_UPDATE_FIELDS = {"scene_master_frame_prompt", "video_prompt"}
+CHARACTER_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _load_json_file(path: Path, fallback):
@@ -86,7 +87,7 @@ def _load_character_prompt_target(
 
 def _update_character_prompt(output_dir: Path, character_name: str, prompt: str) -> list[str]:
     items, target = _load_character_prompt_target(output_dir, character_name)
-    _delete_character_candidate_file(target.get("candidate_output_path", ""))
+    _delete_character_candidate_file(target.get("candidate_output_path", ""), output_dir=output_dir)
     target["candidate_generated_url"] = ""
     target["candidate_output_path"] = ""
     target["prompt"] = prompt
@@ -97,20 +98,48 @@ def _update_character_prompt(output_dir: Path, character_name: str, prompt: str)
     return ["prompt"]
 
 
-
-
-
-
-def _delete_character_candidate_file(raw_path: object) -> None:
+def _resolve_character_image_path(raw_path: object, *, output_dir: Path | None = None) -> Path | None:
     path_text = str(raw_path or "").strip()
     if not path_text:
-        return
+        return None
     path = Path(path_text)
+    if not path.is_absolute() and output_dir is not None:
+        path = output_dir / path
+    return path.resolve(strict=False)
+
+
+def _delete_character_image_variant_files(
+    raw_path: object,
+    *,
+    output_dir: Path | None = None,
+    keep_path: Path | None = None,
+) -> None:
+    path = _resolve_character_image_path(raw_path, output_dir=output_dir)
+    if path is None:
+        return
+    keep_resolved = keep_path.resolve(strict=False) if keep_path is not None else None
+    candidates = {path}
+    if path.suffix.lower() in CHARACTER_IMAGE_SUFFIXES:
+        candidates.update(path.with_suffix(suffix) for suffix in CHARACTER_IMAGE_SUFFIXES)
+    for candidate in candidates:
+        if keep_resolved is not None and candidate.resolve(strict=False) == keep_resolved:
+            continue
+        try:
+            if candidate.exists() and candidate.is_file():
+                candidate.unlink()
+        except OSError:
+            continue
+
+
+def _delete_character_candidate_file(raw_path: object, *, output_dir: Path | None = None) -> None:
+    path = _resolve_character_image_path(raw_path, output_dir=output_dir)
+    if path is None:
+        return
     try:
-        if path.exists() and path.is_file():
-            path.unlink()
+        _delete_character_image_variant_files(path)
     except OSError:
         return
+
 
 def _select_character_image_version(
     output_dir: Path,
@@ -127,12 +156,15 @@ def _select_character_image_version(
         if candidate_url:
             target["generated_url"] = candidate_url
         if candidate_path and current_path:
-            source_path = Path(candidate_path)
-            target_path = Path(current_path)
-            if source_path.exists() and source_path.is_file():
+            source_path = _resolve_character_image_path(candidate_path, output_dir=output_dir)
+            target_path = _resolve_character_image_path(current_path, output_dir=output_dir)
+            if source_path is not None and target_path is not None and source_path.exists() and source_path.is_file():
+                _delete_character_image_variant_files(target_path, keep_path=target_path)
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 target_path.write_bytes(source_path.read_bytes())
-    _delete_character_candidate_file(candidate_path)
+        elif candidate_url and current_path:
+            _delete_character_image_variant_files(current_path, output_dir=output_dir)
+    _delete_character_candidate_file(candidate_path, output_dir=output_dir)
     target["candidate_generated_url"] = ""
     target["candidate_output_path"] = ""
     target["status"] = "completed"
@@ -373,6 +405,36 @@ def _apply_media_watermark_options(
         task_payload["seedance_watermark"] = bool(seedance_watermark)
 
 
+def _apply_storyboard_options(
+    task_payload: dict[str, object],
+    payload: CreateStageTaskRequest,
+) -> None:
+    if payload.video_mode:
+        task_payload["video_mode"] = payload.video_mode
+    _apply_image_generation_options(task_payload, payload)
+    if payload.storyboard_image_model:
+        task_payload["storyboard_image_model"] = payload.storyboard_image_model.strip()
+    if payload.storyboard_size:
+        task_payload["storyboard_size"] = payload.storyboard_size.strip()
+    if payload.storyboard_aspect_ratio:
+        task_payload["storyboard_aspect_ratio"] = payload.storyboard_aspect_ratio.strip()
+
+
+def _apply_image_generation_options(
+    task_payload: dict[str, object],
+    payload: CreateStageTaskRequest,
+) -> None:
+    if payload.image_model:
+        task_payload["image_model"] = payload.image_model.strip()
+        task_payload.setdefault("storyboard_image_model", payload.image_model.strip())
+    if payload.image_size:
+        task_payload["image_size"] = payload.image_size.strip()
+        task_payload.setdefault("storyboard_size", payload.image_size.strip())
+    if payload.image_aspect_ratio:
+        task_payload["image_aspect_ratio"] = payload.image_aspect_ratio.strip()
+        task_payload.setdefault("storyboard_aspect_ratio", payload.image_aspect_ratio.strip())
+
+
 def _normalize_optional_bool(value: object) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -529,6 +591,12 @@ async def create_scene_structure_job(
         seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
+        _restore_existing_stage_result(
+            container,
+            existing_task=existing_task,
+            source_task=source_task,
+            pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
+        )
         return JobAcceptedResponse(
             project_id=payload.project_id,
             task_id=existing_task.task_id,
@@ -548,6 +616,7 @@ async def create_scene_structure_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    _apply_storyboard_options(task_payload, payload)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.scene_structure",
@@ -596,6 +665,12 @@ async def create_segment_contracts_job(
         seedance_watermark=payload.seedance_watermark,
     )
     if existing_task is not None:
+        _restore_existing_stage_result(
+            container,
+            existing_task=existing_task,
+            source_task=source_task,
+            pipeline_root_task_id=resolve_pipeline_root_task_id(source_task),
+        )
         return JobAcceptedResponse(
             project_id=payload.project_id,
             task_id=existing_task.task_id,
@@ -617,6 +692,7 @@ async def create_segment_contracts_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    _apply_storyboard_options(task_payload, payload)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.segment_contracts",
@@ -797,6 +873,31 @@ def _find_existing_revisioned_stage_task(
     return None
 
 
+def _restore_existing_stage_result(
+    container,
+    *,
+    existing_task,
+    source_task,
+    pipeline_root_task_id: str,
+) -> None:
+    if existing_task.status != "completed" or not existing_task.result:
+        return
+    shared_result = {
+        key: value
+        for key, value in existing_task.result.items()
+        if key not in {"task_stage", "source_task_id"}
+    }
+    if not shared_result:
+        return
+    shared_result["artifact_revision"] = utc_now()
+    for task_id in {source_task.task_id, pipeline_root_task_id}:
+        if not task_id or task_id == existing_task.task_id:
+            continue
+        if container.task_queue.store.get(task_id) is None:
+            continue
+        container.task_queue.store.update_result(task_id, shared_result)
+
+
 def _find_existing_stage_task(
     container,
     *,
@@ -810,12 +911,20 @@ def _find_existing_stage_task(
     continuity_review_mode: str | None = None,
     seedream_watermark: bool | None = None,
     seedance_watermark: bool | None = None,
+    image_model: str | None = None,
+    image_size: str | None = None,
+    image_aspect_ratio: str | None = None,
 ):
     expected_segment_id = segment_id or ""
     expected_scene_id = scene_id or ""
     expected_mode = str(continuity_review_mode or "auto").strip().lower() or "auto"
     expected_seedream_watermark = _normalize_optional_bool(seedream_watermark)
     expected_seedance_watermark = _normalize_optional_bool(seedance_watermark)
+    expected_image_options = {
+        "image_model": str(image_model or "").strip(),
+        "image_size": str(image_size or "").strip(),
+        "image_aspect_ratio": str(image_aspect_ratio or "").strip(),
+    }
     for task in container.task_queue.store.list(project_id=project_id):
         if task.task_type != task_type:
             continue
@@ -838,9 +947,27 @@ def _find_existing_stage_task(
         task_mode = str(task.payload.get("continuity_review_mode", "auto") or "auto").strip().lower() or "auto"
         if task_mode != expected_mode:
             continue
+        if not _stage_image_options_match(task.payload, expected_image_options):
+            continue
         if task.status in {"queued", "running"}:
             return task
     return None
+
+
+def _stage_image_options_match(task_payload: dict[str, object], expected: dict[str, str]) -> bool:
+    for key, expected_value in expected.items():
+        if not expected_value:
+            continue
+        actual = str(task_payload.get(key, "") or "").strip()
+        if not actual and key == "image_model":
+            actual = str(task_payload.get("storyboard_image_model", "") or "").strip()
+        if not actual and key == "image_size":
+            actual = str(task_payload.get("storyboard_size", "") or "").strip()
+        if not actual and key == "image_aspect_ratio":
+            actual = str(task_payload.get("storyboard_aspect_ratio", "") or "").strip()
+        if actual != expected_value:
+            return False
+    return True
 
 
 @router.post("/characters", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -873,6 +1000,7 @@ async def create_character_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    _apply_storyboard_options(task_payload, payload)
     character_name = str(payload.character_name or "").strip()
     if character_name:
         source_task = _resolve_story_source_task(container, payload.project_id, payload.source_task_id)
@@ -979,6 +1107,9 @@ async def create_scene_job(
         continuity_review_mode=payload.continuity_review_mode,
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
+        image_model=payload.image_model or payload.storyboard_image_model,
+        image_size=payload.image_size or payload.storyboard_size,
+        image_aspect_ratio=payload.image_aspect_ratio or payload.storyboard_aspect_ratio,
     )
     if existing_task is not None:
         return JobAcceptedResponse(
@@ -1010,10 +1141,80 @@ async def create_scene_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    _apply_storyboard_options(task_payload, payload)
 
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.scenes",
+        payload=task_payload,
+    )
+    container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
+    return JobAcceptedResponse(
+        project_id=payload.project_id,
+        task_id=record.task_id,
+        status=record.status,
+    )
+
+
+@router.post("/storyboards", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_storyboard_job(
+    payload: CreateStageTaskRequest,
+    request: Request,
+) -> JobAcceptedResponse:
+    container = request.app.state.container
+    project = container.project_store.get(payload.project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail=f"Project {payload.project_id} not found")
+
+    existing_task = _find_existing_stage_task(
+        container,
+        project_id=payload.project_id,
+        task_type="project.storyboards",
+        source_task_id=payload.source_task_id,
+        segment_id=payload.segment_id,
+        scene_id=payload.scene_id,
+        merge_only=False,
+        continuity_review_mode=payload.continuity_review_mode,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+        image_model=payload.image_model or payload.storyboard_image_model,
+        image_size=payload.image_size or payload.storyboard_size,
+        image_aspect_ratio=payload.image_aspect_ratio or payload.storyboard_aspect_ratio,
+    )
+    if existing_task is not None:
+        return JobAcceptedResponse(
+            project_id=payload.project_id,
+            task_id=existing_task.task_id,
+            status=existing_task.status,
+        )
+
+    task_payload = {
+        "project_id": payload.project_id,
+        "source_task_id": payload.source_task_id,
+        "video_mode": "grid_storyboard",
+    }
+    _apply_pipeline_root_task_id(
+        container,
+        task_payload,
+        project_id=payload.project_id,
+        source_task_id=payload.source_task_id,
+    )
+    if payload.segment_id:
+        task_payload["segment_id"] = payload.segment_id
+    if payload.scene_id:
+        task_payload["scene_id"] = payload.scene_id
+    _apply_llm_selection(task_payload, payload.llm_provider, payload.llm_model)
+    _apply_continuity_review_mode(task_payload, payload.continuity_review_mode)
+    _apply_media_watermark_options(
+        task_payload,
+        seedream_watermark=payload.seedream_watermark,
+        seedance_watermark=payload.seedance_watermark,
+    )
+    _apply_storyboard_options(task_payload, payload)
+
+    record = await container.task_queue.submit(
+        project_id=payload.project_id,
+        task_type="project.storyboards",
         payload=task_payload,
     )
     container.project_store.attach_task(payload.project_id, record.task_id, project.brief)
@@ -1076,6 +1277,7 @@ async def create_video_job(
         seedream_watermark=payload.seedream_watermark,
         seedance_watermark=payload.seedance_watermark,
     )
+    _apply_storyboard_options(task_payload, payload)
     record = await container.task_queue.submit(
         project_id=payload.project_id,
         task_type="project.videos",

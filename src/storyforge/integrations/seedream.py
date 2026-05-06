@@ -11,6 +11,10 @@ import httpx
 
 from storyforge.core.config import SeedreamConfig
 from storyforge.domains.video.contracts import CharacterImageTask, SceneImageTask, VideoProjectPackage, VideoScene
+from storyforge.pipelines.video_reference_sync import (
+    apply_previous_scene_master_reference,
+    reset_copied_previous_scene_master,
+)
 
 
 DEFAULT_SEEDREAM_BASE_URL = "https://operator.las.cn-beijing.volces.com/api/v1"
@@ -95,7 +99,7 @@ class SeedreamClient:
                 aspect_ratio=aspect_ratio,
             )
             if self.config.download_outputs and output_path is not None:
-                self._download_image(client, image_url, output_path)
+                output_path = self._download_image(client, image_url, output_path)
 
         return SeedreamSingleImageResult(
             submitted=True,
@@ -191,9 +195,18 @@ class SeedreamClient:
         target_scenes = self._select_scenes(project_package, scene_ids)
         generated_count = 0
         failed_count = 0
+        previous_scene_by_id = self._previous_scene_by_id(project_package.scenes)
 
         with httpx.Client(timeout=120) as client:
             for scene in target_scenes:
+                apply_previous_scene_master_reference(
+                    scene,
+                    previous_scene_by_id.get(scene.scene_id),
+                )
+                reset_copied_previous_scene_master(
+                    scene,
+                    previous_scene_by_id.get(scene.scene_id),
+                )
                 success, generated_now = self._ensure_scene_master_frame(
                     client,
                     scene,
@@ -203,7 +216,7 @@ class SeedreamClient:
                 generated_count += int(generated_now)
                 failed_count += int(not success)
 
-        self._sync_cross_scene_reused_master_frames(project_package)
+        self._sync_scene_master_to_all_scene_tasks(project_package)
         self._apply_scene_urls_to_seedance_manifest(project_package)
         note = (
             "Seedream scene master frame tasks executed successfully."
@@ -272,15 +285,14 @@ class SeedreamClient:
                 task.status = "candidate_ready"
                 if self.config.download_outputs and image_url:
                     candidate_path = self._candidate_character_image_path(Path(task.output_path))
-                    task.candidate_output_path = str(candidate_path)
-                    self._download_image(client, image_url, candidate_path)
+                    task.candidate_output_path = str(self._download_image(client, image_url, candidate_path))
             else:
                 task.generated_url = image_url
                 task.candidate_generated_url = ""
                 task.candidate_output_path = ""
                 task.status = "completed"
                 if self.config.download_outputs and image_url:
-                    self._download_image(client, image_url, Path(task.output_path))
+                    task.output_path = str(self._download_image(client, image_url, Path(task.output_path)))
             return True
         except Exception as exc:
             task.status = "failed"
@@ -322,7 +334,9 @@ class SeedreamClient:
                 reference_bindings=self._scene_master_reference_bindings(scene.scene_master_reference_images),
             )
             if self.config.download_outputs and master_frame_url and scene.scene_master_frame_path:
-                self._download_image(client, master_frame_url, Path(scene.scene_master_frame_path))
+                scene.scene_master_frame_path = str(
+                    self._download_image(client, master_frame_url, Path(scene.scene_master_frame_path))
+                )
             return True, True
         except Exception as exc:
             scene.scene_master_frame_status = "failed"
@@ -371,51 +385,18 @@ class SeedreamClient:
                 continue
             self._sync_scene_master_to_task(task, scene)
 
-    def _sync_cross_scene_reused_master_frames(self, project_package: VideoProjectPackage) -> None:
-        latest_master_scene: VideoScene | None = None
+    def _sync_scene_master_to_all_scene_tasks(self, project_package: VideoProjectPackage) -> None:
         for scene in project_package.scenes:
-            if self._scene_has_master_url(scene):
-                latest_master_scene = scene
-            elif latest_master_scene is not None and self._scene_reuses_previous_master_frame(scene):
-                self._copy_scene_master_reference(scene, latest_master_scene)
-            if self._scene_has_master_url(scene):
-                latest_master_scene = scene
             self._sync_scene_master_to_scene_tasks(project_package.scene_images, scene)
 
-    def _scene_has_master_url(self, scene: VideoScene) -> bool:
-        return bool(str(scene.scene_master_frame_url or "").strip())
-
-    def _scene_reuses_previous_master_frame(self, scene: VideoScene) -> bool:
-        contract = scene.scene_transition_contract
-        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
-        if mode in {
-            "same_space_progression",
-            "same_location_new_angle",
-            "time_jump_same_location",
-        }:
-            return True
-        return False
-
-    def _copy_scene_master_reference(self, scene: VideoScene, source_scene: VideoScene) -> None:
-        source_url = str(source_scene.scene_master_frame_url or "").strip()
-        source_path = str(source_scene.scene_master_frame_path or "").strip()
-        if not source_url and not source_path:
-            return
-        scene.scene_master_frame_url = source_url
-        scene.scene_master_frame_path = source_path or scene.scene_master_frame_path
-        scene.scene_master_frame_status = source_scene.scene_master_frame_status or "completed"
-        scene.scene_master_frame_error = ""
-        scene.scene_master_reference_images = []
-        scene.scene_master_request_info = {
-            "provider": "storyforge",
-            "variant": "reuse_previous_scene_master",
-            "payload": {
-                "reused_from_scene_id": source_scene.scene_id,
-                "scene_master_url": source_url,
-                "scene_master_path": source_path,
-            },
-            "reference_bindings": [],
-        }
+    def _previous_scene_by_id(self, scenes: list[VideoScene]) -> dict[str, VideoScene]:
+        previous_by_id: dict[str, VideoScene] = {}
+        previous_scene: VideoScene | None = None
+        for scene in scenes:
+            if scene.scene_id and previous_scene is not None:
+                previous_by_id[scene.scene_id] = previous_scene
+            previous_scene = scene
+        return previous_by_id
 
     def _create_image(
         self,
@@ -621,11 +602,41 @@ class SeedreamClient:
                     return str(item[key])
         raise RuntimeError(f"Unable to extract image URL from Seedream item: {item}")
 
-    def _download_image(self, client: httpx.Client, image_url: str, output_path: Path) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    def _download_image(self, client: httpx.Client, image_url: str, output_path: Path) -> Path:
         response = client.get(image_url)
         response.raise_for_status()
-        output_path.write_bytes(response.content)
+        resolved_output_path = self._resolve_download_output_path(output_path, response)
+        resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_output_path.write_bytes(response.content)
+        return resolved_output_path
+
+    def _resolve_download_output_path(self, output_path: Path, response: httpx.Response) -> Path:
+        suffix = self._image_suffix_from_response(response)
+        if not suffix:
+            return output_path
+        current_suffix = output_path.suffix.lower()
+        if suffix == ".jpg" and current_suffix in {".jpg", ".jpeg"}:
+            return output_path
+        if current_suffix == suffix:
+            return output_path
+        return output_path.with_suffix(suffix)
+
+    def _image_suffix_from_response(self, response: httpx.Response) -> str:
+        content = response.content
+        if content.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+            return ".webp"
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type in {"image/jpeg", "image/jpg"}:
+            return ".jpg"
+        if content_type == "image/png":
+            return ".png"
+        if content_type == "image/webp":
+            return ".webp"
+        return ""
 
     def _snapshot_last_request_info(
         self,

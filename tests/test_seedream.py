@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 from storyforge.core.config import SeedreamConfig  # noqa: E402
 from storyforge.domains.video.contracts import (  # noqa: E402
     CharacterImageTask,
+    SceneTransitionContract,
     SceneImageTask,
     SeedanceClipTask,
     SeedanceManifest,
@@ -645,6 +646,99 @@ class SeedreamClientTestCase(unittest.TestCase):
         self.assertEqual(package.scene_images[0].scene_master_frame_url, "https://example.com/new-scene-a-master.png")
         self.assertEqual(package.scene_images[0].scene_master_frame_status, "completed")
 
+    def test_same_space_scene_generates_new_master_with_previous_master_reference(self) -> None:
+        client = SeedreamClient(
+            SeedreamConfig(
+                auto_submit=True,
+                download_outputs=False,
+            )
+        )
+        client.api_key = "test-key"
+        package = VideoProjectPackage(
+            title="测试项目",
+            character_profiles=[],
+            character_images=[],
+            scenes=[
+                VideoScene(
+                    scene_id="scene-a",
+                    chapter_number=1,
+                    title="场景A",
+                    summary="测试",
+                    scene_anchor="场景A",
+                    involved_characters=[],
+                    segments=[],
+                    scene_master_frame_prompt="场景A母图",
+                    scene_master_frame_path="scene-a_master.png",
+                ),
+                VideoScene(
+                    scene_id="scene-b",
+                    chapter_number=1,
+                    title="场景B",
+                    summary="测试",
+                    scene_anchor="场景B",
+                    involved_characters=[],
+                    segments=[],
+                    scene_master_frame_prompt="场景B母图",
+                    scene_master_frame_path="scene-b_master.png",
+                    scene_transition_contract=SceneTransitionContract(
+                        previous_scene_id="scene-a",
+                        transition_mode="direct_continue",
+                        scene_spatial_continuity_mode="same_space_progression",
+                    ),
+                ),
+            ],
+            segments=[],
+            scene_images=[
+                SceneImageTask(
+                    segment_id="seg-a",
+                    scene_id="scene-a",
+                    scene_title="场景A",
+                    scene_master_frame_prompt="场景A母图",
+                    scene_master_frame_path="scene-a_master.png",
+                    reference_images=[],
+                    provider="seedream-4.5",
+                ),
+                SceneImageTask(
+                    segment_id="seg-b",
+                    scene_id="scene-b",
+                    scene_title="场景B",
+                    scene_master_frame_prompt="场景B母图",
+                    scene_master_frame_path="scene-b_master.png",
+                    reference_images=[],
+                    provider="seedream-4.5",
+                ),
+            ],
+            seedance_manifest=SeedanceManifest(
+                title="测试 manifest",
+                model="doubao-seedance-2-0-260128",
+                base_url="",
+                clips=[],
+            ),
+        )
+
+        with patch.object(
+            client,
+            "_create_image",
+            side_effect=[
+                "https://example.com/scene-a-master.png",
+                "https://example.com/scene-b-master.png",
+            ],
+        ) as create_image:
+            report = client.generate_scene_master_frames(package, force_submit=True)
+
+        self.assertTrue(report.submitted)
+        self.assertEqual(report.generated_count, 2)
+        self.assertEqual(create_image.call_count, 2)
+        self.assertEqual(create_image.call_args_list[0].kwargs["reference_images"], [])
+        self.assertEqual(
+            create_image.call_args_list[1].kwargs["reference_images"],
+            ["https://example.com/scene-a-master.png"],
+        )
+        self.assertEqual(package.scenes[1].scene_master_frame_url, "https://example.com/scene-b-master.png")
+        self.assertEqual(package.scenes[1].scene_master_frame_path, "scene-b_master.png")
+        self.assertEqual(package.scene_images[1].scene_master_frame_url, "https://example.com/scene-b-master.png")
+        self.assertEqual(package.scene_images[1].reference_images, ["https://example.com/scene-a-master.png"])
+
     def test_create_image_falls_back_from_image_to_reference_images_payload(self) -> None:
         client = SeedreamClient(
             SeedreamConfig(
@@ -835,6 +929,25 @@ class SeedreamClientTestCase(unittest.TestCase):
             self.assertEqual(task.candidate_generated_url, "https://example.com/new.png")
             self.assertTrue(Path(task.candidate_output_path).exists())
             self.assertEqual(output_path.read_bytes(), b"old-image")
+
+    def test_download_image_uses_actual_image_suffix(self) -> None:
+        client = SeedreamClient(SeedreamConfig(auto_submit=True, download_outputs=True))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "林屿_sheet.png"
+            response = httpx.Response(
+                200,
+                content=b"\xff\xd8\xff\xe0jpeg-bytes",
+                headers={"content-type": "image/png"},
+                request=httpx.Request("GET", "https://example.com/linyu"),
+            )
+            http_client = Mock()
+            http_client.get.return_value = response
+
+            downloaded_path = client._download_image(http_client, "https://example.com/linyu", output_path)
+
+            self.assertEqual(downloaded_path, output_path.with_suffix(".jpg"))
+            self.assertFalse(output_path.exists())
+            self.assertEqual(downloaded_path.read_bytes(), b"\xff\xd8\xff\xe0jpeg-bytes")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from urllib.parse import quote
 
 from storyforge.core.config import AppConfig
 from storyforge.core.io import read_json, to_jsonable, write_json
 from storyforge.domains.novel.contracts import NovelPackage
-from storyforge.domains.video.contracts import SceneImageTask, SeedanceClipTask, SeedanceManifest, VideoSegment
+from storyforge.domains.video.contracts import (
+    CharacterImageTask,
+    SceneImageTask,
+    SeedanceClipTask,
+    SeedanceManifest,
+    VideoScene,
+    VideoSegment,
+)
 from storyforge.domains.video.service import NovelToVideoService
 from storyforge.integrations.llm import build_agent_backend
 from storyforge.integrations.ffmpeg_adapter import (
     concat_manifest_clips,
 )
 from storyforge.integrations.seedance import SeedanceClient
-from storyforge.integrations.seedream import SeedreamClient
+from storyforge.integrations.gpt_image import GPTImageClient
+from storyforge.integrations.seedream import SeedreamClient, SeedreamExecutionReport
 from storyforge.pipelines.continuity import write_continuity_report
 from storyforge.pipelines.video_models import (
     CharacterImagePipelineResult,
@@ -33,6 +43,15 @@ from storyforge.pipelines.video_support import (
     resolve_rendered_manifest_clips,
     resolve_selected_manifest_clips,
     validate_manifest_ready_for_video,
+)
+from storyforge.pipelines.video_reference_sync import (
+    apply_previous_scene_master_reference as _apply_previous_scene_master_reference,
+    reset_copied_previous_scene_master as _reset_copied_previous_scene_master,
+    resolve_selected_segment_ids as _resolve_selected_segment_ids,
+    sync_cross_scene_reused_master_frames as _sync_cross_scene_reused_master_frames,
+    sync_scene_master_references as _sync_scene_master_references,
+    sync_seedance_tail_frame_handoffs as _sync_seedance_tail_frame_handoffs,
+    sync_v2_seedance_references as _sync_v2_seedance_references,
 )
 
 
@@ -57,15 +76,33 @@ def run_character_image_pipeline(
     use_llm: bool = True,
     submit_characters: bool = True,
     character_name: str | None = None,
+    image_model: str | None = None,
+    image_size: str | None = None,
+    image_aspect_ratio: str | None = None,
 ) -> CharacterImagePipelineResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     planning = load_video_planning_artifacts(output_dir)
-    seedream_client = SeedreamClient(config.seedream)
-    character_execution = seedream_client.generate_character_images(
-        planning.project_package,
-        force_submit=submit_characters,
-        character_names={character_name.strip()} if character_name and character_name.strip() else None,
-    )
+    resolved_model = _resolve_image_model(config, image_model)
+    resolved_size = str(image_size or config.seedream.image_size or "2K").strip() or "2K"
+    resolved_aspect_ratio = str(image_aspect_ratio or config.video.aspect_ratio or "16:9").strip() or "16:9"
+    selected_character_names = {character_name.strip()} if character_name and character_name.strip() else None
+    if resolved_model == config.gpt_image.model:
+        character_execution = _generate_character_images_with_gpt(
+            planning.project_package.character_images,
+            config=config,
+            project_root=project_root,
+            force_submit=submit_characters,
+            character_names=selected_character_names,
+            image_size=resolved_size,
+            aspect_ratio=resolved_aspect_ratio,
+        )
+    else:
+        seedream_client = SeedreamClient(replace(config.seedream, image_size=resolved_size))
+        character_execution = seedream_client.generate_character_images(
+            planning.project_package,
+            force_submit=submit_characters,
+            character_names=selected_character_names,
+        )
     character_execution_path = planning.output_dir / "seedream_character_execution.json"
 
     write_json(planning.character_images_path, planning.project_package.character_images)
@@ -102,11 +139,16 @@ def run_scene_image_pipeline(
     llm_provider: str | None = None,
     llm_model: str | None = None,
     segment_ids: set[str] | None = None,
+    image_model: str | None = None,
+    image_size: str | None = None,
+    image_aspect_ratio: str | None = None,
 ) -> SceneImagePipelineResult:
     output_dir = output_root or (project_root / config.paths.output_dir)
     planning = load_video_planning_artifacts(output_dir)
-    seedream_client = SeedreamClient(config.seedream)
     character_execution_path = output_dir / "seedream_character_execution.json"
+    resolved_model = _resolve_image_model(config, image_model)
+    resolved_size = str(image_size or config.seedream.image_size or "2K").strip() or "2K"
+    resolved_aspect_ratio = str(image_aspect_ratio or config.video.aspect_ratio or "16:9").strip() or "16:9"
     selected_scene_ids = {scene_id} if scene_id else None
     selected_segment_ids = _resolve_selected_segment_ids(
         planning.project_package,
@@ -119,21 +161,29 @@ def run_scene_image_pipeline(
         if scene_id is None
         else {scene_id}
     )
-    if master_only:
+    if resolved_model == config.gpt_image.model:
+        scene_execution = _generate_scene_master_frames_with_gpt(
+            planning.project_package.scenes,
+            planning.project_package.scene_images,
+            config=config,
+            project_root=project_root,
+            force_submit=submit_scenes,
+            scene_ids=selected_scene_ids,
+            force_regenerate=master_only,
+            image_size=resolved_size,
+            aspect_ratio=resolved_aspect_ratio,
+        )
+    else:
+        seedream_client = SeedreamClient(replace(config.seedream, image_size=resolved_size))
         scene_execution = seedream_client.generate_scene_master_frames(
             planning.project_package,
             force_submit=submit_scenes,
             scene_ids=selected_scene_ids,
-            force_regenerate=True,
+            force_regenerate=master_only,
         )
+    if master_only:
         combined_execution = scene_execution
     else:
-        scene_execution = seedream_client.generate_scene_master_frames(
-            planning.project_package,
-            force_submit=submit_scenes,
-            scene_ids=selected_scene_ids,
-            force_regenerate=False,
-        )
         character_execution = read_seedream_execution_report(character_execution_path)
         combined_execution = merge_seedream_execution_reports(character_execution, scene_execution)
 
@@ -184,6 +234,292 @@ def run_scene_image_pipeline(
         manifest=merged_manifest,
         seedream_execution=combined_execution,
     )
+
+
+def _generate_character_images_with_gpt(
+    tasks: list[CharacterImageTask],
+    *,
+    config: AppConfig,
+    project_root: Path,
+    force_submit: bool,
+    character_names: set[str] | None,
+    image_size: str,
+    aspect_ratio: str,
+) -> SeedreamExecutionReport:
+    target_tasks = _select_character_image_tasks(tasks, character_names)
+    if not force_submit:
+        return SeedreamExecutionReport(
+            submitted=False,
+            generated_count=0,
+            failed_count=0,
+            note="GPT Image 2 character image submission skipped.",
+        )
+
+    generated_count = 0
+    failed_count = 0
+    client = GPTImageClient(config.gpt_image)
+    for task in target_tasks:
+        task.provider = config.gpt_image.model
+        task.status = "running"
+        try:
+            has_current_image = bool(str(task.generated_url or "").strip()) or Path(task.output_path).is_file()
+            output_path = (
+                _candidate_character_image_path(_image_output_path_for_gpt(Path(task.output_path), config))
+                if has_current_image
+                else _image_output_path_for_gpt(Path(task.output_path), config)
+            )
+            image_result = client.generate_single_image(
+                mode="text_to_image",
+                prompt=task.prompt,
+                reference_images=[],
+                aspect_ratio=aspect_ratio,
+                output_size=image_size,
+                output_path=output_path,
+            )
+            generated_url = image_result.image_url or _build_output_file_url(config, project_root, output_path)
+            if has_current_image:
+                task.candidate_generated_url = generated_url
+                task.candidate_output_path = str(output_path)
+                task.status = "candidate_ready"
+            else:
+                task.output_path = str(output_path)
+                task.generated_url = generated_url
+                task.candidate_generated_url = ""
+                task.candidate_output_path = ""
+                task.status = "completed"
+            task.request_info = image_result.request_info
+            task.error = ""
+            generated_count += 1
+        except Exception as exc:
+            task.status = "failed"
+            task.error = str(exc)
+            failed_count += 1
+    return SeedreamExecutionReport(
+        submitted=True,
+        generated_count=generated_count,
+        failed_count=failed_count,
+        note=(
+            "GPT Image 2 character image tasks executed successfully."
+            if failed_count == 0
+            else "GPT Image 2 character image generation completed with partial failures."
+        ),
+    )
+
+
+def _generate_scene_master_frames_with_gpt(
+    scenes: list[VideoScene],
+    scene_tasks: list[SceneImageTask],
+    *,
+    config: AppConfig,
+    project_root: Path,
+    force_submit: bool,
+    scene_ids: set[str] | None,
+    force_regenerate: bool,
+    image_size: str,
+    aspect_ratio: str,
+) -> SeedreamExecutionReport:
+    target_scene_ids = {scene_id for scene_id in (scene_ids or set()) if scene_id}
+    target_scenes = [scene for scene in scenes if not target_scene_ids or scene.scene_id in target_scene_ids]
+    if not force_submit:
+        return SeedreamExecutionReport(
+            submitted=False,
+            generated_count=0,
+            failed_count=0,
+            note="GPT Image 2 scene master submission skipped.",
+        )
+
+    scene_task_by_scene = _best_scene_task_by_scene(scene_tasks)
+    previous_scene_by_id = _previous_scene_by_id(scenes)
+    generated_count = 0
+    failed_count = 0
+    client = GPTImageClient(config.gpt_image)
+    for scene in target_scenes:
+        _apply_previous_scene_master_reference(scene, previous_scene_by_id.get(scene.scene_id))
+        _reset_copied_previous_scene_master(scene, previous_scene_by_id.get(scene.scene_id))
+        task = scene_task_by_scene.get(scene.scene_id)
+        previous_url = scene.scene_master_frame_url
+        if not force_regenerate and scene.scene_master_frame_url and scene.scene_master_frame_status == "completed":
+            if task is not None:
+                task.provider = config.gpt_image.model
+            continue
+        scene.scene_master_frame_status = "running"
+        scene.scene_master_frame_error = ""
+        if task is not None:
+            task.provider = config.gpt_image.model
+            task.scene_master_frame_status = "running"
+            task.status = "running"
+            task.error = ""
+        try:
+            output_path_text = scene.scene_master_frame_path or (task.scene_master_frame_path if task is not None else "")
+            if not output_path_text:
+                raise ValueError(f"{scene.scene_id} 缺少场景母图输出路径。")
+            output_path = _image_output_path_for_gpt(Path(output_path_text), config)
+            reference_images = list(scene.scene_master_reference_images or [])
+            image_result = client.generate_single_image(
+                mode="image_to_image" if reference_images else "text_to_image",
+                prompt=scene.scene_master_frame_prompt,
+                reference_images=reference_images,
+                aspect_ratio=aspect_ratio,
+                output_size=image_size,
+                output_path=output_path,
+            )
+            generated_url = image_result.image_url or _build_output_file_url(config, project_root, output_path)
+            scene.scene_master_frame_path = str(output_path)
+            scene.scene_master_frame_url = generated_url
+            scene.scene_master_frame_status = "completed"
+            scene.scene_master_request_info = {
+                **image_result.request_info,
+                "reference_bindings": _scene_master_reference_bindings(reference_images),
+            }
+            if task is not None:
+                task.scene_master_frame_path = str(output_path)
+                task.scene_master_frame_url = generated_url
+                task.scene_master_frame_status = "completed"
+                task.status = "completed"
+                task.error = ""
+            generated_count += 1
+        except Exception as exc:
+            scene.scene_master_frame_status = "failed"
+            scene.scene_master_frame_error = str(exc)
+            if not previous_url:
+                scene.scene_master_frame_url = ""
+            if task is not None:
+                task.scene_master_frame_status = "failed"
+                task.scene_master_frame_error = str(exc)
+                task.status = "failed"
+                task.error = str(exc)
+            failed_count += 1
+    _sync_gpt_scene_tasks_from_scenes(scenes, scene_tasks, config.gpt_image.model)
+    return SeedreamExecutionReport(
+        submitted=True,
+        generated_count=generated_count,
+        failed_count=failed_count,
+        note=(
+            "GPT Image 2 scene master frame tasks executed successfully."
+            if failed_count == 0
+            else "GPT Image 2 scene master frame generation completed with partial failures."
+        ),
+    )
+
+
+def _previous_scene_by_id(scenes: list[VideoScene]) -> dict[str, VideoScene]:
+    previous_by_id: dict[str, VideoScene] = {}
+    previous_scene: VideoScene | None = None
+    for scene in scenes:
+        if scene.scene_id and previous_scene is not None:
+            previous_by_id[scene.scene_id] = previous_scene
+        previous_scene = scene
+    return previous_by_id
+
+
+def _select_character_image_tasks(
+    tasks: list[CharacterImageTask],
+    character_names: set[str] | None,
+) -> list[CharacterImageTask]:
+    if not character_names:
+        return list(tasks)
+    selected_tasks = [task for task in tasks if task.character_name in character_names]
+    missing_names = sorted(character_names - {task.character_name for task in selected_tasks})
+    if missing_names:
+        raise ValueError(
+            "Requested characters are not present in character_image_manifest.json: "
+            + ", ".join(missing_names)
+        )
+    return selected_tasks
+
+
+def _resolve_image_model(config: AppConfig, raw_model: str | None) -> str:
+    model = str(raw_model or "").strip()
+    if not model:
+        return config.seedream.model
+    if model in {"gpt-image-2", config.gpt_image.model}:
+        return config.gpt_image.model
+    if model in {"seedream", "seedream-4.5", config.seedream.model}:
+        return config.seedream.model
+    raise ValueError(f"生图模型只支持 {config.gpt_image.model} 或 {config.seedream.model}。")
+
+
+def _image_output_path_for_gpt(path: Path, config: AppConfig) -> Path:
+    suffix = str(config.gpt_image.output_format or "png").strip().lower()
+    if suffix == "jpeg":
+        suffix = "jpg"
+    if suffix not in {"png", "jpg", "webp"}:
+        suffix = "png"
+    return path.with_suffix(f".{suffix}")
+
+
+def _candidate_character_image_path(output_path: Path) -> Path:
+    candidate_dir = output_path.parent / "_candidates"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    return candidate_dir / output_path.name
+
+
+def _build_output_file_url(config: AppConfig, project_root: Path, path: Path) -> str:
+    if not path.exists():
+        return ""
+    output_root = (project_root / config.paths.output_dir).resolve()
+    resolved_path = path.resolve()
+    try:
+        relative_path = resolved_path.relative_to(output_root)
+    except ValueError:
+        return ""
+    encoded_path = "/".join(quote(part) for part in relative_path.parts)
+    return f"/outputs/{encoded_path}?v={int(resolved_path.stat().st_mtime_ns)}"
+
+
+def _best_scene_task_by_scene(scene_tasks: list[SceneImageTask]) -> dict[str, SceneImageTask]:
+    best_by_scene: dict[str, SceneImageTask] = {}
+    for task in scene_tasks:
+        if not task.scene_id:
+            continue
+        current = best_by_scene.get(task.scene_id)
+        if current is None or _scene_task_score(task) > _scene_task_score(current):
+            best_by_scene[task.scene_id] = task
+    return best_by_scene
+
+
+def _scene_task_score(task: SceneImageTask) -> tuple[int, int]:
+    status = str(task.scene_master_frame_status or task.status or "").lower()
+    return (
+        2 if status == "completed" else 1 if status == "running" else 0,
+        1 if task.scene_master_frame_url else 0,
+    )
+
+
+def _scene_master_reference_bindings(reference_images: list[str]) -> list[dict[str, str]]:
+    return [
+        {
+            "label": f"图片{index}",
+            "kind": "previous_scene_master",
+            "description": "上一场场景母图参考，仅用于同一空间或同地点连续性。",
+            "url": url,
+        }
+        for index, url in enumerate(reference_images, start=1)
+    ]
+
+
+def _sync_gpt_scene_tasks_from_scenes(
+    scenes: list[VideoScene],
+    scene_tasks: list[SceneImageTask],
+    provider: str,
+) -> None:
+    scene_by_id = {scene.scene_id: scene for scene in scenes if scene.scene_id}
+    for task in scene_tasks:
+        scene = scene_by_id.get(task.scene_id)
+        if scene is None:
+            continue
+        task.provider = provider
+        if scene.scene_master_frame_path:
+            task.scene_master_frame_path = scene.scene_master_frame_path
+        if scene.scene_master_frame_url:
+            task.scene_master_frame_url = scene.scene_master_frame_url
+        task.scene_master_frame_status = scene.scene_master_frame_status or task.scene_master_frame_status
+        task.scene_master_frame_error = scene.scene_master_frame_error or task.scene_master_frame_error
+        if scene.scene_master_frame_status == "completed":
+            task.status = "completed"
+        elif scene.scene_master_frame_status == "failed":
+            task.status = "failed"
+            task.error = scene.scene_master_frame_error
 
 
 def run_segment_continuity_repair_pipeline(
@@ -556,173 +892,6 @@ def run_video_render_pipeline(
     )
 
 
-def _sync_v2_seedance_references(manifest: SeedanceManifest, project_package: object) -> None:
-    scene_images = list(getattr(project_package, "scene_images", []) or [])
-    _sync_cross_scene_reused_master_frames(
-        list(getattr(project_package, "scenes", []) or []),
-        scene_images,
-    )
-    _sync_scene_master_references(scene_images, manifest)
-    scene_by_segment = {item.segment_id: item for item in scene_images}
-    scene_by_id = _best_scene_master_task_by_scene(scene_images)
-    scene_contract_by_id = {
-        getattr(scene, "scene_id", ""): scene
-        for scene in getattr(project_package, "scenes", []) or []
-        if getattr(scene, "scene_id", "")
-    }
-    character_url_by_path = {
-        item.output_path: item.generated_url
-        for item in getattr(project_package, "character_images", [])
-        if getattr(item, "output_path", "") and getattr(item, "generated_url", "")
-    }
-    character_url_by_name = {
-        item.character_name: item.generated_url
-        for item in getattr(project_package, "character_images", [])
-        if getattr(item, "character_name", "") and getattr(item, "generated_url", "")
-    }
-    for clip in manifest.clips:
-        scene_task = scene_by_segment.get(clip.segment_id) or scene_by_id.get(clip.scene_id)
-        if scene_task is not None:
-            clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
-            clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
-        scene_contract = scene_contract_by_id.get(clip.scene_id)
-        if scene_contract is not None:
-            clip.scene_master_url = clip.scene_master_url or getattr(scene_contract, "scene_master_frame_url", "")
-            clip.scene_master_path = clip.scene_master_path or getattr(scene_contract, "scene_master_frame_path", "")
-        resolved_character_urls = [
-            character_url_by_path.get(path, "")
-            for path in clip.character_image_paths
-        ]
-        if not any(resolved_character_urls):
-            resolved_character_urls = [
-                character_url_by_name.get(name, "")
-                for name in clip.visible_characters
-            ]
-        resolved_character_urls = [url for url in resolved_character_urls if url]
-        if resolved_character_urls:
-            clip.character_image_urls = resolved_character_urls
-
-
-def _sync_cross_scene_reused_master_frames(
-    scenes: list[object],
-    scene_images: list[SceneImageTask],
-) -> None:
-    latest_master_scene: object | None = None
-    for scene in scenes:
-        if not getattr(scene, "scene_id", ""):
-            continue
-        if _scene_has_master_url(scene):
-            latest_master_scene = scene
-        elif latest_master_scene is not None and _scene_reuses_previous_master_frame(scene):
-            _copy_scene_master_reference(scene, latest_master_scene)
-        if _scene_has_master_url(scene):
-            latest_master_scene = scene
-    scene_by_id = {
-        getattr(scene, "scene_id", ""): scene
-        for scene in scenes
-        if getattr(scene, "scene_id", "")
-    }
-    for task in scene_images:
-        scene = scene_by_id.get(task.scene_id)
-        if scene is None:
-            continue
-        task.scene_master_frame_url = task.scene_master_frame_url or getattr(scene, "scene_master_frame_url", "")
-        task.scene_master_frame_path = task.scene_master_frame_path or getattr(scene, "scene_master_frame_path", "")
-        task.scene_master_frame_status = _prefer_nondefault_status(
-            task.scene_master_frame_status,
-            getattr(scene, "scene_master_frame_status", ""),
-        )
-        if getattr(scene, "scene_master_frame_url", ""):
-            task.status = _prefer_nondefault_status(task.status, "completed")
-
-
-def _scene_has_master_url(scene: object) -> bool:
-    return bool(str(getattr(scene, "scene_master_frame_url", "") or "").strip())
-
-
-def _scene_reuses_previous_master_frame(scene: object) -> bool:
-    contract = getattr(scene, "scene_transition_contract", None)
-    mode = str(getattr(contract, "scene_spatial_continuity_mode", "") or "").strip().lower()
-    if mode in {
-        "same_space_progression",
-        "same_location_new_angle",
-        "time_jump_same_location",
-    }:
-        return True
-    return False
-
-
-def _copy_scene_master_reference(scene: object, source_scene: object) -> None:
-    source_url = str(getattr(source_scene, "scene_master_frame_url", "") or "").strip()
-    source_path = str(getattr(source_scene, "scene_master_frame_path", "") or "").strip()
-    if not source_url and not source_path:
-        return
-    scene.scene_master_frame_url = source_url
-    scene.scene_master_frame_path = source_path or str(getattr(scene, "scene_master_frame_path", "") or "")
-    scene.scene_master_frame_status = getattr(source_scene, "scene_master_frame_status", "") or "completed"
-    scene.scene_master_frame_error = ""
-    scene.scene_master_reference_images = []
-    scene.scene_master_request_info = {
-        "provider": "storyforge",
-        "variant": "reuse_previous_scene_master",
-        "payload": {
-            "reused_from_scene_id": getattr(source_scene, "scene_id", ""),
-            "scene_master_url": source_url,
-            "scene_master_path": source_path,
-        },
-        "reference_bindings": [],
-    }
-
-
-def _sync_scene_master_references(
-    scene_images: list[SceneImageTask],
-    manifest: SeedanceManifest | None = None,
-) -> None:
-    scene_master_by_scene = _best_scene_master_task_by_scene(scene_images)
-    for task in scene_images:
-        scene_master = scene_master_by_scene.get(task.scene_id)
-        if scene_master is None or scene_master is task:
-            continue
-        task.scene_master_frame_url = task.scene_master_frame_url or scene_master.scene_master_frame_url
-        task.scene_master_frame_path = task.scene_master_frame_path or scene_master.scene_master_frame_path
-        task.scene_master_frame_status = _prefer_nondefault_status(
-            task.scene_master_frame_status,
-            scene_master.scene_master_frame_status,
-        )
-        task.status = _prefer_nondefault_status(task.status, scene_master.status)
-    if manifest is None:
-        return
-    task_by_segment = {task.segment_id: task for task in scene_images}
-    for clip in manifest.clips:
-        scene_task = task_by_segment.get(clip.segment_id) or scene_master_by_scene.get(clip.scene_id)
-        if scene_task is None:
-            continue
-        clip.scene_master_url = clip.scene_master_url or scene_task.scene_master_frame_url
-        clip.scene_master_path = clip.scene_master_path or scene_task.scene_master_frame_path
-
-
-def _best_scene_master_task_by_scene(
-    scene_images: list[SceneImageTask],
-) -> dict[str, SceneImageTask]:
-    best_by_scene: dict[str, SceneImageTask] = {}
-    for task in scene_images:
-        scene_id = str(task.scene_id or "").strip()
-        if not scene_id:
-            continue
-        current = best_by_scene.get(scene_id)
-        if current is None or _scene_master_task_score(task) > _scene_master_task_score(current):
-            best_by_scene[scene_id] = task
-    return best_by_scene
-
-
-def _scene_master_task_score(task: SceneImageTask) -> tuple[int, int, int]:
-    return (
-        1 if task.scene_master_frame_url else 0,
-        1 if task.scene_master_frame_path else 0,
-        1 if task.scene_master_frame_status not in {"", "planned"} else 0,
-    )
-
-
 def run_video_merge_pipeline(
     config: AppConfig,
     project_root: Path,
@@ -789,70 +958,6 @@ __all__ = [
     "run_scene_image_pipeline",
     "run_video_render_pipeline",
 ]
-
-
-def _resolve_selected_segment_ids(
-    project_package,
-    *,
-    segment_id: str | None = None,
-    scene_id: str | None = None,
-    segment_ids: set[str] | None = None,
-) -> set[str] | None:
-    resolved_segment_id = str(segment_id or "").strip()
-    resolved_scene_id = str(scene_id or "").strip()
-    resolved_segment_ids = {
-        str(item).strip()
-        for item in (segment_ids or set())
-        if str(item).strip()
-    }
-    if resolved_segment_id and resolved_scene_id:
-        raise ValueError("segment_id and scene_id cannot be used together.")
-    if resolved_segment_id and resolved_segment_ids:
-        raise ValueError("segment_id and segment_ids cannot be used together.")
-    if resolved_segment_id:
-        return {resolved_segment_id}
-    if resolved_segment_ids and not resolved_scene_id:
-        known_segment_ids = {
-            str(segment.segment_id)
-            for segment in project_package.segments
-            if str(segment.segment_id).strip()
-        }
-        unknown_segment_ids = sorted(resolved_segment_ids - known_segment_ids)
-        if unknown_segment_ids:
-            raise ValueError(
-                "Requested segment_ids are not present in segment_plan.json: "
-                + ", ".join(unknown_segment_ids)
-            )
-        return resolved_segment_ids
-    if not resolved_scene_id:
-        return None
-
-    target_scene = next(
-        (scene for scene in project_package.scenes if scene.scene_id == resolved_scene_id),
-        None,
-    )
-    if target_scene is None:
-        raise ValueError(
-            f"Requested scene is not present in scene_plan.json: {resolved_scene_id}"
-        )
-    selected_segment_ids = {
-        str(segment.segment_id)
-        for segment in target_scene.segments
-        if str(segment.segment_id).strip()
-    }
-    if not selected_segment_ids:
-        raise ValueError(
-            f"Requested scene has no executable segments in scene_plan.json: {resolved_scene_id}"
-        )
-    if not resolved_segment_ids:
-        return selected_segment_ids
-    unknown_segment_ids = sorted(resolved_segment_ids - selected_segment_ids)
-    if unknown_segment_ids:
-        raise ValueError(
-            "Requested segment_ids do not belong to the selected scene: "
-            + ", ".join(unknown_segment_ids)
-        )
-    return resolved_segment_ids
 
 
 def _load_scene_image_tasks_from_path(path: Path) -> list[SceneImageTask]:
@@ -960,55 +1065,6 @@ def _merge_seedance_manifest_for_write(
     )
 
 
-def _sync_seedance_tail_frame_handoffs(
-    manifest: SeedanceManifest,
-    scenes: list[object] | None = None,
-) -> None:
-    previous_by_scene: dict[str, SeedanceClipTask] = {}
-    scene_by_id = {
-        getattr(scene, "scene_id", ""): scene
-        for scene in (scenes or [])
-        if getattr(scene, "scene_id", "")
-    }
-    previous_timeline_clip: SeedanceClipTask | None = None
-    for clip in manifest.clips:
-        scene_id = str(clip.scene_id or "").strip()
-        previous_clip: SeedanceClipTask | None = None
-        if clip.previous_clip_segment_id:
-            previous_clip = next(
-                (item for item in manifest.clips if item.segment_id == clip.previous_clip_segment_id),
-                None,
-            )
-        elif scene_id:
-            previous_clip = previous_by_scene.get(scene_id)
-            if previous_clip is None and _scene_allows_previous_tail_frame(scene_by_id.get(scene_id)):
-                previous_clip = previous_timeline_clip
-        if previous_clip is not None:
-            if previous_clip.segment_id and not clip.previous_clip_segment_id:
-                clip.previous_clip_segment_id = previous_clip.segment_id
-            if previous_clip.video_url and not clip.previous_clip_video_url:
-                clip.previous_clip_video_url = previous_clip.video_url
-            if previous_clip.last_frame_url and not clip.first_frame_url:
-                clip.first_frame_url = previous_clip.last_frame_url
-        if scene_id:
-            previous_by_scene[scene_id] = clip
-        previous_timeline_clip = clip
-
-
-def _scene_allows_previous_tail_frame(scene: object | None) -> bool:
-    if scene is None:
-        return False
-    contract = getattr(scene, "scene_transition_contract", None)
-    mode = str(getattr(contract, "scene_spatial_continuity_mode", "") or "").strip().lower()
-    if mode in {
-        "same_space_progression",
-        "same_location_new_angle",
-        "time_jump_same_location",
-    }:
-        return True
-    return False
-
-
 def _should_prefer_current_segment_state(
     *,
     segment_id: str,
@@ -1075,6 +1131,12 @@ def _merge_seedance_clip_task(
         "scene_id",
         "scene_master_path",
         "scene_master_url",
+        "video_mode",
+        "storyboard_grid_path",
+        "storyboard_grid_url",
+        "storyboard_grid_prompt",
+        "storyboard_grid_status",
+        "storyboard_grid_error",
         "submitted_prompt",
         "submit_variant",
         "remote_task_id",
@@ -1091,15 +1153,24 @@ def _merge_seedance_clip_task(
             payload.get(field_name, ""),
             fallback_payload.get(field_name, ""),
         )
+    payload["storyboard_grid_status"] = _prefer_nondefault_status(
+        payload.get("storyboard_grid_status", "planned"),
+        fallback_payload.get("storyboard_grid_status", "planned"),
+    )
     for field_name in (
         "character_image_paths",
         "character_image_urls",
         "visible_characters",
+        "storyboard_scene_descriptions",
     ):
         payload[field_name] = _prefer_nonempty_list(
             payload.get(field_name, []),
             fallback_payload.get(field_name, []),
         )
+    payload["storyboard_grid_request_info"] = _prefer_nonempty_mapping(
+        payload.get("storyboard_grid_request_info", {}),
+        fallback_payload.get("storyboard_grid_request_info", {}),
+    )
     payload["motion_contract"] = _prefer_nonempty_mapping(
         payload.get("motion_contract", {}),
         fallback_payload.get("motion_contract", {}),
@@ -1468,6 +1539,13 @@ def _reset_seedance_clip_task_for_repair(task: SeedanceClipTask) -> SeedanceClip
         "last_frame_url": "",
         "last_frame_path": "",
         "downloaded_path": "",
+        "storyboard_grid_path": "",
+        "storyboard_grid_url": "",
+        "storyboard_grid_prompt": "",
+        "storyboard_grid_status": "planned",
+        "storyboard_grid_error": "",
+        "storyboard_grid_request_info": {},
+        "storyboard_scene_descriptions": [],
         "error": "",
     }
     return SeedanceClipTask.from_dict(payload)

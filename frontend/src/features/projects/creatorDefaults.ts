@@ -9,7 +9,14 @@ export const initialBrief: StoryBrief = {
   chapter_count: 1,
   total_word_target: 1800,
   must_include: ["傍晚花园", "误以为被叫", "最终表白"],
-  style_keywords: ["大学", "青春", "小清新", "电影感"]
+  style_keywords: ["大学", "青春", "小清新", "电影感"],
+  video_mode: "grid_storyboard",
+  image_model: "doubao-seedream-4-5-251128",
+  image_size: "2K",
+  image_aspect_ratio: "16:9",
+  storyboard_image_model: "doubao-seedream-4-5-251128",
+  storyboard_size: "2K",
+  storyboard_aspect_ratio: "16:9"
 };
 
 export function createNovelRequest(brief: StoryBrief): CreateNovelRequest {

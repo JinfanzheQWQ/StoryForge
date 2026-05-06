@@ -74,6 +74,7 @@ class NovelToVideoService(
         character_image_provider: str = "prompt-only",
         scene_image_provider: str = "prompt-only",
         seedance_config: SeedanceConfig | None = None,
+        video_mode: str = "direct_motion",
         structured_retry_attempts: int = 3,
     ) -> None:
         self.backend = backend or UnavailableAgentBackend(
@@ -85,6 +86,7 @@ class NovelToVideoService(
         self.character_image_provider = character_image_provider
         self.scene_image_provider = scene_image_provider
         self.seedance_config = seedance_config or SeedanceConfig()
+        self.video_mode = video_mode if video_mode in {"direct_motion", "grid_storyboard"} else "direct_motion"
         self.structured_retry_attempts = max(1, structured_retry_attempts)
         self._planner_warnings: list[str] = []
 
@@ -266,7 +268,6 @@ class NovelToVideoService(
         if repair_continuity:
             plan = self._repair_continuity_links(plan)
         return plan
-
 
 
 

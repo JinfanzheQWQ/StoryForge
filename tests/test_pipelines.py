@@ -18,7 +18,7 @@ if str(TESTS) not in sys.path:
     sys.path.insert(0, str(TESTS))
 
 from storyforge.core.config import AppConfig  # noqa: E402
-from storyforge.core.io import read_json, to_jsonable  # noqa: E402
+from storyforge.core.io import read_json, to_jsonable, write_json  # noqa: E402
 from storyforge.agents.base import PromptRequest  # noqa: E402
 from storyforge.domains.novel.contracts import CharacterProfile, StoryBrief, StorySourcePackage  # noqa: E402
 from storyforge.domains.novel.errors import (  # noqa: E402
@@ -55,6 +55,7 @@ from storyforge.domains.video.schemas import (  # noqa: E402
 )  # noqa: E402
 from storyforge.domains.video.service import NovelToVideoService  # noqa: E402
 from storyforge.integrations.seedance import SeedanceExecutionReport  # noqa: E402
+from storyforge.integrations.gpt_image import GPTImageResult  # noqa: E402
 from storyforge.integrations.seedream import SeedreamExecutionReport  # noqa: E402
 from storyforge.pipelines.continuity import write_continuity_report  # noqa: E402
 from storyforge.pipelines.story_pipeline import (  # noqa: E402
@@ -62,6 +63,7 @@ from storyforge.pipelines.story_pipeline import (  # noqa: E402
     run_story_scene_structure_pipeline,
     run_story_segment_contracts_pipeline,
 )
+from storyforge.pipelines.storyboard_grid import run_storyboard_grid_pipeline  # noqa: E402
 from storyforge.pipelines.story_files import clear_story_derived_artifacts  # noqa: E402
 from storyforge.pipelines.video_pipeline import (  # noqa: E402
     _merge_seedance_manifest_for_write,
@@ -2166,6 +2168,156 @@ class PipelineTestCase(unittest.TestCase):
         self.assertIsNone(render_result.full_story_path)
         self.assertEqual(len(render_result.rendered_clip_paths), len(render_result.manifest.clips))
 
+    @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_character_images")
+    @patch("storyforge.pipelines.video_pipeline.GPTImageClient.generate_single_image")
+    def test_character_image_pipeline_uses_selected_gpt_model(
+        self,
+        mock_generate_gpt_image,
+        mock_generate_seedream_characters,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        def fake_generate_single_image(*, output_path, **kwargs):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"gpt-character")
+            return GPTImageResult(
+                submitted=True,
+                image_url="https://gpt.example/character.png",
+                output_path=str(output_path),
+                request_info={"provider": "kie", "payload": {"prompt": kwargs["prompt"]}},
+                note="GPT Image 2 generation completed.",
+            )
+
+        mock_generate_gpt_image.side_effect = fake_generate_single_image
+
+        character_result = run_character_image_pipeline(
+            novel_package=story_result.novel_package,
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_characters=True,
+            image_model=config.gpt_image.model,
+            image_size="1K",
+            image_aspect_ratio="1:1",
+        )
+
+        mock_generate_seedream_characters.assert_not_called()
+        self.assertTrue(mock_generate_gpt_image.called)
+        manifest = read_json(character_result.character_images_path)
+        self.assertTrue(manifest)
+        self.assertTrue(all(item["provider"] == config.gpt_image.model for item in manifest))
+        self.assertTrue(all(item["generated_url"].startswith("https://gpt.example/") for item in manifest))
+        self.assertTrue(all(Path(item["output_path"]).suffix == ".png" for item in manifest))
+
+    @patch("storyforge.pipelines.video_pipeline.SeedreamClient.generate_scene_master_frames")
+    @patch("storyforge.pipelines.video_pipeline.GPTImageClient.generate_single_image")
+    def test_scene_image_pipeline_uses_selected_gpt_model(
+        self,
+        mock_generate_gpt_image,
+        mock_generate_seedream_scenes,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+
+        def fake_generate_single_image(*, output_path, **kwargs):
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"gpt-scene")
+            return GPTImageResult(
+                submitted=True,
+                image_url="https://gpt.example/scene.png",
+                output_path=str(output_path),
+                request_info={"provider": "kie", "payload": {"prompt": kwargs["prompt"]}},
+                note="GPT Image 2 generation completed.",
+            )
+
+        mock_generate_gpt_image.side_effect = fake_generate_single_image
+
+        scene_result = run_scene_image_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            submit_scenes=True,
+            image_model=config.gpt_image.model,
+            image_size="1K",
+            image_aspect_ratio="1:1",
+        )
+
+        mock_generate_seedream_scenes.assert_not_called()
+        self.assertTrue(mock_generate_gpt_image.called)
+        scene_manifest = read_json(scene_result.scene_images_path)
+        scene_plan = read_json(scene_result.scene_plan_path)["scenes"]
+        self.assertTrue(scene_manifest)
+        self.assertTrue(all(item["provider"] == config.gpt_image.model for item in scene_manifest))
+        self.assertTrue(all(item["scene_master_frame_url"].startswith("https://gpt.example/") for item in scene_manifest))
+        self.assertTrue(all(item["scene_master_frame_url"].startswith("https://gpt.example/") for item in scene_plan))
+
+    @patch("storyforge.pipelines.storyboard_grid.SeedreamClient.generate_single_image")
+    def test_storyboard_grid_prompt_is_persisted_before_image_generation(
+        self,
+        mock_generate_single_image,
+    ) -> None:
+        config = AppConfig.load(ROOT / "configs/storyforge.example.toml")
+        brief = StoryBrief.from_file(ROOT / "examples/briefs/demo_story.toml")
+        story_result = self._run_story_pipeline(
+            brief=brief,
+            config=config,
+            project_root=ROOT,
+            output_root=self.temp_root,
+        )
+        mark_scene_images_completed(story_result)
+        character_manifest = read_json(story_result.character_images_path)
+        for item in character_manifest:
+            item["status"] = "completed"
+            item["generated_url"] = f"https://example.com/{Path(item['output_path']).name}"
+        write_json(story_result.character_images_path, character_manifest)
+        segment_id = str(read_json(story_result.segment_plan_path)[0]["segment_id"])
+
+        def fake_generate_single_image(**kwargs):
+            storyboard_manifest = read_json(story_result.output_dir / "storyboard_grid_manifest.json")
+            self.assertEqual(len(storyboard_manifest), 1)
+            self.assertEqual(storyboard_manifest[0]["segment_id"], segment_id)
+            self.assertEqual(storyboard_manifest[0]["status"], "running")
+            self.assertIn("九宫格分镜图", storyboard_manifest[0]["prompt"])
+            seedance_manifest = read_json(story_result.seedance_manifest_path)
+            clip = next(item for item in seedance_manifest["clips"] if item["segment_id"] == segment_id)
+            self.assertEqual(clip["video_mode"], "grid_storyboard")
+            self.assertEqual(clip["storyboard_grid_status"], "running")
+            self.assertIn("九宫格分镜图", clip["storyboard_grid_prompt"])
+            return SimpleNamespace(
+                image_url="https://example.com/storyboard.png",
+                request_info={"provider": "seedream", "payload": {"prompt": kwargs["prompt"]}},
+            )
+
+        mock_generate_single_image.side_effect = fake_generate_single_image
+
+        result = run_storyboard_grid_pipeline(
+            config=config,
+            project_root=ROOT,
+            output_root=story_result.output_dir,
+            segment_id=segment_id,
+            image_model=config.seedream.model,
+            image_size="2K",
+            aspect_ratio="16:9",
+        )
+
+        self.assertEqual(result.generated_count, 1)
+        completed_manifest = read_json(result.storyboard_manifest_path)
+        self.assertEqual(completed_manifest[0]["status"], "completed")
+        self.assertIn("九宫格分镜图", completed_manifest[0]["prompt"])
+
     @patch("storyforge.pipelines.video_pipeline.concat_manifest_clips")
     def test_run_video_merge_pipeline_concats_rendered_clips_on_demand(
         self,
@@ -3377,7 +3529,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertEqual(clip.scene_master_url, "https://example.com/scene-contract-master.png")
         validate_manifest_ready_for_video(manifest, {"ch01-sc02-seg01"})
 
-    def test_seedance_reference_sync_reuses_previous_scene_master_for_same_space_scene(self) -> None:
+    def test_seedance_reference_sync_does_not_copy_previous_master_across_same_space_scene(self) -> None:
         previous_scene = VideoScene(
             scene_id="ch01-sc01",
             chapter_number=1,
@@ -3451,10 +3603,9 @@ class PipelineTestCase(unittest.TestCase):
 
         _sync_v2_seedance_references(manifest, project_package)
 
-        self.assertEqual(current_scene.scene_master_frame_url, "https://example.com/sc01-master.png")
-        self.assertEqual(current_task.scene_master_frame_url, "https://example.com/sc01-master.png")
-        self.assertEqual(manifest.clips[0].scene_master_url, "https://example.com/sc01-master.png")
-        validate_manifest_ready_for_video(manifest, {"ch01-sc02-seg01"})
+        self.assertEqual(current_scene.scene_master_frame_url, "")
+        self.assertEqual(current_task.scene_master_frame_url, "")
+        self.assertEqual(manifest.clips[0].scene_master_url, "")
 
     def test_seedance_reference_sync_does_not_reuse_previous_master_for_adjacent_uncertain_scene(self) -> None:
         previous_scene = VideoScene(
@@ -7077,7 +7228,7 @@ class PipelineTestCase(unittest.TestCase):
         self.assertNotIn("林屿", prompt)
         self.assertNotIn("苏晚", prompt)
 
-    def test_same_space_scene_reuses_previous_scene_master_frame(self) -> None:
+    def test_same_space_scene_uses_previous_master_as_reference_without_reusing_url(self) -> None:
         service = NovelToVideoService()
         previous_scene = VideoScene(
             scene_id="ch01-sc01",
@@ -7143,12 +7294,13 @@ class PipelineTestCase(unittest.TestCase):
             str(self.temp_root),
         )
 
-        self.assertEqual(tasks[0].scene_master_frame_url, "https://example.com/ch01-sc01-master.png")
-        self.assertEqual(tasks[0].scene_master_frame_path, "/tmp/ch01-sc01_master.png")
-        self.assertEqual(tasks[0].scene_master_frame_status, "completed")
-        self.assertEqual(tasks[0].reference_images, [])
-        self.assertEqual(next_scene.scene_master_frame_url, "https://example.com/ch01-sc01-master.png")
-        self.assertEqual(next_scene.scene_master_request_info["variant"], "reuse_previous_scene_master")
+        self.assertEqual(tasks[0].scene_master_frame_url, "")
+        self.assertEqual(tasks[0].scene_master_frame_path, "/tmp/ch01-sc02_master.png")
+        self.assertEqual(tasks[0].scene_master_frame_status, "planned")
+        self.assertEqual(tasks[0].reference_images, ["https://example.com/ch01-sc01-master.png"])
+        self.assertEqual(next_scene.scene_master_frame_url, "")
+        self.assertEqual(next_scene.scene_master_reference_images, ["https://example.com/ch01-sc01-master.png"])
+        self.assertEqual(next_scene.scene_master_request_info, {})
 
     def test_scene_master_reference_images_do_not_fallback_to_local_previous_path(self) -> None:
         service = NovelToVideoService()

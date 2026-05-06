@@ -427,6 +427,57 @@ class SceneImageTask:
 
 
 @dataclass(slots=True)
+class StoryboardGridTask:
+    segment_id: str
+    scene_id: str
+    title: str
+    prompt: str
+    output_path: str
+    model: str
+    size: str = "2K"
+    aspect_ratio: str = "16:9"
+    reference_images: list[str] = field(default_factory=list)
+    reference_bindings: list[dict[str, str]] = field(default_factory=list)
+    scene_descriptions: list[str] = field(default_factory=list)
+    uses_previous_last_frame: bool = False
+    previous_last_frame_url: str = ""
+    status: str = "planned"
+    generated_url: str = ""
+    request_info: dict[str, Any] = field(default_factory=dict)
+    error: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "StoryboardGridTask":
+        return cls(
+            segment_id=str(raw["segment_id"]),
+            scene_id=str(raw.get("scene_id", "") or ""),
+            title=str(raw.get("title", "") or ""),
+            prompt=str(raw.get("prompt", "") or ""),
+            output_path=str(raw.get("output_path", "") or ""),
+            model=str(raw.get("model", "") or ""),
+            size=str(raw.get("size", "2K") or "2K"),
+            aspect_ratio=str(raw.get("aspect_ratio", "16:9") or "16:9"),
+            reference_images=list(raw.get("reference_images", []) or []),
+            reference_bindings=[
+                dict(item)
+                for item in raw.get("reference_bindings", [])
+                if isinstance(item, dict)
+            ],
+            scene_descriptions=[
+                str(item).strip()
+                for item in raw.get("scene_descriptions", [])
+                if str(item).strip()
+            ],
+            uses_previous_last_frame=bool(raw.get("uses_previous_last_frame", False)),
+            previous_last_frame_url=str(raw.get("previous_last_frame_url", "") or ""),
+            status=str(raw.get("status", "planned") or "planned"),
+            generated_url=str(raw.get("generated_url", "") or ""),
+            request_info=dict(raw.get("request_info", {}) or {}),
+            error=str(raw.get("error", "") or ""),
+        )
+
+
+@dataclass(slots=True)
 class SeedanceClipTask:
     segment_id: str
     title: str
@@ -447,6 +498,14 @@ class SeedanceClipTask:
     character_image_paths: list[str] = field(default_factory=list)
     character_image_urls: list[str] = field(default_factory=list)
     visible_characters: list[str] = field(default_factory=list)
+    video_mode: str = "direct_motion"
+    storyboard_grid_path: str = ""
+    storyboard_grid_url: str = ""
+    storyboard_grid_prompt: str = ""
+    storyboard_grid_status: str = "planned"
+    storyboard_grid_error: str = ""
+    storyboard_grid_request_info: dict[str, Any] = field(default_factory=dict)
+    storyboard_scene_descriptions: list[str] = field(default_factory=list)
     motion_contract: dict[str, Any] = field(default_factory=dict)
     submitted_prompt: str = ""
     submit_variant: str = ""
@@ -483,6 +542,14 @@ class SeedanceClipTask:
             character_image_paths=list(raw.get("character_image_paths", [])),
             character_image_urls=list(raw.get("character_image_urls", [])),
             visible_characters=list(raw.get("visible_characters", [])),
+            video_mode=raw.get("video_mode", "direct_motion"),
+            storyboard_grid_path=raw.get("storyboard_grid_path", ""),
+            storyboard_grid_url=raw.get("storyboard_grid_url", ""),
+            storyboard_grid_prompt=raw.get("storyboard_grid_prompt", ""),
+            storyboard_grid_status=raw.get("storyboard_grid_status", "planned"),
+            storyboard_grid_error=raw.get("storyboard_grid_error", ""),
+            storyboard_grid_request_info=dict(raw.get("storyboard_grid_request_info", {}) or {}),
+            storyboard_scene_descriptions=list(raw.get("storyboard_scene_descriptions", [])),
             motion_contract=dict(raw.get("motion_contract", {}) or {}),
             submitted_prompt=raw.get("submitted_prompt", ""),
             submit_variant=raw.get("submit_variant", ""),

@@ -77,7 +77,7 @@ class GPTImageClient:
                 output_path=output_path,
             )
             if self.config.download_outputs and output_path is not None and image_url:
-                self._download_image(client, image_url, output_path)
+                output_path = self._download_image(client, image_url, output_path)
 
         return GPTImageResult(
             submitted=True,
@@ -402,16 +402,46 @@ class GPTImageClient:
             raise ValueError(f"GPT Image 2 的 {resolution} 分辨率只支持这些比例：{supported}。")
         return size
 
-    def _download_image(self, client: httpx.Client, image_url: str, output_path: Path) -> None:
+    def _download_image(self, client: httpx.Client, image_url: str, output_path: Path) -> Path:
         if image_url.startswith("data:image/"):
             _, encoded = image_url.split(",", 1)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_bytes(base64.b64decode(encoded))
-            return
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+            return output_path
         response = client.get(image_url)
         response.raise_for_status()
-        output_path.write_bytes(response.content)
+        resolved_output_path = self._resolve_download_output_path(output_path, response)
+        resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_output_path.write_bytes(response.content)
+        return resolved_output_path
+
+    def _resolve_download_output_path(self, output_path: Path, response: httpx.Response) -> Path:
+        suffix = self._image_suffix_from_response(response)
+        if not suffix:
+            return output_path
+        current_suffix = output_path.suffix.lower()
+        if suffix == ".jpg" and current_suffix in {".jpg", ".jpeg"}:
+            return output_path
+        if current_suffix == suffix:
+            return output_path
+        return output_path.with_suffix(suffix)
+
+    def _image_suffix_from_response(self, response: httpx.Response) -> str:
+        content = response.content
+        if content.startswith(b"\xff\xd8\xff"):
+            return ".jpg"
+        if content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+            return ".webp"
+        content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type in {"image/jpeg", "image/jpg"}:
+            return ".jpg"
+        if content_type == "image/png":
+            return ".png"
+        if content_type == "image/webp":
+            return ".webp"
+        return ""
 
     def _snapshot_request_info(self, reference_images: list[str]) -> dict[str, Any]:
         snapshot = copy.deepcopy(self._last_request_info)

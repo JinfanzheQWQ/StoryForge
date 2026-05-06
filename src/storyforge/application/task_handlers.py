@@ -40,6 +40,7 @@ from storyforge.pipelines.video_pipeline import (
     run_video_render_pipeline,
 )
 from storyforge.pipelines.video_planning import load_segment_contract_progress
+from storyforge.pipelines.storyboard_grid import run_storyboard_grid_pipeline
 
 if TYPE_CHECKING:
     from storyforge.application.task_runtime import TaskExecutionContext
@@ -95,6 +96,14 @@ def run_story_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str,
         "continuity_review_mode": continuity_review_mode,
         "seedream_watermark": seedream_watermark,
         "seedance_watermark": seedance_watermark,
+        **_resolve_image_generation_options(
+            task,
+            default_image_model=context.config.seedream.model,
+        ),
+        **_resolve_video_mode_options(
+            task,
+            default_storyboard_model=context.config.seedream.model,
+        ),
     }
     context.project_store.mark_task_result(task.project_id, task.task_id, response)
     return response
@@ -303,6 +312,11 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         seedream_watermark=seedream_watermark,
         seedance_watermark=seedance_watermark,
     )
+    video_options = _resolve_video_mode_options(
+        task,
+        source_task,
+        default_storyboard_model=context.config.seedream.model,
+    )
     partial_response = _start_stage_task(
         context,
         task,
@@ -337,6 +351,7 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
             llm_provider=llm_provider,
             llm_model=llm_model,
             continuity_review_mode=continuity_review_mode,
+            video_mode=str(video_options["video_mode"]),
             output_root=output_dir,
             resume_from_progress=resume_from_progress,
             progress_callback=progress_callback,
@@ -366,6 +381,8 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         "scene_images_path": str(segment_contracts_result.scene_images_path),
         "seedance_manifest_path": str(segment_contracts_result.seedance_manifest_path),
         "pipeline_stage": "segment_contracts_completed",
+        "storyboard_grid_manifest_path": str(output_dir / "storyboard_grid_manifest.json"),
+        **video_options,
         **_build_segment_contract_progress_result(
             output_dir,
             segment_contracts_result.video_planning.segment_contract_progress,
@@ -380,6 +397,85 @@ def run_segment_contracts_task(context: TaskExecutionContext, task: QueuedTask) 
         result=response,
         mode="propagate",
     )
+    return response
+
+
+def run_storyboards_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str, object]:
+    source_task = resolve_source_task(context, task)
+    output_dir = resolve_output_dir(source_task)
+    pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    continuity_review_mode = resolve_continuity_review_mode(task, source_task)
+    seedream_watermark = resolve_media_watermark(
+        task,
+        target="seedream",
+        source_task=source_task,
+        default=context.config.seedream.watermark,
+    )
+    seedance_watermark = resolve_media_watermark(
+        task,
+        target="seedance",
+        source_task=source_task,
+        default=context.config.seedance.watermark,
+    )
+    segment_id = str(task.payload.get("segment_id", "")).strip() or None
+    scene_id = str(task.payload.get("scene_id", "")).strip() or None
+    video_options = _resolve_video_mode_options(
+        task,
+        source_task,
+        default_storyboard_model=context.config.seedream.model,
+    )
+    partial_response = _start_stage_task(
+        context,
+        task,
+        source_task=source_task,
+        output_dir=output_dir,
+        task_stage="storyboards",
+        pipeline_stage="storyboard_grid_generation_started",
+        pipeline_root_task_id=pipeline_root_task_id,
+        continuity_review_mode=continuity_review_mode,
+        seedream_watermark=seedream_watermark,
+        seedance_watermark=seedance_watermark,
+    )
+
+    storyboard_result = run_storyboard_grid_pipeline(
+        config=context.config,
+        project_root=context.project_root,
+        output_root=output_dir,
+        segment_id=segment_id,
+        scene_id=scene_id,
+        image_model=str(video_options["storyboard_image_model"]),
+        image_size=str(video_options["storyboard_size"]),
+        aspect_ratio=str(video_options["storyboard_aspect_ratio"]),
+        seedream_watermark=seedream_watermark,
+    )
+    response = {
+        **partial_response,
+        "story_title": resolve_story_title(source_task),
+        "output_dir": str(storyboard_result.output_dir),
+        "character_bible_path": str(storyboard_result.character_bible_path),
+        "character_images_path": str(storyboard_result.character_images_path),
+        "scene_plan_path": str(storyboard_result.scene_plan_path),
+        "segment_plan_path": str(storyboard_result.segment_plan_path),
+        "scene_images_path": str(storyboard_result.scene_images_path),
+        "seedance_manifest_path": str(storyboard_result.manifest_path),
+        "storyboard_grid_manifest_path": str(storyboard_result.storyboard_manifest_path),
+        "pipeline_stage": "storyboard_grid_completed",
+        "storyboard_generated_count": storyboard_result.generated_count,
+        "storyboard_failed_count": storyboard_result.failed_count,
+        "storyboard_note": storyboard_result.note,
+        **video_options,
+    }
+    response = _build_completed_stage_response(response)
+    _store_stage_result(context, task, response)
+    _sync_stage_result(
+        context,
+        task=task,
+        pipeline_root_task_id=pipeline_root_task_id,
+        result=response,
+        mode="refresh" if (segment_id or scene_id) else "propagate",
+    )
+    if storyboard_result.failed_count:
+        raise TaskExecutionError(storyboard_result.note, result=response)
     return response
 
 
@@ -402,6 +498,11 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         default=context.config.seedance.watermark,
     )
     pipeline_root_task_id = resolve_pipeline_root_task_id(source_task)
+    image_options = _resolve_image_generation_options(
+        task,
+        source_task,
+        default_image_model=context.config.seedream.model,
+    )
     runtime_config = _build_runtime_config(
         context.config,
         seedream_watermark=seedream_watermark,
@@ -428,6 +529,9 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         use_llm=use_llm,
         submit_characters=True,
         character_name=str(task.payload.get("character_name", "") or "").strip() or None,
+        image_model=str(image_options["image_model"]),
+        image_size=str(image_options["image_size"]),
+        image_aspect_ratio=str(image_options["image_aspect_ratio"]),
     )
     response = {
         **partial_response,
@@ -442,6 +546,7 @@ def run_characters_task(context: TaskExecutionContext, task: QueuedTask) -> dict
         "character_seedream_execution_path": str(character_result.character_seedream_execution_path),
         "seedream_execution_path": str(character_result.seedream_execution_path),
         "pipeline_stage": "characters_completed",
+        **image_options,
     }
     response = _build_completed_stage_response(response)
     _store_stage_result(context, task, response)
@@ -479,6 +584,11 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
     segment_id = str(task.payload.get("segment_id", "")).strip() or None
     scene_id = str(task.payload.get("scene_id", "")).strip() or None
     master_only = bool(task.payload.get("master_only", False))
+    image_options = _resolve_image_generation_options(
+        task,
+        source_task,
+        default_image_model=context.config.seedream.model,
+    )
     runtime_config = _build_runtime_config(
         context.config,
         seedream_watermark=seedream_watermark,
@@ -508,6 +618,9 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         continuity_review_mode=continuity_review_mode,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        image_model=str(image_options["image_model"]),
+        image_size=str(image_options["image_size"]),
+        image_aspect_ratio=str(image_options["image_aspect_ratio"]),
     )
     response = {
         **partial_response,
@@ -523,6 +636,7 @@ def run_scenes_task(context: TaskExecutionContext, task: QueuedTask) -> dict[str
         "scene_seedream_execution_path": str(scene_result.scene_seedream_execution_path),
         "seedream_execution_path": str(scene_result.seedream_execution_path),
         "pipeline_stage": "scene_master_frame_completed",
+        **image_options,
     }
     response = _build_completed_stage_response(response)
     _store_stage_result(context, task, response)
@@ -1045,6 +1159,114 @@ def _build_runtime_config(
     )
 
 
+def _resolve_video_mode_options(
+    task: QueuedTask,
+    source_task=None,
+    default_storyboard_model: str = "doubao-seedream-4-5-251128",
+) -> dict[str, object]:
+    payloads = [
+        getattr(task, "payload", None),
+        getattr(task, "result", None),
+        getattr(source_task, "payload", None) if source_task is not None else None,
+        getattr(source_task, "result", None) if source_task is not None else None,
+    ]
+    video_mode = _resolve_option_from_payloads(payloads, "video_mode")
+    if not video_mode:
+        video_mode = _resolve_option_from_brief(payloads, "video_mode")
+    if video_mode not in {"direct_motion", "grid_storyboard"}:
+        video_mode = "direct_motion"
+
+    storyboard_image_model = (
+        _resolve_option_from_payloads(payloads, "storyboard_image_model")
+        or _resolve_option_from_brief(payloads, "storyboard_image_model")
+        or _resolve_option_from_payloads(payloads, "image_model")
+        or _resolve_option_from_brief(payloads, "image_model")
+        or default_storyboard_model
+    )
+    storyboard_size = (
+        _resolve_option_from_payloads(payloads, "storyboard_size")
+        or _resolve_option_from_brief(payloads, "storyboard_size")
+        or _resolve_option_from_payloads(payloads, "image_size")
+        or _resolve_option_from_brief(payloads, "image_size")
+        or "2K"
+    )
+    storyboard_aspect_ratio = (
+        _resolve_option_from_payloads(payloads, "storyboard_aspect_ratio")
+        or _resolve_option_from_brief(payloads, "storyboard_aspect_ratio")
+        or _resolve_option_from_payloads(payloads, "image_aspect_ratio")
+        or _resolve_option_from_brief(payloads, "image_aspect_ratio")
+        or "16:9"
+    )
+    return {
+        "video_mode": video_mode,
+        "storyboard_image_model": storyboard_image_model,
+        "storyboard_size": storyboard_size,
+        "storyboard_aspect_ratio": storyboard_aspect_ratio,
+    }
+
+
+def _resolve_image_generation_options(
+    task: QueuedTask,
+    source_task=None,
+    default_image_model: str = "doubao-seedream-4-5-251128",
+) -> dict[str, object]:
+    payloads = [
+        getattr(task, "payload", None),
+        getattr(task, "result", None),
+        getattr(source_task, "payload", None) if source_task is not None else None,
+        getattr(source_task, "result", None) if source_task is not None else None,
+    ]
+    image_model = (
+        _resolve_option_from_payloads(payloads, "image_model")
+        or _resolve_option_from_payloads(payloads, "storyboard_image_model")
+        or _resolve_option_from_brief(payloads, "image_model")
+        or _resolve_option_from_brief(payloads, "storyboard_image_model")
+        or default_image_model
+    )
+    image_size = (
+        _resolve_option_from_payloads(payloads, "image_size")
+        or _resolve_option_from_payloads(payloads, "storyboard_size")
+        or _resolve_option_from_brief(payloads, "image_size")
+        or _resolve_option_from_brief(payloads, "storyboard_size")
+        or "2K"
+    )
+    image_aspect_ratio = (
+        _resolve_option_from_payloads(payloads, "image_aspect_ratio")
+        or _resolve_option_from_payloads(payloads, "storyboard_aspect_ratio")
+        or _resolve_option_from_brief(payloads, "image_aspect_ratio")
+        or _resolve_option_from_brief(payloads, "storyboard_aspect_ratio")
+        or "16:9"
+    )
+    return {
+        "image_model": image_model,
+        "image_size": image_size,
+        "image_aspect_ratio": image_aspect_ratio,
+    }
+
+
+def _resolve_option_from_payloads(payloads: list[object], key: str) -> str:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        value = str(payload.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _resolve_option_from_brief(payloads: list[object], key: str) -> str:
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        brief = payload.get("brief")
+        if not isinstance(brief, dict):
+            continue
+        value = str(brief.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def _start_stage_task(
     context: TaskExecutionContext,
     task: QueuedTask,
@@ -1069,6 +1291,20 @@ def _start_stage_task(
     response["continuity_review_mode"] = continuity_review_mode
     response["seedream_watermark"] = seedream_watermark
     response["seedance_watermark"] = seedance_watermark
+    response.update(
+        _resolve_image_generation_options(
+            task,
+            source_task,
+            default_image_model=context.config.seedream.model,
+        )
+    )
+    response.update(
+        _resolve_video_mode_options(
+            task,
+            source_task,
+            default_storyboard_model=context.config.seedream.model,
+        )
+    )
     persist_task_progress(context, task, response)
     return response
 
@@ -1154,6 +1390,7 @@ def _build_stage_response(
         response["novel_audit_path"] = str(source_task.result["novel_audit_path"])
     if source_task.result and source_task.result.get("scene_plan_path"):
         response["scene_plan_path"] = str(source_task.result["scene_plan_path"])
+    response["storyboard_grid_manifest_path"] = str(output_dir / "storyboard_grid_manifest.json")
     segment_id = str(task.payload.get("segment_id", "")).strip()
     if segment_id:
         response["segment_id"] = segment_id
@@ -1172,6 +1409,7 @@ def _build_stage_reset_fields(*, clear_character_assets: bool) -> dict[str, obje
         "segment_contract_progress_path": None,
         "segment_contract_progress": None,
         "scene_images_path": None,
+        "storyboard_grid_manifest_path": None,
         "seedream_execution_path": None,
         "scene_seedream_execution_path": None,
         "seedance_manifest_path": None,
@@ -1195,6 +1433,7 @@ def _build_segment_contract_output_paths(output_dir: Path) -> dict[str, object]:
         "segment_plan_path": str(output_dir / "segment_plan.json"),
         "segment_contract_progress_path": str(output_dir / "segment_contract_progress.json"),
         "scene_images_path": str(output_dir / "scene_image_manifest.json"),
+        "storyboard_grid_manifest_path": str(output_dir / "storyboard_grid_manifest.json"),
         "seedance_manifest_path": str(output_dir / "seedance_manifest.json"),
     }
 

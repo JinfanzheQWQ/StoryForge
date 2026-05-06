@@ -54,6 +54,7 @@ story_source
   -> segment_contracts
   -> character_images
   -> scene_master_frames
+  -> storyboard_grids
   -> segment_videos
   -> merged_video
 ```
@@ -89,15 +90,22 @@ chapter -> scene -> chunk -> segment
 - `domains/video/planning.py`：媒体任务构建和 manifest 装配。
 - `domains/video/repair.py`：连续性修复。
 
+Pipeline 辅助：
+
+- `pipelines/storyboard_grid.py`：九宫格分镜图生成、九宫格 Seedance prompt 构建和 manifest 同步。
+- `pipelines/video_reference_sync.py`：场景母图引用同步、跨 scene 母图参考、角色图 URL 补全、segment 范围选择和尾帧承接同步。
+
 ## 媒体任务
 
 独立生图任务使用 `image.generate`，通过 `/v1/images/generations` 提交，模型可选 `gpt-image-2` 或 `doubao-seedream-4-5-251128`。每次提交都会创建独立的生图项目记录承载任务和文件外键；保存前不出现在作品库，保存后成为可打开的生图作品。文生图不带参考图，图生图提交参考图 URL。GPT Image 2 和 Seedream 4.5 的尺寸选项由 `/v1/images/capabilities` 返回，Seedream 4.5 支持水印开关。输出写入 `outputs/images/{task_id}/generated.*`。
 
-角色图任务写入 `character_image_manifest.json`。它们只锁定人物身份和外观。
+角色图任务写入 `character_image_manifest.json`。它们只锁定人物身份和外观，提交时按 `image_model`、`image_size` 和 `image_aspect_ratio` 选择 GPT Image 2 或 Seedream 4.5。
 
-场景母图任务写入 `scene_image_manifest.json`。它们锁定环境，不包含人物和文字。
+场景母图任务写入 `scene_image_manifest.json`。它们锁定环境，不包含人物和文字，提交时按同一组生图参数选择模型。
 
-视频任务写入 `seedance_manifest.json`。每个 clip 对应一个 segment，包含场景母图、可选上一段尾帧、实际出镜角色图和 Seedance prompt。
+九宫格分镜任务写入 `storyboard_grid_manifest.json` 和 `assets/storyboards/`。每个九宫格对应一个 segment，输入来自场景母图、实际出镜角色图、segment timed beats 和对白，并按本次提交的生图参数选择模型。九宫格 prompt 固定展开格1到格9的起始、推进、结果关键帧；如果规划判断当前视频需要承接上一段，尾帧只进入九宫格模式的视频提交。
+
+视频任务写入 `seedance_manifest.json`。九宫格模式下，每个 clip 把九宫格图作为 `图片1`，需要承接时把上一段尾帧作为 `图片2` 和 `first_frame`。连续表演模式下，每个 clip 提交场景母图、可选上一段尾帧、实际出镜角色图和 Seedance prompt。
 
 合并任务读取已完成 clip，输出 `rendered/full_story.mp4`。
 
@@ -106,10 +114,10 @@ chapter -> scene -> chunk -> segment
 连续性由三层共同保证：
 
 - 规划层：scene transition contract 描述空间关系、承接动作、延续元素和禁止漂移。
-- 资源层：同一空间可复用场景母图；连续视频可提交上一段尾帧。
+- 资源层：同一 scene 内共用场景母图；跨 scene 同空间推进时参考上一场母图生成新母图；连续视频可提交上一段尾帧。
 - Prompt 层：提交 prompt 明确写出参考图用途、开场状态、推进过程和收束状态。
 
-只有明确属于同一空间推进的 scene 才继承母图或跨 scene 承接尾帧。新地点和空间关系不确定时按新场景处理。
+只有明确属于同一空间推进的 scene 才参考上一场母图或跨 scene 承接尾帧。新地点和空间关系不确定时按新场景处理。
 
 ## Artifact API
 
@@ -118,6 +126,7 @@ chapter -> scene -> chunk -> segment
 - 小说正文摘要。
 - scene 和 segment 蓝图。
 - 角色图、场景母图和视频资源。
+- 九宫格分镜图、九宫格 prompt、分场景描述和请求 payload。
 - motion plan 和媒体 prompt。
 - 提交请求、参考图绑定和请求摘要。
 - 连续性问题和失败原因。

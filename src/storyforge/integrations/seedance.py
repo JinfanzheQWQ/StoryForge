@@ -491,6 +491,11 @@ class SeedanceClient:
         self,
         clip: SeedanceClipTask,
     ) -> list[tuple[str, str]]:
+        if clip.video_mode == "grid_storyboard":
+            ordered_sources = [("storyboard_grid", clip.storyboard_grid_url)]
+            if clip.first_frame_url:
+                ordered_sources.append(("first_frame", clip.first_frame_url))
+            return self._dedupe_reference_bindings(ordered_sources)
         ordered_sources: list[tuple[str, str]] = []
         if clip.scene_master_url:
             ordered_sources.append(("scene_master", clip.scene_master_url))
@@ -523,6 +528,36 @@ class SeedanceClient:
         base_prompt = clip.prompt.strip()
         if not reference_bindings:
             return base_prompt
+
+        if clip.video_mode == "grid_storyboard":
+            has_first_frame = any(kind == "first_frame" for kind, _ in reference_bindings)
+            binding_lines = [
+                "参考图绑定（必须严格按本次提交的图片顺序理解）：",
+            ]
+            for index, (kind, _) in enumerate(reference_bindings, start=1):
+                label = f"图片{index}"
+                if kind == "storyboard_grid":
+                    binding_lines.append(
+                        f"- {label}：九宫格分镜图，是当前片段的主要视频参考图；从左到右、从上到下依次表示本段动作推进、角色状态、空间关系和收束画面。"
+                    )
+                elif kind == "first_frame":
+                    binding_lines.append(
+                        f"- {label}：上一段视频尾帧，是当前片段的开场时间锚点；0 秒开场必须先对齐这张图的构图、角色站位、朝向、动作停点和光线状态。"
+                    )
+            binding_lines.append("推进引用规则：")
+            if has_first_frame:
+                binding_lines.append(
+                    "- 当前片段开头必须先对齐图片2的尾帧状态，再按图片1九宫格的动作顺序、空间关系、镜头运动和收束状态自然推进。"
+                )
+                binding_lines.append(
+                    "- 图片2只约束开场瞬间，不能替代图片1的九宫格分镜；不要把尾帧扩写成新场景或打乱九宫格顺序。"
+                )
+            else:
+                binding_lines.append(
+                    "- 视频根据图片1的九宫格分镜图生成，画面、人物、道具、光线、镜头运动和对白节奏必须按文本中的场景时间描述与九宫格顺序自然推进。"
+                )
+            binding_lines.extend(["", base_prompt])
+            return "\n".join(line for line in binding_lines if line is not None)
 
         binding_lines: list[str] = ["参考图绑定（必须严格按本次提交的图片顺序理解）："]
         has_first_frame = any(kind == "first_frame" for kind, _ in reference_bindings)
@@ -581,6 +616,8 @@ class SeedanceClient:
                 description = "场景母图参考，用于锁定当前 scene 的环境、空间、光线、背景锚点和固定道具。"
             elif kind == "first_frame":
                 description = "上一段视频尾帧参考，用于锁定当前片段开头的构图、角色站位、动作停点和光线状态。"
+            elif kind == "storyboard_grid":
+                description = "九宫格分镜图参考，用于锁定当前片段的动作顺序、空间关系、镜头推进和收束状态。"
             elif kind.startswith("character"):
                 character_name = kind.partition(":")[2]
                 description = (
@@ -822,9 +859,10 @@ class SeedanceClient:
         self,
         clip: SeedanceClipTask,
     ) -> list[tuple[str, dict[str, Any], str, list[dict[str, str]]]]:
+        variant = "storyboard_grid" if clip.video_mode == "grid_storyboard" else "scene_character_motion"
         return [
             (
-                "scene_character_motion",
+                variant,
                 *self._build_payload_with_metadata(clip),
             )
         ]

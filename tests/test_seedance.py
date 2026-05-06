@@ -168,6 +168,81 @@ class SeedanceClientTestCase(unittest.TestCase):
         self.assertEqual([item["kind"] for item in bindings], ["scene_master", "first_frame", "character"])
         self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/seg01-last.png")
 
+    def test_grid_storyboard_payload_uses_storyboard_grid_and_tail_frame_reference(self) -> None:
+        client = SeedanceClient(SeedanceConfig(model="doubao-seedance-2-0-260128"))
+        clip = SeedanceClipTask(
+            segment_id="ch01-seg-grid",
+            scene_id="ch01-sc01",
+            title="九宫格",
+            prompt=(
+                "请根据图片1的九宫格分镜图生成中文剧情短视频片段，时长 8 秒。\n"
+                "时间分配：\n"
+                "场景1 (0-4秒): 林屿走向花径；对白：林屿：苏晚。\n"
+                "场景2 (4-8秒): 苏晚转身看向林屿。"
+            ),
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            scene_master_url="https://example.com/scene.png",
+            first_frame_url="https://example.com/last.png",
+            character_image_urls=["https://example.com/role.png"],
+            visible_characters=["林屿"],
+            video_mode="grid_storyboard",
+            storyboard_grid_url="https://example.com/grid.png",
+            storyboard_scene_descriptions=[
+                "场景1 (0-4秒): 林屿走向花径；对白：林屿：苏晚。",
+                "场景2 (4-8秒): 苏晚转身看向林屿。",
+            ],
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-seg-grid.mp4",
+        )
+
+        payload, resolved_prompt, bindings = client._build_payload_with_metadata(clip)
+
+        self.assertEqual(payload["first_frame"], "https://example.com/last.png")
+        self.assertIn("图片1：九宫格分镜图", resolved_prompt)
+        self.assertIn("图片2：上一段视频尾帧", resolved_prompt)
+        self.assertIn("先对齐图片2的尾帧状态", resolved_prompt)
+        self.assertNotIn("当前 scene 的场景母图", resolved_prompt)
+        self.assertEqual([item["kind"] for item in bindings], ["storyboard_grid", "first_frame"])
+        self.assertEqual(payload["content"][1]["image_url"]["url"], "https://example.com/grid.png")
+        self.assertEqual(payload["content"][2]["image_url"]["url"], "https://example.com/last.png")
+        self.assertEqual(len(payload["content"]), 3)
+
+    def test_grid_storyboard_payload_uses_only_storyboard_grid_when_tail_frame_is_absent(self) -> None:
+        client = SeedanceClient(SeedanceConfig(model="doubao-seedance-2-0-260128"))
+        clip = SeedanceClipTask(
+            segment_id="ch01-seg-grid",
+            scene_id="ch01-sc01",
+            title="九宫格",
+            prompt="请根据图片1的九宫格分镜图生成中文剧情短视频片段，时长 8 秒。",
+            narration="",
+            dialogue_lines=[],
+            subtitle_lines=[],
+            sound_effects=[],
+            music_direction="",
+            timed_beats=[],
+            video_mode="grid_storyboard",
+            storyboard_grid_url="https://example.com/grid.png",
+            duration_seconds=8,
+            aspect_ratio="16:9",
+            with_audio=True,
+            output_path="rendered/ch01-seg-grid.mp4",
+        )
+
+        payload, resolved_prompt, bindings = client._build_payload_with_metadata(clip)
+
+        self.assertNotIn("first_frame", payload)
+        self.assertIn("图片1：九宫格分镜图", resolved_prompt)
+        self.assertNotIn("图片2", resolved_prompt)
+        self.assertEqual([item["kind"] for item in bindings], ["storyboard_grid"])
+        self.assertEqual(len(payload["content"]), 2)
+
     def test_build_payload_without_references_stays_text_only(self) -> None:
         client = SeedanceClient(SeedanceConfig())
         clip = SeedanceClipTask(

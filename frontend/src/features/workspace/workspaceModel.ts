@@ -45,32 +45,52 @@ export type StageCompletionState = {
   charactersComplete: boolean;
   sceneStructureComplete: boolean;
   segmentContractsComplete: boolean;
+  segmentContractsFailed: boolean;
+  segmentContractsResumeReady: boolean;
 };
 
 export function getStageCompletionState({
   activeTaskStatus,
   activeTaskType,
-  characterCount,
+  charactersReady,
   hasSceneStructure,
-  plannedSegmentCount
+  plannedSegmentCount,
+  segmentContractProgress
 }: {
   activeTaskStatus?: string;
   activeTaskType?: string;
-  characterCount: number;
+  charactersReady: boolean;
   hasSceneStructure: boolean;
   plannedSegmentCount: number;
+  segmentContractProgress?: { resume_ready?: boolean; status?: string } | null;
 }): StageCompletionState {
   const completedTaskType = activeTaskStatus === "completed" ? normalizeTaskType(activeTaskType) : "";
+  const segmentProgressStatus = String(segmentContractProgress?.status || "").toLowerCase();
+  const segmentContractsFailed = segmentProgressStatus === "failed";
+  const segmentContractsInProgress = segmentProgressStatus === "queued" || segmentProgressStatus === "running";
   const segmentContractsComplete =
-    plannedSegmentCount > 0 || completedTaskType === "project.segment_contracts";
+    segmentProgressStatus === "completed" ||
+    completedTaskType === "project.segment_contracts" ||
+    (!segmentContractsFailed && !segmentContractsInProgress && plannedSegmentCount > 0);
   return {
-    charactersComplete: characterCount > 0 || completedTaskType === "project.characters",
+    charactersComplete: charactersReady || completedTaskType === "project.characters",
     sceneStructureComplete:
       hasSceneStructure ||
       segmentContractsComplete ||
       completedTaskType === "project.scene_structure",
-    segmentContractsComplete
+    segmentContractsComplete,
+    segmentContractsFailed,
+    segmentContractsResumeReady: Boolean(segmentContractProgress?.resume_ready)
   };
+}
+
+export function areCharacterImagesReady(characters: CharacterArtifactItem[]) {
+  if (!characters.length) return false;
+  return characters.some((item) => {
+    const status = String(item.status || "").toLowerCase();
+    if (["failed", "planned", "queued", "running"].includes(status)) return false;
+    return Boolean(String(item.url || "").trim());
+  });
 }
 
 export type SceneRow = {
@@ -104,7 +124,7 @@ export function resolveEditableSourceTaskId({
   fallbackTaskId?: string;
   tasks?: TaskRecord[];
 }) {
-  const taskList = tasks || [];
+  const taskList = preferActiveTask(tasks || [], activeTask);
   const visited = new Set<string>();
   const candidates = [
     readTaskString(activeTask, "source_task_id"),
@@ -119,6 +139,19 @@ export function resolveEditableSourceTaskId({
   }
 
   return taskList.find((task) => hasEditableStorySource(task))?.task_id || "";
+}
+
+export function resolveSourceTask({
+  activeTask,
+  sourceTaskId,
+  tasks
+}: {
+  activeTask?: TaskRecord;
+  sourceTaskId?: string;
+  tasks?: TaskRecord[];
+}) {
+  if (!sourceTaskId) return undefined;
+  return preferActiveTask(tasks || [], activeTask).find((task) => task.task_id === sourceTaskId);
 }
 
 export function hasEditableStorySource(task?: TaskRecord) {
@@ -225,6 +258,11 @@ function resolveEditableTaskCandidate(candidate: string | undefined, tasks: Task
   );
 }
 
+function preferActiveTask(tasks: TaskRecord[], activeTask?: TaskRecord) {
+  if (!activeTask) return tasks;
+  return [activeTask, ...tasks.filter((task) => task.task_id !== activeTask.task_id)];
+}
+
 function readTaskString(task: TaskRecord | undefined, key: string) {
   const resultValue = task?.result?.[key];
   if (typeof resultValue === "string" && resultValue.trim()) return resultValue.trim();
@@ -261,6 +299,7 @@ export function labelTaskOperation(taskType?: string, pendingStage?: StageTaskKi
   if (value === "segment-contracts" || value === "project.segment_contracts") return "生成分段合同";
   if (value === "characters" || value === "project.characters") return "生成角色图";
   if (value === "scenes" || value === "project.scenes") return "生成场景母图";
+  if (value === "storyboards" || value === "project.storyboards") return "生成九宫格分镜";
   if (value === "videos" || value === "project.videos") return "生成 / 合并视频";
   if (value === "project.continuity_repair") return "连续性修复";
   if (value === "project.continuity_repair_batch") return "批量连续性修复";
@@ -273,8 +312,47 @@ function normalizeTaskType(taskType?: string) {
   if (taskType === "segment-contracts" || taskType === "segment_contracts") return "project.segment_contracts";
   if (taskType === "characters") return "project.characters";
   if (taskType === "scenes") return "project.scenes";
+  if (taskType === "storyboards") return "project.storyboards";
   if (taskType === "videos") return "project.videos";
   return taskType || "";
+}
+
+export function resolveRestorableActiveTaskId({
+  latestTaskId,
+  routeTaskId,
+  submittedTaskId,
+  tasks
+}: {
+  latestTaskId?: string | null;
+  routeTaskId?: string;
+  submittedTaskId?: string;
+  tasks?: TaskRecord[];
+}) {
+  if (submittedTaskId) return submittedTaskId;
+  const runningTask = findLatestRunningStageTask(tasks || []);
+  if (runningTask) return runningTask.task_id;
+  return routeTaskId || latestTaskId || "";
+}
+
+export function sectionForTaskType(taskType?: string) {
+  const normalized = normalizeTaskType(taskType);
+  if (normalized === "project.scene_structure" || normalized === "project.segment_contracts") return "结构化信息";
+  if (normalized === "project.characters") return "角色图";
+  if (normalized === "project.scenes") return "场景母图";
+  if (normalized === "project.storyboards" || normalized === "project.videos") return "分段视频";
+  if (normalized === "project.novel") return "小说";
+  return "";
+}
+
+function findLatestRunningStageTask(tasks: TaskRecord[]) {
+  const runningTasks = tasks
+    .filter((task) => {
+      const status = String(task.status || "");
+      if (status !== "queued" && status !== "running") return false;
+      return Boolean(sectionForTaskType(task.task_type || task.stage));
+    })
+    .sort((left, right) => Date.parse(right.created_at || "") - Date.parse(left.created_at || ""));
+  return runningTasks[0];
 }
 
 export function selectSegment(segments: PlannedSegmentArtifact[], selectedSegmentId: string) {

@@ -56,6 +56,7 @@ export function CharacterWorkspace({
   const selectedCharacter = selectCharacter(characters, selectedCharacterName) || characters[0];
   const selectedName = selectedCharacter ? getCharacterName(selectedCharacter) : "";
   const hasCandidate = Boolean(selectedCharacter?.candidate_url);
+  const selectedStatus = selectedCharacter?.status || (selectedCharacter?.url ? "completed" : "queued");
   const persistedPrompt = selectedCharacter?.prompt || "";
   const promptChanged = promptDraft.trim() !== persistedPrompt.trim();
   const promptActionDisabled = !projectId || !activeTaskId || !selectedName || !promptDraft.trim() || promptMutation.isPending || isTaskBusy;
@@ -95,8 +96,8 @@ export function CharacterWorkspace({
           <strong>{selectedName || "未选择角色"}</strong>
           <p>{selectedCharacter?.consistency_notes || selectedCharacter?.prompt || "选择一个角色后，这里展示定妆图和稳定性信息。"}</p>
           <div className="asset-focus-meta">
-            <StatusPill status={selectedCharacter?.status || (selectedCharacter?.url ? "completed" : "queued")} />
-            <em>{selectedCharacter?.candidate_url ? "有新候选图待确认" : "正式图可用"}</em>
+            <StatusPill status={selectedStatus} />
+            <em>{labelCharacterImageAvailability(selectedCharacter, hasCandidate)}</em>
           </div>
         </div>
       </div>
@@ -198,4 +199,14 @@ export function CharacterWorkspace({
       </div>
     </section>
   );
+}
+
+function labelCharacterImageAvailability(character?: CharacterArtifactItem, hasCandidate = false) {
+  if (hasCandidate) return "有新候选图待确认";
+  const status = String(character?.status || "").toLowerCase();
+  if (status === "failed") return character?.error || "角色图生成失败";
+  if (status === "planned") return "角色图待生成";
+  if (status === "queued" || status === "running") return "角色图生成中";
+  if (character?.url) return "正式图已生成";
+  return "角色图待生成";
 }

@@ -151,6 +151,7 @@ def build_video_segment_contract_artifacts(
     llm_provider: str | None = None,
     llm_model: str | None = None,
     continuity_review_mode: str = "auto",
+    video_mode: str = "direct_motion",
     backend: AgentBackend | None = None,
     scene_structure_artifacts: VideoSceneStructureArtifacts | None = None,
     resume_from_progress: bool = False,
@@ -162,7 +163,7 @@ def build_video_segment_contract_artifacts(
         provider=llm_provider,
         model=llm_model,
     )
-    service = _build_video_service(config, resolved_backend)
+    service = _build_video_service(config, resolved_backend, video_mode=video_mode)
     output_dir = output_root or (project_root / config.paths.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = resolve_video_planning_paths(output_dir)
@@ -1310,6 +1311,7 @@ def _write_segment_contract_checkpoint(
         segment_contract_progress_path=paths.segment_contract_progress_path,
         scene_images_path=paths.scene_images_path,
         manifest_path=paths.manifest_path,
+        storyboard_manifest_path=paths.storyboard_manifest_path,
         project_package=project_package,
         manifest=manifest,
         segment_contract_progress=progress,
@@ -1325,6 +1327,7 @@ def build_video_planning_artifacts(
     llm_provider: str | None = None,
     llm_model: str | None = None,
     continuity_review_mode: str = "auto",
+    video_mode: str = "direct_motion",
     backend: AgentBackend | None = None,
 ) -> VideoPlanningArtifacts:
     scene_structure = build_video_scene_structure_artifacts(
@@ -1346,6 +1349,7 @@ def build_video_planning_artifacts(
         llm_provider=llm_provider,
         llm_model=llm_model,
         continuity_review_mode=continuity_review_mode,
+        video_mode=video_mode,
         backend=backend,
         scene_structure_artifacts=scene_structure,
     )
@@ -1410,6 +1414,7 @@ def load_video_planning_artifacts(output_dir: Path) -> VideoPlanningArtifacts:
         segment_contract_progress_path=paths.segment_contract_progress_path,
         scene_images_path=paths.scene_images_path,
         manifest_path=paths.manifest_path,
+        storyboard_manifest_path=paths.storyboard_manifest_path,
         project_package=project_package,
         manifest=project_package.seedance_manifest,
         segment_contract_progress=load_segment_contract_progress(output_dir),
@@ -1427,6 +1432,7 @@ def resolve_video_planning_paths(output_dir: Path) -> VideoPlanningPaths:
         segment_contract_progress_path=output_dir / "segment_contract_progress.json",
         scene_images_path=output_dir / "scene_image_manifest.json",
         manifest_path=output_dir / "seedance_manifest.json",
+        storyboard_manifest_path=output_dir / "storyboard_grid_manifest.json",
     )
 
 
@@ -1492,6 +1498,7 @@ def load_segment_contract_progress(output_dir: Path) -> SegmentContractProgress 
 def _build_video_service(
     config: AppConfig,
     backend: AgentBackend,
+    video_mode: str = "direct_motion",
 ) -> NovelToVideoService:
     return NovelToVideoService(
         backend=backend,
@@ -1501,6 +1508,7 @@ def _build_video_service(
         character_image_provider=config.video.character_image_provider,
         scene_image_provider=config.video.scene_image_provider,
         seedance_config=config.seedance,
+        video_mode=video_mode,
     )
 
 

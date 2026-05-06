@@ -21,7 +21,7 @@ export interface StageTaskResponse {
   status: TaskStatus;
 }
 
-export type StageTaskKind = "scene-structure" | "segment-contracts" | "characters" | "scenes" | "videos";
+export type StageTaskKind = "scene-structure" | "segment-contracts" | "characters" | "scenes" | "storyboards" | "videos";
 
 export interface CreateStageTaskRequest {
   project_id: string;
@@ -32,6 +32,13 @@ export interface CreateStageTaskRequest {
   continuity_review_mode?: "off" | "auto" | "on" | null;
   seedream_watermark?: boolean | null;
   seedance_watermark?: boolean | null;
+  video_mode?: "direct_motion" | "grid_storyboard" | null;
+  image_model?: string | null;
+  image_size?: string | null;
+  image_aspect_ratio?: string | null;
+  storyboard_image_model?: string | null;
+  storyboard_size?: string | null;
+  storyboard_aspect_ratio?: string | null;
   character_name?: string | null;
   segment_id?: string | null;
   scene_id?: string | null;

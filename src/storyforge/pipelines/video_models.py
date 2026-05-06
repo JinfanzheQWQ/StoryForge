@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from storyforge.domains.video.contracts import SeedanceManifest, StoryMemoryPackage, VideoProjectPackage
+from storyforge.domains.video.contracts import (
+    SeedanceManifest,
+    StoryboardGridTask,
+    StoryMemoryPackage,
+    VideoProjectPackage,
+)
 from storyforge.domains.video.schemas import VideoSegmentPlanSchema
 from storyforge.integrations.seedance import SeedanceExecutionReport
 from storyforge.integrations.seedream import SeedreamExecutionReport
@@ -212,6 +217,25 @@ class SceneImagePipelineResult:
     manifest: SeedanceManifest
     seedream_execution: SeedreamExecutionReport | None
 
+
+@dataclass(slots=True)
+class StoryboardGridPipelineResult:
+    output_dir: Path
+    character_bible_path: Path
+    character_images_path: Path
+    scene_plan_path: Path
+    segment_plan_path: Path
+    scene_images_path: Path
+    manifest_path: Path
+    storyboard_manifest_path: Path
+    project_package: VideoProjectPackage
+    manifest: SeedanceManifest
+    storyboard_tasks: list[StoryboardGridTask]
+    generated_count: int
+    failed_count: int
+    note: str
+
+
 @dataclass(slots=True)
 class VideoRenderResult:
     output_dir: Path
@@ -245,6 +269,7 @@ class VideoPlanningArtifacts:
     segment_contract_progress_path: Path
     scene_images_path: Path
     manifest_path: Path
+    storyboard_manifest_path: Path
     project_package: VideoProjectPackage
     manifest: SeedanceManifest
     segment_contract_progress: SegmentContractProgress | None = None
@@ -271,6 +296,7 @@ class VideoPlanningPaths:
     segment_contract_progress_path: Path
     scene_images_path: Path
     manifest_path: Path
+    storyboard_manifest_path: Path
 
 
 @dataclass(slots=True)

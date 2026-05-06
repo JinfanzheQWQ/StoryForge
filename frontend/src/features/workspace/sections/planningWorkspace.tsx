@@ -1,16 +1,19 @@
-import type { PlannedSegmentArtifact, SceneArtifactItem } from "../../../types";
+import type { PlannedSegmentArtifact, SceneArtifactItem, SegmentContractProgress } from "../../../types";
 import { StageEmpty, WorkspaceHeading } from "../workspaceCommon";
 import { buildSceneBlueprintRows } from "./planningModel";
 
 export function PlanningWorkspace({
   plannedSegments,
+  segmentContractProgress,
   scenes,
   setSelectedSegmentId
 }: {
   plannedSegments: PlannedSegmentArtifact[];
+  segmentContractProgress?: SegmentContractProgress | null;
   scenes: SceneArtifactItem[];
   setSelectedSegmentId: (segmentId: string) => void;
 }) {
+  const progressWarning = buildSegmentContractProgressWarning(segmentContractProgress);
   if (!plannedSegments.length) {
     const sceneRows = buildSceneBlueprintRows(scenes);
     if (!sceneRows.length) {
@@ -18,6 +21,7 @@ export function PlanningWorkspace({
     }
     return (
       <section className="planning-workspace" aria-label="场景结构蓝图">
+        {progressWarning ? <SegmentContractProgressWarning warning={progressWarning} /> : null}
         <WorkspaceHeading eyebrow="Scene Structure" title="场景结构已生成" summary="这是 scene 级故事蓝图。下一步生成分段合同后，会拆成可执行 segment 清单。" />
         <div className="scene-blueprint-list">
           <div className="scene-blueprint-head">
@@ -46,6 +50,7 @@ export function PlanningWorkspace({
   }
   return (
     <section className="planning-workspace" aria-label="规划结构">
+      {progressWarning ? <SegmentContractProgressWarning warning={progressWarning} /> : null}
       <WorkspaceHeading eyebrow="Story Blueprint" title="故事结构蓝图" summary="把 scene 和 segment 作为可执行生产清单，检查地点、时长、素材就绪和出片状态。" />
       <div className="planning-ledger">
         <div className="planning-head">
@@ -66,5 +71,46 @@ export function PlanningWorkspace({
         ))}
       </div>
     </section>
+  );
+}
+
+function buildSegmentContractProgressWarning(progress?: SegmentContractProgress | null) {
+  if (!progress || String(progress.status || "").toLowerCase() !== "failed") return null;
+  const completed = [
+    progress.completed_scene_count ? `已完成 ${progress.completed_scene_count}/${progress.total_scenes || "?"} 个 scene` : "",
+    progress.completed_chunk_count ? `已完成 ${progress.completed_chunk_count}/${progress.total_chunks || "?"} 个 chunk` : "",
+    progress.completed_segment_count ? `已生成 ${progress.completed_segment_count} 个 segment` : ""
+  ].filter(Boolean).join("，");
+  const failedAt = [
+    progress.failed_chapter_number ? `第 ${progress.failed_chapter_number} 章` : "",
+    progress.failed_scene_id || "",
+    progress.failed_chunk_id || ""
+  ].filter(Boolean).join(" · ");
+  return {
+    completed,
+    failedAt,
+    lastError: String(progress.last_error || "").trim(),
+    resumeReady: Boolean(progress.resume_ready)
+  };
+}
+
+function SegmentContractProgressWarning({
+  warning
+}: {
+  warning: {
+    completed: string;
+    failedAt: string;
+    lastError: string;
+    resumeReady: boolean;
+  };
+}) {
+  return (
+    <div className="error-callout" role="alert">
+      <strong>分段合同生成失败，当前只展示了已完成的部分片段。</strong>
+      {warning.failedAt ? <span>失败位置：{warning.failedAt}</span> : null}
+      {warning.completed ? <span>进度：{warning.completed}</span> : null}
+      <span>{warning.resumeReady ? "可以点击“继续生成分段合同”从失败位置恢复。" : "可以重新生成分段合同。"}</span>
+      {warning.lastError ? <details><summary>查看错误详情</summary><pre>{warning.lastError}</pre></details> : null}
+    </div>
   );
 }

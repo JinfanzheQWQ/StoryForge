@@ -143,3 +143,13 @@
   border: 1px solid #fecaca;
   background: #fff1f2;
 }
+
+.info-callout {
+  padding: 14px 16px;
+  border: 1px solid rgba(45, 177, 151, 0.24);
+  border-radius: var(--sf-radius-md);
+  color: #0f766e;
+  background: rgba(236, 253, 245, 0.86);
+  font-size: 13px;
+  font-weight: 800;
+}

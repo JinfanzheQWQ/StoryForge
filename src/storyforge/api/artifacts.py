@@ -20,7 +20,13 @@ from storyforge.api.schemas import (
 )
 from storyforge.application.tasks import TaskRecord
 from storyforge.core.io import read_json
-from storyforge.domains.video.contracts import SceneBible, SceneTransitionContract, VideoScene, VideoSegment
+from storyforge.domains.video.contracts import (
+    SceneBible,
+    SceneTransitionContract,
+    StoryboardGridTask,
+    VideoScene,
+    VideoSegment,
+)
 from storyforge.domains.video.text_rules import (
     ACTION_STEP_SPLIT_PATTERN,
     TIMED_BEAT_PREFIX_PATTERN,
@@ -197,6 +203,7 @@ DOCUMENT_PRIORITY = {
     "segment_plan.json": 70,
     "segment_contract_progress.json": 80,
     "scene_image_manifest.json": 90,
+    "storyboard_grid_manifest.json": 95,
     "seedream_character_execution.json": 100,
     "seedream_scene_execution.json": 110,
     "seedance_manifest.json": 120,
@@ -273,6 +280,7 @@ def build_task_artifacts(
         scene_frames=scene_frames,
         rendered_clips=rendered_clips,
     )
+    segment_contract_progress = _collect_segment_contract_progress(output_dir)
     continuity_report, continuity_summary, continuity_scene_groups, continuity_segment_groups = _collect_continuity_report(
         output_dir=output_dir,
         output_root=resolved_output_root,
@@ -291,6 +299,7 @@ def build_task_artifacts(
         rendered_clips=rendered_clips,
         full_story=full_story,
         planned_segments=planned_segments,
+        segment_contract_progress=segment_contract_progress,
         continuity_report=continuity_report,
         continuity_summary=continuity_summary,
         continuity_scene_groups=continuity_scene_groups,
@@ -307,12 +316,17 @@ def _collect_artifacts(
         return []
 
     items: list[ArtifactItem] = []
+    seen_paths: set[str] = set()
     for path in _sorted_paths(directory.rglob("*")):
         if not path.is_file():
             continue
         if allowed_suffixes and path.suffix.lower() not in allowed_suffixes:
             continue
-        items.append(_to_artifact_item(path, output_root))
+        item = _to_artifact_item(path, output_root)
+        if item.path in seen_paths:
+            continue
+        seen_paths.add(item.path)
+        items.append(item)
     return items
 
 
@@ -398,12 +412,17 @@ def _collect_character_current_artifacts(
     if not directory.exists():
         return []
     items: list[ArtifactItem] = []
+    seen_paths: set[str] = set()
     for path in _sorted_paths(directory.iterdir()):
         if not path.is_file():
             continue
         if path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
-        items.append(_to_artifact_item(path, output_root))
+        item = _to_artifact_item(path, output_root)
+        if item.path in seen_paths:
+            continue
+        seen_paths.add(item.path)
+        items.append(item)
     return items
 
 def _collect_character_artifacts(
@@ -411,13 +430,10 @@ def _collect_character_artifacts(
     output_dir: Path,
     output_root: Path,
 ) -> list[CharacterArtifactItem]:
-    file_artifacts = _collect_character_current_artifacts(
-        output_dir / "assets" / "characters",
-        output_root,
-    )
     manifest_map = _load_character_manifest_map(output_dir)
     character_items: list[CharacterArtifactItem] = []
     seen_paths: set[str] = set()
+    seen_variant_keys: set[str] = set()
 
     for manifest_item in manifest_map.values():
         item = _build_character_artifact_from_manifest_item(
@@ -428,10 +444,21 @@ def _collect_character_artifacts(
         if item is None:
             continue
         seen_paths.add(item.path)
+        seen_variant_keys.add(_image_variant_key(Path(item.path)))
+        raw_output_path = _resolve_manifest_output_path(manifest_item.get("output_path"), output_dir)
+        if raw_output_path is not None:
+            seen_paths.add(str(raw_output_path))
+            seen_variant_keys.add(_image_variant_key(raw_output_path))
         character_items.append(item)
 
+    file_artifacts = _collect_character_current_artifacts(
+        output_dir / "assets" / "characters",
+        output_root,
+    )
     for artifact in file_artifacts:
         if artifact.path in seen_paths:
+            continue
+        if _image_variant_key(Path(artifact.path)) in seen_variant_keys:
             continue
         character_items.append(_build_character_artifact_from_file(artifact, {}))
     return character_items
@@ -510,6 +537,21 @@ def _manifest_output_artifact_item(
     )
 
 
+def _resolve_manifest_output_path(raw_path: object, output_dir: Path) -> Path | None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    return (output_dir / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def _image_variant_key(path: Path) -> str:
+    resolved = path.resolve(strict=False)
+    if resolved.suffix.lower() not in IMAGE_SUFFIXES:
+        return str(resolved)
+    return f"{resolved.parent}::{resolved.stem}"
+
+
 
 def _resolve_manifest_artifact_url(
     raw_path: object,
@@ -583,16 +625,60 @@ def _sorted_document_paths(paths: Iterable[Path]) -> list[Path]:
 
 
 def _to_artifact_item(path: Path, output_root: Path) -> ArtifactItem:
-    resolved_path = path.resolve()
+    resolved_path = _resolve_served_artifact_path(path).resolve()
     relative_path = resolved_path.relative_to(output_root)
     encoded_path = "/".join(quote(part) for part in relative_path.parts)
     revision = int(resolved_path.stat().st_mtime_ns)
     return ArtifactItem(
-        name=path.name,
+        name=resolved_path.name,
         path=str(resolved_path),
         url=f"/outputs/{encoded_path}?v={revision}",
-        kind=_detect_kind(path),
+        kind=_detect_kind(resolved_path),
     )
+
+
+def _resolve_served_artifact_path(path: Path) -> Path:
+    if path.suffix.lower() not in IMAGE_SUFFIXES:
+        return path
+    suffix = _image_suffix_from_file(path)
+    if not suffix:
+        return path
+    current_suffix = path.suffix.lower()
+    if suffix == ".jpg" and current_suffix in {".jpg", ".jpeg"}:
+        return path
+    if current_suffix == suffix:
+        return path
+    corrected_path = path.with_suffix(suffix)
+    if corrected_path.exists() and corrected_path.is_file() and _artifact_copy_is_current(path, corrected_path):
+        return corrected_path
+    try:
+        corrected_path.write_bytes(path.read_bytes())
+    except OSError:
+        return path
+    return corrected_path
+
+
+def _artifact_copy_is_current(source_path: Path, copied_path: Path) -> bool:
+    try:
+        source_stat = source_path.stat()
+        copied_stat = copied_path.stat()
+    except OSError:
+        return True
+    return copied_stat.st_mtime_ns >= source_stat.st_mtime_ns and copied_stat.st_size == source_stat.st_size
+
+
+def _image_suffix_from_file(path: Path) -> str:
+    try:
+        header = path.read_bytes()[:16]
+    except OSError:
+        return ""
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return ".webp"
+    return ""
 
 
 def _detect_kind(path: Path) -> str:
@@ -632,6 +718,7 @@ def _collect_planned_segments(
         return _build_inferred_planned_segments(scene_frames, rendered_clips)
     scene_task_map = load_scene_image_task_map(output_dir)
     clip_map = load_seedance_clip_map(output_dir)
+    storyboard_task_map = _load_storyboard_grid_task_map(output_dir)
     scene_task_by_scene: dict[str, object] = {}
     for task in scene_task_map.values():
         if not task.scene_id:
@@ -641,15 +728,26 @@ def _collect_planned_segments(
             scene_task_by_scene[task.scene_id] = task
     scene_frame_map = {item.path: item for item in scene_frames}
     rendered_clip_map = {item.path: item for item in rendered_clips}
+    rendered_clip_by_segment_id = {
+        _segment_id_from_asset_name(item.name): item
+        for item in rendered_clips
+    }
     character_image_map = {item.path: item for item in character_images}
+    scene_frame_by_scene_id = {
+        _segment_id_from_asset_name(item.name): item
+        for item in scene_frames
+    }
     scene_master_map = {}
     for scene in getattr(plan, "scenes", []):
         scene_task = scene_task_by_scene.get(scene.scene_id)
-        scene_master_map[scene.scene_id] = _resolve_scene_master_artifact(
-            scene=scene,
-            scene_task=scene_task,
-            output_root=output_root,
-            scene_frame_map=scene_frame_map,
+        scene_master_map[scene.scene_id] = (
+            _resolve_scene_master_artifact(
+                scene=scene,
+                scene_task=scene_task,
+                output_root=output_root,
+                scene_frame_map=scene_frame_map,
+            )
+            or scene_frame_by_scene_id.get(scene.scene_id)
         )
     scene_request_map = {
         scene.scene_id: (
@@ -677,21 +775,37 @@ def _collect_planned_segments(
         scene_task = scene_task_map.get(segment.segment_id)
         scene_master_task = scene_task_by_scene.get(segment.scene_id)
         clip_task = clip_map.get(segment.segment_id)
-        rendered_clip = _resolve_rendered_clip_artifact(clip_task, output_root, rendered_clip_map)
+        storyboard_task = storyboard_task_map.get(segment.segment_id)
+        rendered_clip = _resolve_rendered_clip_artifact(
+            clip_task,
+            output_root,
+            rendered_clip_map,
+            local_artifact=rendered_clip_by_segment_id.get(segment.segment_id),
+        )
+        storyboard_grid = _resolve_storyboard_grid_artifact(
+            storyboard_task=storyboard_task,
+            clip_task=clip_task,
+            output_root=output_root,
+            scene_frame_map=scene_frame_map,
+        )
         character_references = _resolve_clip_character_reference_artifacts(
             clip_task,
             output_root,
             character_image_map,
         )
-        has_scene_master_url = bool(
-            (scene and getattr(scene, "scene_master_frame_url", ""))
-            or (scene_task and getattr(scene_task, "scene_master_frame_url", ""))
-            or (scene_master_task and getattr(scene_master_task, "scene_master_frame_url", ""))
-            or (clip_task and getattr(clip_task, "scene_master_url", ""))
-        )
+        scene_master_artifact = scene_master_map.get(segment.scene_id)
         scene_ready = bool(
-            has_scene_master_url
+            scene_master_artifact
             and _clip_character_references_ready(clip_task, character_references)
+        )
+        video_mode = getattr(clip_task, "video_mode", "direct_motion") if clip_task else "direct_motion"
+        storyboard_ready = bool(
+            video_mode == "grid_storyboard"
+            and (
+                storyboard_grid
+                or (storyboard_task and getattr(storyboard_task, "generated_url", ""))
+                or (clip_task and getattr(clip_task, "storyboard_grid_url", ""))
+            )
         )
         video_ready = bool(
             clip_task
@@ -731,12 +845,36 @@ def _collect_planned_segments(
                 chapter_number=segment.chapter_number,
                 duration_seconds=segment.duration_seconds,
                 scene_master_frame=scene_master_map.get(segment.scene_id),
+                storyboard_grid=storyboard_grid,
                 rendered_clip=rendered_clip,
                 scene_master_frame_prompt=(
                     scene_task.scene_master_frame_prompt
                     if scene_task
                     else (scene_master_task.scene_master_frame_prompt if scene_master_task else "")
                 ),
+                storyboard_grid_prompt=(
+                    getattr(storyboard_task, "prompt", "")
+                    or (getattr(clip_task, "storyboard_grid_prompt", "") if clip_task else "")
+                ),
+                storyboard_grid_status=(
+                    getattr(storyboard_task, "status", "")
+                    or (getattr(clip_task, "storyboard_grid_status", "") if clip_task else "")
+                ),
+                storyboard_grid_error=(
+                    getattr(storyboard_task, "error", "")
+                    or (getattr(clip_task, "storyboard_grid_error", "") if clip_task else "")
+                ),
+                storyboard_scene_descriptions=(
+                    list(getattr(storyboard_task, "scene_descriptions", []) or [])
+                    or (list(getattr(clip_task, "storyboard_scene_descriptions", []) or []) if clip_task else [])
+                ),
+                storyboard_grid_request=(
+                    _build_submitted_request_response(
+                        getattr(storyboard_task, "request_info", {})
+                        or (getattr(clip_task, "storyboard_grid_request_info", {}) if clip_task else {})
+                    )
+                ),
+                video_mode=video_mode,
                 video_prompt=clip_task.prompt if clip_task else "",
                 submitted_video_prompt=clip_task.submitted_prompt if clip_task else "",
                 seedance_motion_prompt=_extract_seedance_motion_prompt(
@@ -769,10 +907,42 @@ def _collect_planned_segments(
                     )
                 ),
                 scene_ready=scene_ready,
+                storyboard_ready=storyboard_ready,
                 video_ready=video_ready,
             )
         )
     return planned_segments
+
+
+def _collect_segment_contract_progress(output_dir: Path) -> dict[str, object] | None:
+    progress_path = output_dir / "segment_contract_progress.json"
+    if not progress_path.exists():
+        return None
+    try:
+        progress = read_json(progress_path)
+    except Exception:
+        return None
+    if not isinstance(progress, dict):
+        return None
+    return {
+        "status": str(progress.get("status") or ""),
+        "last_error": str(progress.get("last_error") or ""),
+        "resume_ready": bool(progress.get("resume_ready")),
+        "total_chapters": int(progress.get("total_chapters") or 0),
+        "total_scenes": int(progress.get("total_scenes") or 0),
+        "total_chunks": int(progress.get("total_chunks") or 0),
+        "completed_chapters": int(progress.get("completed_chapters") or 0),
+        "completed_scene_count": int(progress.get("completed_scene_count") or 0),
+        "completed_chunk_count": int(progress.get("completed_chunk_count") or 0),
+        "completed_segment_count": int(progress.get("completed_segment_count") or 0),
+        "failed_chapter_number": int(progress.get("failed_chapter_number") or 0),
+        "failed_scene_id": str(progress.get("failed_scene_id") or ""),
+        "failed_chunk_id": str(progress.get("failed_chunk_id") or ""),
+        "running_chapter_number": int(progress.get("running_chapter_number") or 0),
+        "running_scene_id": str(progress.get("running_scene_id") or ""),
+        "running_chunk_id": str(progress.get("running_chunk_id") or ""),
+        "last_updated_at": str(progress.get("last_updated_at") or ""),
+    }
 
 
 
@@ -979,6 +1149,62 @@ def _resolve_scene_master_artifact(
     )
 
 
+def _load_storyboard_grid_task_map(output_dir: Path) -> dict[str, StoryboardGridTask]:
+    path = output_dir / "storyboard_grid_manifest.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = read_json(path)
+    except Exception:
+        return {}
+    if not isinstance(payload, list):
+        return {}
+    tasks: dict[str, StoryboardGridTask] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            task = StoryboardGridTask.from_dict(item)
+        except Exception:
+            continue
+        tasks[task.segment_id] = task
+    return tasks
+
+
+def _resolve_storyboard_grid_artifact(
+    *,
+    storyboard_task: StoryboardGridTask | None,
+    clip_task,
+    output_root: Path,
+    scene_frame_map: dict[str, ArtifactItem],
+) -> ArtifactItem | None:
+    for raw_path in (
+        getattr(storyboard_task, "output_path", "") if storyboard_task is not None else "",
+        getattr(clip_task, "storyboard_grid_path", "") if clip_task is not None else "",
+    ):
+        artifact = _resolve_manifest_artifact(str(raw_path or ""), output_root, scene_frame_map)
+        if artifact is not None:
+            return artifact
+    url = str(
+        (getattr(storyboard_task, "generated_url", "") if storyboard_task is not None else "")
+        or (getattr(clip_task, "storyboard_grid_url", "") if clip_task is not None else "")
+        or ""
+    ).strip()
+    if not url:
+        return None
+    path_text = str(
+        (getattr(storyboard_task, "output_path", "") if storyboard_task is not None else "")
+        or (getattr(clip_task, "storyboard_grid_path", "") if clip_task is not None else "")
+        or ""
+    ).strip()
+    return ArtifactItem(
+        name=Path(path_text).name if path_text else f"{getattr(clip_task, 'segment_id', '') or 'segment'}_grid.png",
+        path=path_text,
+        url=url,
+        kind="image",
+    )
+
+
 def _resolve_clip_character_reference_artifacts(
     clip_task,
     output_root: Path,
@@ -1017,11 +1243,15 @@ def _resolve_rendered_clip_artifact(
     clip_task,
     output_root: Path,
     artifact_map: dict[str, ArtifactItem],
+    local_artifact: ArtifactItem | None = None,
 ) -> ArtifactItem | None:
     if clip_task is None:
+        return local_artifact
+    remote_status = str(getattr(clip_task, "remote_status", "") or "").strip().lower()
+    if remote_status in {"running", "queued", "failed"}:
         return None
     clip_path = clip_task.downloaded_path or clip_task.output_path
-    return _resolve_manifest_artifact(clip_path, output_root, artifact_map)
+    return _resolve_manifest_artifact(clip_path, output_root, artifact_map) or local_artifact
 
 
 def _collect_continuity_report(

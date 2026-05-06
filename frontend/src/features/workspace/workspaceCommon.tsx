@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { Film } from "lucide-react";
+import { resolveApiAssetUrl } from "../../api/client";
 import type { ArtifactItem, PlannedSegmentArtifact } from "../../types";
 import { isVideoAsset } from "./workspaceModel";
 
@@ -23,24 +25,34 @@ export function StageEmpty({ description, title }: { description: string; title:
 }
 
 export function AssetPreview({ item }: { item?: ArtifactItem | null }) {
-  if (item?.url) {
+  const [failedUrl, setFailedUrl] = useState("");
+  const url = resolveApiAssetUrl(item?.url);
+  const mediaName = item?.name || "媒体资源";
+
+  useEffect(() => {
+    setFailedUrl("");
+  }, [url]);
+
+  if (item && url && failedUrl !== url) {
     if (isVideoAsset(item)) {
-      return <video muted src={item.url} aria-label={item.name} />;
+      return <video muted src={url} aria-label={mediaName} onError={() => setFailedUrl(url)} />;
     }
-    return <img src={item.url} alt={item.name} />;
+    return <img src={url} alt={mediaName} onError={() => setFailedUrl(url)} />;
   }
   return (
     <div className="asset-thumb-empty">
       <Film size={20} aria-hidden="true" />
+      {failedUrl ? <span>图片暂不可访问</span> : null}
     </div>
   );
 }
 
 export function AssetLine({ item }: { item: ArtifactItem }) {
+  const url = resolveApiAssetUrl(item.url);
   return (
-    <a className="asset-line" href={item.url || item.path || "#"} target={item.url ? "_blank" : undefined} rel="noreferrer">
+    <a className="asset-line" href={url || item.path || "#"} target={url ? "_blank" : undefined} rel="noreferrer">
       <span>{item.name}</span>
-      <em>{item.url ? "打开" : item.path || "本地产物"}</em>
+      <em>{url ? "打开" : item.path || "本地产物"}</em>
     </a>
   );
 }
@@ -58,17 +70,19 @@ export function Metric({ label, value, detail }: { label: string; value: string 
 export function MediaStage({ segment }: { segment?: PlannedSegmentArtifact }) {
   const clip = segment?.rendered_clip;
   const sceneMaster = segment?.scene_master_frame;
+  const clipUrl = resolveApiAssetUrl(clip?.url);
+  const posterUrl = resolveApiAssetUrl(sceneMaster?.url);
 
-  if (clip?.url) {
+  if (clipUrl) {
     return (
-      <video controls src={clip.url} poster={sceneMaster?.url} aria-label={segment?.title || "当前视频片段"}>
+      <video controls src={clipUrl} poster={posterUrl || undefined} aria-label={segment?.title || "当前视频片段"}>
         <track kind="captions" />
       </video>
     );
   }
 
-  if (sceneMaster?.url) {
-    return <img src={sceneMaster.url} alt={`${segment?.scene_title || segment?.scene_id || "场景"}母图`} />;
+  if (posterUrl) {
+    return <img src={posterUrl} alt={`${segment?.scene_title || segment?.scene_id || "场景"}母图`} />;
   }
 
   return (

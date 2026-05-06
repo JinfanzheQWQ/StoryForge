@@ -15,6 +15,13 @@ class StoryBriefInput(BaseModel):
     total_word_target: int = Field(default=20000, ge=300)
     must_include: list[str] = Field(default_factory=list)
     style_keywords: list[str] = Field(default_factory=list)
+    video_mode: Literal["direct_motion", "grid_storyboard"] = "direct_motion"
+    image_model: str = Field(default="doubao-seedream-4-5-251128", max_length=120)
+    image_size: str = Field(default="2K", max_length=32)
+    image_aspect_ratio: str = Field(default="16:9", max_length=16)
+    storyboard_image_model: str = Field(default="doubao-seedream-4-5-251128", max_length=120)
+    storyboard_size: str = Field(default="2K", max_length=32)
+    storyboard_aspect_ratio: str = Field(default="16:9", max_length=16)
 
 
 class CreateStoryTaskRequest(BaseModel):
@@ -37,6 +44,13 @@ class CreateStageTaskRequest(BaseModel):
     continuity_review_mode: Literal["off", "auto", "on"] | None = None
     seedream_watermark: bool | None = None
     seedance_watermark: bool | None = None
+    video_mode: Literal["direct_motion", "grid_storyboard"] | None = None
+    image_model: str | None = Field(default=None, max_length=120)
+    image_size: str | None = Field(default=None, max_length=32)
+    image_aspect_ratio: str | None = Field(default=None, max_length=16)
+    storyboard_image_model: str | None = Field(default=None, max_length=120)
+    storyboard_size: str | None = Field(default=None, max_length=32)
+    storyboard_aspect_ratio: str | None = Field(default=None, max_length=16)
     character_name: str | None = None
     segment_id: str | None = None
     scene_id: str | None = None
@@ -275,8 +289,15 @@ class PlannedSegmentArtifactResponse(BaseModel):
     chapter_number: int
     duration_seconds: int | None = None
     scene_master_frame: ArtifactItem | None = None
+    storyboard_grid: ArtifactItem | None = None
     rendered_clip: ArtifactItem | None = None
     scene_master_frame_prompt: str = ""
+    storyboard_grid_prompt: str = ""
+    storyboard_grid_status: str = ""
+    storyboard_grid_error: str = ""
+    storyboard_scene_descriptions: list[str] = Field(default_factory=list)
+    storyboard_grid_request: SubmittedRequestResponse | None = None
+    video_mode: Literal["direct_motion", "grid_storyboard"] = "direct_motion"
     video_prompt: str = ""
     submitted_video_prompt: str = ""
     seedance_motion_prompt: str = ""
@@ -294,6 +315,7 @@ class PlannedSegmentArtifactResponse(BaseModel):
     scene_master_frame_request: SubmittedRequestResponse | None = None
     video_request: SubmittedRequestResponse | None = None
     scene_ready: bool = False
+    storyboard_ready: bool = False
     video_ready: bool = False
 
 
@@ -356,6 +378,7 @@ class TaskArtifactsResponse(BaseModel):
     rendered_clips: list[ArtifactItem] = Field(default_factory=list)
     full_story: ArtifactItem | None = None
     planned_segments: list[PlannedSegmentArtifactResponse] = Field(default_factory=list)
+    segment_contract_progress: dict[str, Any] | None = None
     continuity_report: ArtifactItem | None = None
     continuity_summary: ContinuitySummaryResponse | None = None
     continuity_scene_groups: list[ContinuityIssueGroupResponse] = Field(default_factory=list)

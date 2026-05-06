@@ -138,7 +138,8 @@
 .composer-title-field input,
 .composer-prompt-field textarea,
 .composer-inline-fields input,
-.composer-settings-grid input {
+.composer-settings-grid input,
+.composer-settings-grid select {
   width: 100%;
   color: #0e2535;
   border: 0;
@@ -166,7 +167,8 @@
 .composer-title-field input:focus,
 .composer-prompt-field textarea:focus,
 .composer-inline-fields input:focus,
-.composer-settings-grid input:focus {
+.composer-settings-grid input:focus,
+.composer-settings-grid select:focus {
   outline: none;
 }
 
@@ -267,7 +269,8 @@
   padding-right: 0;
 }
 
-.composer-settings-grid input {
+.composer-settings-grid input,
+.composer-settings-grid select {
   min-height: 30px;
   font-size: 14px;
 }

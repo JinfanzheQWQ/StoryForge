@@ -28,6 +28,13 @@ export interface StoryBrief {
   total_word_target: number;
   must_include: string[];
   style_keywords: string[];
+  video_mode: "direct_motion" | "grid_storyboard";
+  image_model: string;
+  image_size: string;
+  image_aspect_ratio: string;
+  storyboard_image_model: string;
+  storyboard_size: string;
+  storyboard_aspect_ratio: string;
 }
 
 export interface CreateNovelRequest {

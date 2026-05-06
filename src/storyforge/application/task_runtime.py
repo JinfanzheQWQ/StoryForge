@@ -13,6 +13,7 @@ from storyforge.application.task_handlers import (
     run_scene_structure_task,
     run_segment_contracts_task,
     run_scenes_task,
+    run_storyboards_task,
     run_story_task,
     run_videos_task,
 )
@@ -48,6 +49,7 @@ def dispatch_task(
         "project.continuity_repair_batch": run_continuity_repair_batch_task,
         "project.characters": run_characters_task,
         "project.scenes": run_scenes_task,
+        "project.storyboards": run_storyboards_task,
         "project.videos": run_videos_task,
     }
     try:

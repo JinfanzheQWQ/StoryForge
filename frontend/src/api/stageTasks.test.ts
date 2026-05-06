@@ -27,7 +27,14 @@ describe("stage task APIs", () => {
         chapter_count: 1,
         total_word_target: 1200,
         must_include: [],
-        style_keywords: []
+        style_keywords: [],
+        video_mode: "grid_storyboard",
+        image_model: "doubao-seedream-4-5-251128",
+        image_size: "2K",
+        image_aspect_ratio: "16:9",
+        storyboard_image_model: "doubao-seedream-4-5-251128",
+        storyboard_size: "2K",
+        storyboard_aspect_ratio: "16:9"
       },
       use_llm: true,
       llm_provider: "deepseek",
@@ -57,6 +64,9 @@ describe("stage task APIs", () => {
     const response = await createStageTask("videos", {
       project_id: "p1",
       source_task_id: "t1",
+      image_model: "gpt-image-2",
+      image_size: "1K",
+      image_aspect_ratio: "1:1",
       segment_id: "seg-01"
     });
 
@@ -67,6 +77,9 @@ describe("stage task APIs", () => {
         body: JSON.stringify({
           project_id: "p1",
           source_task_id: "t1",
+          image_model: "gpt-image-2",
+          image_size: "1K",
+          image_aspect_ratio: "1:1",
           segment_id: "seg-01"
         }),
         method: "POST"

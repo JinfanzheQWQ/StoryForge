@@ -1162,12 +1162,6 @@ class VideoPlanningMixin:
                 prepared_scene,
                 previous_scene_by_id.get(prepared_scene.scene_id),
             )
-            reused_previous_master = self._reuse_previous_scene_master_frame(
-                prepared_scene,
-                previous_scene_by_id.get(prepared_scene.scene_id),
-            )
-            if reused_previous_master:
-                reference_images = []
             if not prepared_scene.scene_master_reference_images and reference_images:
                 prepared_scene.scene_master_reference_images = list(reference_images)
             scene_master_frame_prompt = prepared_scene.scene_master_frame_prompt
@@ -1191,47 +1185,6 @@ class VideoPlanningMixin:
                 )
             )
         return tasks
-
-    def _reuse_previous_scene_master_frame(
-        self,
-        scene: VideoScene,
-        previous_scene: VideoScene | None,
-    ) -> bool:
-        if previous_scene is None:
-            return False
-        if not self._scene_reuses_previous_master_frame(scene):
-            return False
-        previous_url = str(previous_scene.scene_master_frame_url or "").strip()
-        previous_path = str(previous_scene.scene_master_frame_path or "").strip()
-        if not previous_url and not previous_path:
-            return False
-        scene.scene_master_frame_url = previous_url
-        scene.scene_master_frame_path = previous_path or scene.scene_master_frame_path
-        scene.scene_master_frame_status = previous_scene.scene_master_frame_status or "completed"
-        scene.scene_master_frame_error = ""
-        scene.scene_master_reference_images = []
-        scene.scene_master_request_info = {
-            "provider": "storyforge",
-            "variant": "reuse_previous_scene_master",
-            "payload": {
-                "reused_from_scene_id": previous_scene.scene_id,
-                "scene_master_url": previous_url,
-                "scene_master_path": previous_path,
-            },
-            "reference_bindings": [],
-        }
-        return True
-
-    def _scene_reuses_previous_master_frame(self, scene: VideoScene) -> bool:
-        contract = scene.scene_transition_contract
-        mode = str(contract.scene_spatial_continuity_mode or "").strip().lower()
-        if mode in {
-            "same_space_progression",
-            "same_location_new_angle",
-            "time_jump_same_location",
-        }:
-            return True
-        return False
 
     def _build_seedance_manifest(
         self,
@@ -1281,6 +1234,7 @@ class VideoPlanningMixin:
                     if path
                 ],
                 visible_characters=list(item.involved_characters),
+                video_mode=self.video_mode,
                 motion_contract=self._build_segment_motion_contract(item),
                 duration_seconds=item.duration_seconds,
                 aspect_ratio=self.aspect_ratio,
@@ -1300,7 +1254,8 @@ class VideoPlanningMixin:
             base_url=self.seedance_config.base_url,
             clips=clips,
             notes=[
-                "视频阶段提交场景母图和实际出镜角色图作为参考。",
+                "direct_motion 模式提交场景母图和实际出镜角色图作为参考。",
+                "grid_storyboard 模式提交九宫格分镜图，并在规划需要承接时额外提交上一段尾帧。",
                 "每个片段由 motion_contract 描述角色在场景中的运动轨迹、动作状态和收束状态。",
                 "Seedance 负责生成视频与自带音频，无需单独 TTS。",
             ],

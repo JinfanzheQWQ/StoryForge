@@ -360,6 +360,82 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(segment_task["status"], "completed")
         return scene_task, segment_task
 
+    def test_submit_storyboard_generation_job(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            story_response = client.post(
+                "/v1/projects/novel",
+                json={
+                    "brief": {
+                        "title_hint": "九宫格接口测试",
+                        "idea": "林屿在花园里走向苏晚。",
+                        "genre": "校园情感",
+                        "tone": "清新",
+                        "target_audience": "年轻观众",
+                        "chapter_count": 1,
+                        "total_word_target": 800,
+                        "must_include": ["花园"],
+                        "style_keywords": ["九宫格"],
+                        "video_mode": "grid_storyboard",
+                        "storyboard_image_model": "gpt-image-2",
+                        "storyboard_size": "2K",
+                        "storyboard_aspect_ratio": "9:16",
+                    },
+                    "use_llm": True,
+                },
+            )
+            self.assertEqual(story_response.status_code, 202)
+            project_id = story_response.json()["project_id"]
+            story_task_id = story_response.json()["task_id"]
+            story_payload = self._wait_for_completion(client, story_task_id)
+            self.assertEqual(story_payload["status"], "completed")
+            output_dir = Path(story_payload["result"]["output_dir"])
+
+            with patch(
+                "storyforge.application.task_handlers.run_storyboard_grid_pipeline",
+                return_value=SimpleNamespace(
+                    output_dir=output_dir,
+                    character_bible_path=output_dir / "character_visual_bible.json",
+                    character_images_path=output_dir / "character_image_manifest.json",
+                    scene_plan_path=output_dir / "scene_plan.json",
+                    segment_plan_path=output_dir / "segment_plan.json",
+                    scene_images_path=output_dir / "scene_image_manifest.json",
+                    manifest_path=output_dir / "seedance_manifest.json",
+                    storyboard_manifest_path=output_dir / "storyboard_grid_manifest.json",
+                    generated_count=1,
+                    failed_count=0,
+                    note="九宫格分镜图已生成。",
+                ),
+            ) as run_storyboard_grid_pipeline:
+                storyboard_response = client.post(
+                    "/v1/projects/storyboards",
+                    json={
+                        "project_id": project_id,
+                        "source_task_id": story_task_id,
+                        "segment_id": "ch01-sc01-seg01",
+                        "video_mode": "grid_storyboard",
+                        "storyboard_image_model": "gpt-image-2",
+                        "storyboard_size": "2K",
+                        "storyboard_aspect_ratio": "9:16",
+                    },
+                )
+                self.assertEqual(storyboard_response.status_code, 202)
+                storyboard_task_id = storyboard_response.json()["task_id"]
+                storyboard_payload = self._wait_for_completion(client, storyboard_task_id)
+
+            self.assertEqual(storyboard_payload["status"], "completed")
+            self.assertEqual(storyboard_payload["result"]["task_stage"], "storyboards")
+            self.assertEqual(storyboard_payload["result"]["pipeline_stage"], "storyboard_grid_completed")
+            self.assertEqual(storyboard_payload["result"]["video_mode"], "grid_storyboard")
+            self.assertEqual(storyboard_payload["result"]["storyboard_image_model"], "gpt-image-2")
+            self.assertEqual(storyboard_payload["result"]["storyboard_size"], "2K")
+            self.assertEqual(storyboard_payload["result"]["storyboard_aspect_ratio"], "9:16")
+            run_storyboard_grid_pipeline.assert_called_once()
+            self.assertEqual(run_storyboard_grid_pipeline.call_args.kwargs["segment_id"], "ch01-sc01-seg01")
+            self.assertEqual(run_storyboard_grid_pipeline.call_args.kwargs["image_model"], "gpt-image-2")
+            self.assertEqual(run_storyboard_grid_pipeline.call_args.kwargs["aspect_ratio"], "9:16")
+
     def test_submit_gpt_image_generation_job(self) -> None:
         config_path = self._create_test_config()
         with patch(
@@ -888,6 +964,148 @@ class ApiTestCase(unittest.TestCase):
         self.assertIn("duration_auto_expanded_from", diagnostics)
         self.assertIn("planner_warning_source", diagnostics)
         self.assertEqual(diagnostics["action_node_count"], 0)
+
+    def test_artifacts_expose_segment_contract_progress_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            output_dir = output_root / "run"
+            output_dir.mkdir(parents=True)
+            (output_dir / "segment_contract_progress.json").write_text(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "last_error": "structured output failed",
+                        "resume_ready": True,
+                        "total_scenes": 3,
+                        "total_chunks": 4,
+                        "completed_scene_count": 1,
+                        "completed_chunk_count": 3,
+                        "completed_segment_count": 6,
+                        "failed_chapter_number": 1,
+                        "failed_scene_id": "ch01-sc02",
+                        "failed_chunk_id": "ch01-sc02-chunk02",
+                    }
+                )
+            )
+            task = TaskRecord(
+                task_id="task-1",
+                project_id="project-1",
+                task_type="project.story",
+                status="completed",
+                payload={},
+                created_at=utc_now(),
+                result={
+                    "output_dir": str(output_dir),
+                    "story_title": "Failed Progress",
+                },
+            )
+            artifacts = build_task_artifacts(task, output_root)
+
+        self.assertIsNotNone(artifacts.segment_contract_progress)
+        assert artifacts.segment_contract_progress is not None
+        self.assertEqual(artifacts.segment_contract_progress["status"], "failed")
+        self.assertEqual(artifacts.segment_contract_progress["failed_scene_id"], "ch01-sc02")
+        self.assertTrue(artifacts.segment_contract_progress["resume_ready"])
+
+    def test_artifacts_restore_local_rendered_clip_after_manifest_replan(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            output_dir = output_root / "run"
+            frames_dir = output_dir / "assets" / "frames"
+            characters_dir = output_dir / "assets" / "characters"
+            rendered_dir = output_dir / "rendered"
+            frames_dir.mkdir(parents=True)
+            characters_dir.mkdir(parents=True)
+            rendered_dir.mkdir(parents=True)
+            scene_frame_path = frames_dir / "ch01-sc01_master.png"
+            character_path = characters_dir / "林屿_sheet.png"
+            clip_path = rendered_dir / "ch01-sc01-seg01.mp4"
+            scene_frame_path.write_bytes(b"frame")
+            character_path.write_bytes(b"character")
+            clip_path.write_bytes(b"video")
+            segment_payload = {
+                "segment_id": "ch01-sc01-seg01",
+                "chapter_number": 1,
+                "scene_id": "ch01-sc01",
+                "scene_title": "花园",
+                "scene_summary": "花园相遇",
+                "scene_anchor": "花园",
+                "title": "片段",
+                "summary": "林屿走近",
+                "involved_characters": ["林屿"],
+                "narration": "",
+                "dialogue_lines": [],
+                "subtitle_lines": [],
+                "sound_effects": [],
+                "music_direction": "",
+                "timed_beats": ["0-8秒：林屿走近。"],
+                "duration_seconds": 8,
+            }
+            (output_dir / "scene_plan.json").write_text(
+                json.dumps(
+                    {
+                        "scenes": [
+                            {
+                                "scene_id": "ch01-sc01",
+                                "chapter_number": 1,
+                                "title": "花园",
+                                "summary": "花园相遇",
+                                "scene_anchor": "花园",
+                                "involved_characters": ["林屿"],
+                                "scene_master_frame_path": str(scene_frame_path),
+                                "scene_master_frame_url": "",
+                                "segments": [segment_payload],
+                            }
+                        ]
+                    }
+                )
+            )
+            (output_dir / "seedance_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "title": "Replanned",
+                        "model": "seedance",
+                        "base_url": "",
+                        "clips": [
+                            {
+                                **segment_payload,
+                                "prompt": "生成视频",
+                                "aspect_ratio": "16:9",
+                                "with_audio": True,
+                                "output_path": str(clip_path),
+                                "scene_master_path": str(scene_frame_path),
+                                "character_image_paths": [str(character_path)],
+                                "character_image_urls": [],
+                                "visible_characters": ["林屿"],
+                                "submit_status": "planned",
+                                "remote_status": "planned",
+                                "downloaded_path": "",
+                            }
+                        ],
+                    }
+                )
+            )
+            task = TaskRecord(
+                task_id="task-1",
+                project_id="project-1",
+                task_type="project.story",
+                status="completed",
+                payload={},
+                created_at=utc_now(),
+                result={
+                    "output_dir": str(output_dir),
+                    "story_title": "Replanned",
+                },
+            )
+            artifacts = build_task_artifacts(task, output_root)
+
+        self.assertEqual(len(artifacts.planned_segments), 1)
+        segment = artifacts.planned_segments[0]
+        self.assertTrue(segment.scene_ready)
+        self.assertTrue(segment.video_ready)
+        self.assertIsNotNone(segment.rendered_clip)
+        assert segment.rendered_clip is not None
+        self.assertEqual(segment.rendered_clip.name, "ch01-sc01-seg01.mp4")
 
     def test_story_job_accepts_openai_selection(self) -> None:
         config_path = self._create_test_config()
@@ -1640,6 +1858,9 @@ class ApiTestCase(unittest.TestCase):
                         "project_id": project_id,
                         "source_task_id": source_record.task_id,
                         "character_name": "陈屿",
+                        "image_model": "gpt-image-2",
+                        "image_size": "1K",
+                        "image_aspect_ratio": "1:1",
                     },
                 )
                 self.assertEqual(rerun_response.status_code, 202)
@@ -1647,6 +1868,9 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(task["status"], "completed", task.get("error"))
                 self.assertEqual(task["payload"]["character_name"], "陈屿")
                 self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["character_name"], "陈屿")
+                self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["image_model"], "gpt-image-2")
+                self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["image_size"], "1K")
+                self.assertEqual(mock_run_character_image_pipeline.call_args.kwargs["image_aspect_ratio"], "1:1")
                 manifest = json.loads((output_dir / "character_image_manifest.json").read_text(encoding="utf-8"))
                 self.assertEqual(manifest[0]["candidate_generated_url"], "")
                 self.assertEqual(manifest[0]["candidate_output_path"], "")
@@ -1675,8 +1899,12 @@ class ApiTestCase(unittest.TestCase):
                 candidate_dir.mkdir(parents=True)
                 current_path = character_dir / "陈屿_sheet.png"
                 candidate_path = candidate_dir / "陈屿_sheet.png"
+                stale_current_copy = current_path.with_suffix(".jpg")
+                candidate_served_copy = candidate_path.with_suffix(".webp")
                 current_path.write_bytes(b"current-image")
                 candidate_path.write_bytes(b"candidate-image")
+                stale_current_copy.write_bytes(b"old-served-copy")
+                candidate_served_copy.write_bytes(b"candidate-served-copy")
                 for name, payload in {
                     "story_source.json": {"brief": brief, "title": "角色版本选择测试", "chapters": []},
                     "novel_package.json": {"brief": brief, "outline": {"title": "角色版本选择测试", "characters": [], "chapters": []}, "chapters": []},
@@ -1735,6 +1963,10 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(manifest[0]["candidate_output_path"], "")
                 self.assertEqual(current_path.read_bytes(), b"candidate-image")
                 self.assertFalse(candidate_path.exists())
+                self.assertFalse(candidate_served_copy.exists())
+                self.assertFalse(stale_current_copy.exists())
+                refreshed_artifacts = build_task_artifacts(source_task_record, output_root=output_dir.parent)
+                self.assertEqual(len(refreshed_artifacts.character_images), 1)
 
 
     def test_character_artifacts_include_manifest_url_when_file_missing(self) -> None:
@@ -1791,6 +2023,50 @@ class ApiTestCase(unittest.TestCase):
                 self.assertEqual(character_item.character_name, "陈屿")
                 self.assertEqual(character_item.url, "https://example.invalid/chenyu.png")
                 self.assertEqual(character_item.status, "completed")
+
+    def test_character_artifacts_use_detected_image_suffix_for_preview_url(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_root = Path(temp_dir)
+            output_dir = output_root / "run"
+            current_path = output_dir / "assets" / "characters" / "陈屿_sheet.png"
+            current_path.parent.mkdir(parents=True)
+            current_path.write_bytes(b"\xff\xd8\xff\xe0jpeg-bytes")
+            (output_dir / "character_image_manifest.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "character_name": "陈屿",
+                            "prompt": "角色 prompt",
+                            "output_path": str(current_path),
+                            "provider": "seedream-4.5",
+                            "status": "completed",
+                            "generated_url": "https://example.invalid/chenyu.png",
+                            "error": "",
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            task = TaskRecord(
+                task_id="task-characters",
+                project_id="project-characters",
+                task_type="project.story",
+                status="completed",
+                payload={},
+                created_at=utc_now(),
+                result={"output_dir": str(output_dir), "story_title": "角色图测试"},
+            )
+
+            artifacts = build_task_artifacts(task, output_root=output_root)
+
+            self.assertEqual(len(artifacts.character_images), 1)
+            character_item = artifacts.character_images[0]
+            self.assertEqual(character_item.name, "陈屿_sheet.jpg")
+            self.assertTrue(str(character_item.path).endswith("陈屿_sheet.jpg"))
+            self.assertIn("/outputs/run/assets/characters/", character_item.url or "")
+            self.assertIn("%E9%99%88%E5%B1%BF_sheet.jpg", character_item.url or "")
+            self.assertTrue(Path(str(character_item.path)).exists())
 
 
     def test_character_artifacts_do_not_treat_previous_version_as_candidate(self) -> None:
@@ -3049,6 +3325,16 @@ class ApiTestCase(unittest.TestCase):
             self.assertIn("scene_bible", scene_artifacts["scenes"][0])
             self.assertIn("scene_transition_contract", scene_artifacts["scenes"][0])
 
+            app.state.container.task_queue.store.update_result(
+                story_task_id,
+                {
+                    "character_bible_path": None,
+                    "scene_plan_path": None,
+                },
+            )
+            stale_story_payload = client.get(f"/v1/tasks/{story_task_id}").json()
+            self.assertIsNone(stale_story_payload["result"].get("scene_plan_path"))
+
             duplicate_scene_structure_response = client.post(
                 "/v1/projects/scene-structure",
                 json={
@@ -3062,6 +3348,15 @@ class ApiTestCase(unittest.TestCase):
                 scene_structure_task_id,
             )
             self.assertEqual(duplicate_scene_structure_response.json()["status"], "completed")
+            restored_story_payload = client.get(f"/v1/tasks/{story_task_id}").json()
+            self.assertEqual(
+                restored_story_payload["result"]["scene_plan_path"],
+                scene_structure_payload["result"]["scene_plan_path"],
+            )
+            self.assertEqual(
+                restored_story_payload["result"]["character_bible_path"],
+                scene_structure_payload["result"]["character_bible_path"],
+            )
 
             segment_contracts_response = client.post(
                 "/v1/projects/segment-contracts",

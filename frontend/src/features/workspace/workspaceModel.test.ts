@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  areCharacterImagesReady,
   buildSceneRows,
   getSceneMasterActionState,
   getStageCompletionState,
-  resolveEditableSourceTaskId
+  resolveEditableSourceTaskId,
+  resolveRestorableActiveTaskId,
+  resolveSourceTask,
+  sectionForTaskType
 } from "./workspaceModel";
 
 describe("workspaceModel", () => {
@@ -12,14 +16,16 @@ describe("workspaceModel", () => {
       getStageCompletionState({
         activeTaskStatus: "completed",
         activeTaskType: "project.scene_structure",
-        characterCount: 0,
+        charactersReady: false,
         hasSceneStructure: false,
         plannedSegmentCount: 0
       })
     ).toEqual({
       charactersComplete: false,
       sceneStructureComplete: true,
-      segmentContractsComplete: false
+      segmentContractsComplete: false,
+      segmentContractsFailed: false,
+      segmentContractsResumeReady: false
     });
   });
 
@@ -28,31 +34,83 @@ describe("workspaceModel", () => {
       getStageCompletionState({
         activeTaskStatus: "completed",
         activeTaskType: "project.segment_contracts",
-        characterCount: 0,
+        charactersReady: false,
         hasSceneStructure: false,
         plannedSegmentCount: 0
       })
     ).toEqual({
       charactersComplete: false,
       sceneStructureComplete: true,
-      segmentContractsComplete: true
+      segmentContractsComplete: true,
+      segmentContractsFailed: false,
+      segmentContractsResumeReady: false
     });
   });
 
-  it("treats generated character artifacts as completed for the character stage", () => {
+  it("treats completed character task as completed before artifacts finish refreshing", () => {
     expect(
       getStageCompletionState({
         activeTaskStatus: "completed",
         activeTaskType: "project.characters",
-        characterCount: 2,
+        charactersReady: false,
         hasSceneStructure: false,
         plannedSegmentCount: 0
       })
     ).toEqual({
       charactersComplete: true,
       sceneStructureComplete: false,
-      segmentContractsComplete: false
+      segmentContractsComplete: false,
+      segmentContractsFailed: false,
+      segmentContractsResumeReady: false
     });
+  });
+
+  it("does not mark partial segment contracts as complete when progress failed", () => {
+    expect(
+      getStageCompletionState({
+        activeTaskStatus: "failed",
+        activeTaskType: "project.segment_contracts",
+        charactersReady: false,
+        hasSceneStructure: true,
+        plannedSegmentCount: 6,
+        segmentContractProgress: {
+          resume_ready: true,
+          status: "failed"
+        }
+      })
+    ).toEqual({
+      charactersComplete: false,
+      sceneStructureComplete: true,
+      segmentContractsComplete: false,
+      segmentContractsFailed: true,
+      segmentContractsResumeReady: true
+    });
+  });
+
+  it("does not treat planned character manifest entries as ready images", () => {
+    expect(
+      areCharacterImagesReady([
+        {
+          kind: "image",
+          name: "林屿",
+          status: "planned",
+          url: "/outputs/characters/linyu.png"
+        }
+      ])
+    ).toBe(false);
+  });
+
+  it("treats generated character images with urls as ready", () => {
+    expect(
+      areCharacterImagesReady([
+        {
+          kind: "image",
+          name: "林屿",
+          status: "completed",
+          url: "/outputs/characters/linyu.png"
+        }
+      ])
+    ).toBe(true);
   });
 
   it("resolves child stage tasks back to the editable story source task", () => {
@@ -80,6 +138,37 @@ describe("workspaceModel", () => {
     ).toBe("story-task");
   });
 
+  it("resolves a freshly completed story task before the stale project task record", () => {
+    const staleSourceTask = {
+      project_id: "p1",
+      result: {},
+      status: "running",
+      task_id: "story-task"
+    };
+    const freshSourceTask = {
+      project_id: "p1",
+      result: { story_source_path: "/outputs/story_source.json" },
+      status: "completed",
+      task_id: "story-task",
+      task_type: "project.novel"
+    };
+
+    expect(
+      resolveEditableSourceTaskId({
+        activeTask: freshSourceTask,
+        fallbackTaskId: "story-task",
+        tasks: [staleSourceTask]
+      })
+    ).toBe("story-task");
+    expect(
+      resolveSourceTask({
+        activeTask: freshSourceTask,
+        sourceTaskId: "story-task",
+        tasks: [staleSourceTask]
+      })
+    ).toEqual(freshSourceTask);
+  });
+
   it("keeps the previous editable source while a newly submitted child task is not in the project list yet", () => {
     expect(
       resolveEditableSourceTaskId({
@@ -94,6 +183,41 @@ describe("workspaceModel", () => {
         ]
       })
     ).toBe("story-task");
+  });
+
+  it("restores a running stage task ahead of the route story task after refresh", () => {
+    expect(
+      resolveRestorableActiveTaskId({
+        routeTaskId: "story-task",
+        latestTaskId: "scene-task",
+        tasks: [
+          {
+            created_at: "2026-05-01T10:00:00Z",
+            project_id: "p1",
+            status: "completed",
+            task_id: "story-task",
+            task_type: "project.story"
+          },
+          {
+            created_at: "2026-05-01T10:01:00Z",
+            payload: { source_task_id: "story-task" },
+            project_id: "p1",
+            status: "running",
+            task_id: "scene-task",
+            task_type: "project.scene_structure"
+          }
+        ]
+      })
+    ).toBe("scene-task");
+  });
+
+  it("maps running task types back to workspace sections", () => {
+    expect(sectionForTaskType("project.scene_structure")).toBe("结构化信息");
+    expect(sectionForTaskType("project.segment_contracts")).toBe("结构化信息");
+    expect(sectionForTaskType("project.characters")).toBe("角色图");
+    expect(sectionForTaskType("project.scenes")).toBe("场景母图");
+    expect(sectionForTaskType("project.storyboards")).toBe("分段视频");
+    expect(sectionForTaskType("project.videos")).toBe("分段视频");
   });
 
   it("merges scene master image files back into their scene rows", () => {

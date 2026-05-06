@@ -2,6 +2,7 @@ import type {
   ArtifactBundle,
   CreateStageTaskRequest,
   PlannedSegmentArtifact,
+  SegmentContractProgress,
   StageTaskKind
 } from "../../types";
 import { CharacterWorkspace } from "./sections/characterWorkspace";
@@ -31,6 +32,8 @@ export function WorkspaceSection({
   readySegments,
   sceneRows,
   sceneCount,
+  segmentContractProgress,
+  stageBlockReason,
   selectedCharacterName,
   selectedSceneId,
   selectedSegment,
@@ -53,6 +56,8 @@ export function WorkspaceSection({
   readySegments: number;
   sceneRows: SceneRow[];
   sceneCount: number;
+  segmentContractProgress?: SegmentContractProgress | null;
+  stageBlockReason?: string;
   selectedCharacterName: string;
   selectedSceneId: string;
   selectedSegment?: PlannedSegmentArtifact;
@@ -78,7 +83,14 @@ export function WorkspaceSection({
     return <SceneWorkspace sceneRows={sceneRows} selectedSceneId={selectedSceneId} setSelectedSceneId={setSelectedSceneId} />;
   }
   if (activeSection === "结构化信息") {
-    return <PlanningWorkspace plannedSegments={plannedSegments} scenes={artifacts?.scenes || []} setSelectedSegmentId={setSelectedSegmentId} />;
+    return (
+      <PlanningWorkspace
+        plannedSegments={plannedSegments}
+        scenes={artifacts?.scenes || []}
+        segmentContractProgress={segmentContractProgress}
+        setSelectedSegmentId={setSelectedSegmentId}
+      />
+    );
   }
   if (activeSection === "合并视频") {
     return <DeliveryWorkspace artifacts={artifacts} />;
@@ -99,6 +111,7 @@ export function WorkspaceSection({
         projectId={projectId}
         sceneRows={sceneRows}
         selectedSegment={selectedSegment}
+        stageBlockReason={stageBlockReason}
         setSelectedSegmentId={setSelectedSegmentId}
       />
     );

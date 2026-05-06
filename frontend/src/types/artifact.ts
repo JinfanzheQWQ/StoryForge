@@ -135,8 +135,15 @@ export interface PlannedSegmentArtifact {
   chapter_number: number;
   duration_seconds?: number | null;
   scene_master_frame?: ArtifactItem | null;
+  storyboard_grid?: ArtifactItem | null;
   rendered_clip?: ArtifactItem | null;
   scene_master_frame_prompt?: string;
+  storyboard_grid_prompt?: string;
+  storyboard_grid_status?: string;
+  storyboard_grid_error?: string;
+  storyboard_scene_descriptions?: string[];
+  storyboard_grid_request?: SubmittedRequest | null;
+  video_mode?: "direct_motion" | "grid_storyboard";
   video_prompt?: string;
   submitted_video_prompt?: string;
   seedance_motion_prompt?: string;
@@ -151,7 +158,29 @@ export interface PlannedSegmentArtifact {
   scene_master_frame_request?: SubmittedRequest | null;
   video_request?: SubmittedRequest | null;
   scene_ready?: boolean;
+  storyboard_ready?: boolean;
   video_ready?: boolean;
+}
+
+export interface SegmentContractProgress {
+  status?: string;
+  last_error?: string;
+  resume_ready?: boolean;
+  total_chapters?: number;
+  total_scenes?: number;
+  total_chunks?: number;
+  completed_chapters?: number;
+  completed_scene_count?: number;
+  completed_chunk_count?: number;
+  completed_segment_count?: number;
+  failed_chapter_number?: number;
+  failed_scene_id?: string;
+  failed_chunk_id?: string;
+  running_chapter_number?: number;
+  running_scene_id?: string;
+  running_chunk_id?: string;
+  last_updated_at?: string;
+  [key: string]: unknown;
 }
 
 export interface ArtifactBundle {
@@ -170,6 +199,7 @@ export interface ArtifactBundle {
   story_source?: unknown;
   full_story?: ArtifactItem | null;
   continuity_summary?: ContinuitySummary | null;
+  segment_contract_progress?: SegmentContractProgress | null;
   continuity_scene_groups?: ContinuityIssueGroup[];
   continuity_segment_groups?: ContinuityIssueGroup[];
   [key: string]: unknown;

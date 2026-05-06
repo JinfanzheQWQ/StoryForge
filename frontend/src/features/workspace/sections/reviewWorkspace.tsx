@@ -35,6 +35,7 @@ export function ReviewWorkspace({
   projectId,
   sceneRows,
   selectedSegment,
+  stageBlockReason,
   setSelectedSegmentId
 }: {
   activeTaskId: string;
@@ -47,6 +48,7 @@ export function ReviewWorkspace({
   projectId?: string;
   sceneRows: SceneRow[];
   selectedSegment?: PlannedSegmentArtifact;
+  stageBlockReason?: string;
   setSelectedSegmentId: (segmentId: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -78,6 +80,10 @@ export function ReviewWorkspace({
   );
   const submittedVideoPrompt = getSubmittedVideoPrompt(selectedSegment);
   const persistedVideoPrompt = getEditableVideoPrompt(selectedSegment);
+  const storyboardPrompt = getStoryboardPrompt(selectedSegment);
+  const storyboardRequestPayload = selectedSegment?.storyboard_grid_request?.payload;
+  const showStoryboardPromptPanel = Boolean(selectedSegment && isGridStoryboardMode(selectedSegment));
+  const showVideoPromptPanel = Boolean(!selectedSegment || !isGridStoryboardMode(selectedSegment) || selectedSegment.storyboard_ready);
   const resolvedVideoPrompt = useMemo(
     () =>
       buildResolvedVideoPromptPreview({
@@ -145,6 +151,7 @@ export function ReviewWorkspace({
     }
   });
   const actionDisabled = isTaskBusy || !projectId || !activeTaskId || !selectedSegment;
+  const stageBlocked = Boolean(stageBlockReason);
   const promptActionDisabled =
     actionDisabled || promptMutation.isPending || resetMutation.isPending || !videoPromptDraft.trim();
 
@@ -162,34 +169,52 @@ export function ReviewWorkspace({
           title="分段审片台"
           summary="逐段检查场景母图、视频状态和尾帧承接。"
         />
+        {stageBlockReason ? <div className="error-callout">{stageBlockReason}</div> : null}
         <div className="segment-video-grid">
           {plannedSegments.length ? (
             plannedSegments.map((segment) => {
               const selected = segment.segment_id === selectedSegment?.segment_id;
               const sceneFrame = getSegmentSceneFrame(segment, sceneRows);
               const issueTotal = countIssuesForSegment(continuityGroups, segment);
-              const videoActionLabel = segment.rendered_clip?.url ? "重新生成视频" : "生成该段视频";
+              const videoAction = getSegmentVideoAction(segment);
+              const gridMode = isGridStoryboardMode(segment);
+              const videoReady = isSegmentReadyForVideo(segment);
               return (
                 <article className={selected ? "segment-video-card selected" : "segment-video-card"} key={segment.segment_id}>
                   <button type="button" onClick={() => setSelectedSegmentId(segment.segment_id)}>
-                    <AssetPreview item={segment.rendered_clip || sceneFrame} />
+                    <AssetPreview item={segment.rendered_clip || segment.storyboard_grid || sceneFrame} />
                     <span>{segment.scene_title || segment.scene_id || "未绑定场景"}</span>
                     <strong>{segment.segment_id}</strong>
                     <em>
-                      {segment.rendered_clip?.url ? "已出片" : segment.scene_ready ? "可生成" : "待场景图"}
+                      {labelSegmentVideoState(segment)}
                       {issueTotal > 0 ? ` · ${issueTotal} 个问题` : ""}
                     </em>
                   </button>
+                  {gridMode ? (
+                    <TaskButton
+                      disabled={isTaskBusy || stageBlocked || !segment.scene_ready}
+                      loading={isTaskBusy && mutationStage === "storyboards" && selected}
+                      title={stageBlockReason || (!segment.scene_ready ? "当前片段缺少场景母图或角色图，先补齐素材。" : undefined)}
+                      type="button"
+                      onClick={() => {
+                        setSelectedSegmentId(segment.segment_id);
+                        onSubmit("storyboards", { segment_id: segment.segment_id, video_mode: "grid_storyboard" });
+                      }}
+                    >
+                      {segment.storyboard_ready ? "重新生成九宫格" : "生成九宫格"}
+                    </TaskButton>
+                  ) : null}
                   <TaskButton
-                    disabled={isTaskBusy || !segment.scene_ready}
+                    disabled={isTaskBusy || stageBlocked || !videoReady}
                     loading={isTaskBusy && mutationStage === "videos" && selected}
+                    title={stageBlockReason || videoAction.reason || undefined}
                     type="button"
                     onClick={() => {
                       setSelectedSegmentId(segment.segment_id);
                       onSubmit("videos", { segment_id: segment.segment_id });
                     }}
                   >
-                    {videoActionLabel}
+                    {videoAction.label}
                   </TaskButton>
                 </article>
               );
@@ -228,13 +253,25 @@ export function ReviewWorkspace({
           </dl>
           {selectedSegment ? (
             <div className="theater-actions">
+              {isGridStoryboardMode(selectedSegment) ? (
+                <TaskButton
+                  disabled={isTaskBusy || stageBlocked || !selectedSegment.scene_ready}
+                  loading={isTaskBusy && mutationStage === "storyboards"}
+                  title={stageBlockReason || (!selectedSegment.scene_ready ? "当前片段缺少场景母图或角色图，先补齐素材。" : undefined)}
+                  type="button"
+                  onClick={() => onSubmit("storyboards", { segment_id: selectedSegment.segment_id, video_mode: "grid_storyboard" })}
+                >
+                  {selectedSegment.storyboard_ready ? "重新生成九宫格" : "生成九宫格"}
+                </TaskButton>
+              ) : null}
               <TaskButton
-                disabled={isTaskBusy || !selectedSegment.scene_ready}
+                disabled={isTaskBusy || stageBlocked || !isSegmentReadyForVideo(selectedSegment)}
                 loading={isTaskBusy && mutationStage === "videos"}
+                title={stageBlockReason || getSegmentVideoAction(selectedSegment).reason || undefined}
                 type="button"
                 onClick={() => onSubmit("videos", { segment_id: selectedSegment.segment_id })}
               >
-                {selectedSegment.rendered_clip?.url ? "重新生成视频" : "生成当前视频"}
+                {getSegmentVideoAction(selectedSegment).label}
               </TaskButton>
             </div>
           ) : (
@@ -316,61 +353,106 @@ export function ReviewWorkspace({
             )}
           </div>
 
-          <div className="segment-prompt-editor">
-            <div className="segment-panel-heading">
-              <div>
-                <p className="eyebrow">Seedance Prompt</p>
-                <h3>生成视频 Prompt</h3>
+          {showStoryboardPromptPanel ? (
+            <div className="segment-prompt-editor">
+              <div className="segment-panel-heading">
+                <div>
+                  <p className="eyebrow">Storyboard Prompt</p>
+                  <h3>九宫格生图 Prompt</h3>
+                </div>
+                <span className="status-pill">
+                  {selectedSegment.storyboard_grid_status || (isTaskBusy && mutationStage === "storyboards" ? "生成中" : "待生成")}
+                </span>
               </div>
-              <span className={promptChanged ? "status-pill status-edited" : "status-pill status-synced"}>
-                {promptChanged ? "有修改" : "已同步"}
-              </span>
+              {storyboardPrompt ? (
+                <details className="segment-submitted-prompt" open>
+                  <summary>九宫格生图 Prompt</summary>
+                  <pre>{storyboardPrompt}</pre>
+                </details>
+              ) : (
+                <p className="segment-muted-copy">
+                  九宫格生图 Prompt 会在提交九宫格任务后由后端生成并回写；当前阶段不展示视频 Prompt，避免误判提交内容。
+                </p>
+              )}
+              {storyboardRequestPayload ? (
+                <details className="segment-submitted-prompt">
+                  <summary>九宫格提交请求</summary>
+                  <pre>{JSON.stringify(storyboardRequestPayload, null, 2)}</pre>
+                </details>
+              ) : null}
+              <div className="segment-prompt-actions">
+                <TaskButton
+                  disabled={isTaskBusy || stageBlocked || !selectedSegment.scene_ready}
+                  loading={isTaskBusy && mutationStage === "storyboards"}
+                  title={stageBlockReason || (!selectedSegment.scene_ready ? "当前片段缺少场景母图或角色图，先补齐素材。" : undefined)}
+                  type="button"
+                  onClick={() => onSubmit("storyboards", { segment_id: selectedSegment.segment_id, video_mode: "grid_storyboard" })}
+                >
+                  {selectedSegment.storyboard_ready ? "重新生成九宫格" : "生成九宫格"}
+                </TaskButton>
+              </div>
+              {repairMutation.isError ? <div className="error-callout">{getErrorMessage(repairMutation.error)}</div> : null}
+              {batchRepairMutation.isError ? <div className="error-callout">{getErrorMessage(batchRepairMutation.error)}</div> : null}
             </div>
-            {resolvedVideoPrompt ? (
-              <details className="segment-submitted-prompt" open>
-                <summary>{resolvedPromptLabel}</summary>
-                <pre>{resolvedVideoPrompt}</pre>
-              </details>
-            ) : (
-              <p className="segment-muted-copy">提交预览 Prompt 会在视频 Prompt 和资源图准备后出现；下面编辑的是当前片段的基础视频 Prompt。</p>
-            )}
-            <textarea
-              aria-label={`${selectedSegment.segment_id} 视频生成 prompt`}
-              disabled={promptMutation.isPending || resetMutation.isPending || isTaskBusy}
-              onChange={(event) => setVideoPromptDraft(event.target.value)}
-              value={videoPromptDraft}
-            />
-            <div className="segment-prompt-actions">
-              <TaskButton
-                disabled={actionDisabled || resetMutation.isPending}
-                loading={resetMutation.isPending}
-                type="button"
-                onClick={() => resetMutation.mutate()}
-              >
-                <RotateCcw size={14} aria-hidden="true" /> 恢复默认 Prompt
-              </TaskButton>
-              <TaskButton
-                disabled={promptActionDisabled || !promptChanged}
-                loading={promptMutation.isPending && !promptMutation.variables?.regenerate}
-                type="button"
-                onClick={() => saveVideoPrompt({ regenerate: false })}
-              >
-                保存 Prompt
-              </TaskButton>
-              <TaskButton
-                disabled={promptActionDisabled}
-                loading={promptMutation.isPending && Boolean(promptMutation.variables?.regenerate)}
-                type="button"
-                onClick={() => saveVideoPrompt({ regenerate: true })}
-              >
-                保存并重跑视频
-              </TaskButton>
+          ) : null}
+
+          {showVideoPromptPanel ? (
+            <div className="segment-prompt-editor">
+              <div className="segment-panel-heading">
+                <div>
+                  <p className="eyebrow">Seedance Prompt</p>
+                  <h3>生成视频 Prompt</h3>
+                </div>
+                <span className={promptChanged ? "status-pill status-edited" : "status-pill status-synced"}>
+                  {promptChanged ? "有修改" : "已同步"}
+                </span>
+              </div>
+              {resolvedVideoPrompt ? (
+                <details className="segment-submitted-prompt" open>
+                  <summary>{resolvedPromptLabel}</summary>
+                  <pre>{resolvedVideoPrompt}</pre>
+                </details>
+              ) : (
+                <p className="segment-muted-copy">提交预览 Prompt 会在视频 Prompt 和资源图准备后出现；下面编辑的是当前片段的基础视频 Prompt。</p>
+              )}
+              <textarea
+                aria-label={`${selectedSegment.segment_id} 视频生成 prompt`}
+                disabled={promptMutation.isPending || resetMutation.isPending || isTaskBusy}
+                onChange={(event) => setVideoPromptDraft(event.target.value)}
+                value={videoPromptDraft}
+              />
+              <div className="segment-prompt-actions">
+                <TaskButton
+                  disabled={actionDisabled || resetMutation.isPending}
+                  loading={resetMutation.isPending}
+                  type="button"
+                  onClick={() => resetMutation.mutate()}
+                >
+                  <RotateCcw size={14} aria-hidden="true" /> 恢复默认 Prompt
+                </TaskButton>
+                <TaskButton
+                  disabled={promptActionDisabled || !promptChanged}
+                  loading={promptMutation.isPending && !promptMutation.variables?.regenerate}
+                  type="button"
+                  onClick={() => saveVideoPrompt({ regenerate: false })}
+                >
+                  保存 Prompt
+                </TaskButton>
+                <TaskButton
+                  disabled={promptActionDisabled}
+                  loading={promptMutation.isPending && Boolean(promptMutation.variables?.regenerate)}
+                  type="button"
+                  onClick={() => saveVideoPrompt({ regenerate: true })}
+                >
+                  保存并重跑视频
+                </TaskButton>
+              </div>
+              {resetMutation.isError ? <div className="error-callout">{getErrorMessage(resetMutation.error)}</div> : null}
+              {promptMutation.isError ? <div className="error-callout">{getErrorMessage(promptMutation.error)}</div> : null}
+              {repairMutation.isError ? <div className="error-callout">{getErrorMessage(repairMutation.error)}</div> : null}
+              {batchRepairMutation.isError ? <div className="error-callout">{getErrorMessage(batchRepairMutation.error)}</div> : null}
             </div>
-            {resetMutation.isError ? <div className="error-callout">{getErrorMessage(resetMutation.error)}</div> : null}
-            {promptMutation.isError ? <div className="error-callout">{getErrorMessage(promptMutation.error)}</div> : null}
-            {repairMutation.isError ? <div className="error-callout">{getErrorMessage(repairMutation.error)}</div> : null}
-            {batchRepairMutation.isError ? <div className="error-callout">{getErrorMessage(batchRepairMutation.error)}</div> : null}
-          </div>
+          ) : null}
         </section>
       ) : null}
 
@@ -414,6 +496,14 @@ function getSubmittedVideoPrompt(segment?: PlannedSegmentArtifact) {
   return segment?.submitted_video_prompt || "";
 }
 
+function getStoryboardPrompt(segment?: PlannedSegmentArtifact) {
+  const requestPrompt = segment?.storyboard_grid_request?.payload?.prompt;
+  if (typeof requestPrompt === "string" && requestPrompt.trim()) {
+    return requestPrompt;
+  }
+  return segment?.storyboard_grid_prompt || "";
+}
+
 function buildResolvedVideoPromptPreview({
   basePrompt,
   resources,
@@ -428,10 +518,21 @@ function buildResolvedVideoPromptPreview({
   const body = (submitted || basePrompt).trim();
   if (!body) return "";
   if (!resources.length) return body;
+  if (resources.length === 1 && resources[0].kind === "storyboard_grid") {
+    return [
+      "参考图绑定（按当前提交资源图顺序理解）：",
+      "- 图片1：九宫格分镜图，是当前片段主要视频参考图；从左到右、从上到下依次表示本段动作推进、角色状态、空间关系和收束画面。",
+      "推进引用规则：",
+      "- 视频根据图片1的九宫格分镜图生成，画面、人物、道具、光线、镜头运动和对白节奏必须按文本中的场景时间描述与九宫格顺序自然推进。",
+      "",
+      body
+    ].join("\n");
+  }
 
   const bindingLines = ["参考图绑定（按当前提交资源图顺序理解）："];
   let sceneLabel = "";
   let firstFrameLabel = "";
+  let storyboardLabel = "";
   const characterLabels: string[] = [];
 
   resources.forEach((resource, index) => {
@@ -440,6 +541,9 @@ function buildResolvedVideoPromptPreview({
     if (kind === "scene_master") {
       sceneLabel = label;
       bindingLines.push(`- ${label}：当前 scene 的场景母图，只用于锁定环境、空间、光线、背景锚点和固定道具；不是视频时间帧。`);
+    } else if (kind === "storyboard_grid") {
+      storyboardLabel = label;
+      bindingLines.push(`- ${label}：九宫格分镜图，是当前片段主要视频参考图；从左到右、从上到下依次表示动作推进、空间关系、镜头运动和收束状态。`);
     } else if (kind === "first_frame") {
       firstFrameLabel = label;
       bindingLines.push(`- ${label}：上一段视频尾帧，是当前片段的开场时间锚点；必须先从这张图的构图、角色站位、朝向、动作停点和光线状态自然继续。`);
@@ -452,7 +556,12 @@ function buildResolvedVideoPromptPreview({
   });
 
   bindingLines.push("推进引用规则：");
-  if (sceneLabel && firstFrameLabel) {
+  if (storyboardLabel && firstFrameLabel) {
+    bindingLines.push(`- 0 秒开场必须先对齐${firstFrameLabel}的构图、角色站位、朝向、动作停点和光线状态；随后按${storyboardLabel}的九宫格顺序自然推进。`);
+    bindingLines.push(`- ${firstFrameLabel}只约束开场瞬间，不能替代${storyboardLabel}的分镜顺序；不要把尾帧扩写成新场景或打乱九宫格。`);
+  } else if (storyboardLabel) {
+    bindingLines.push(`- 视频必须按${storyboardLabel}的九宫格顺序生成，保持画面、人物、道具、光线、镜头运动和对白节奏连续。`);
+  } else if (sceneLabel && firstFrameLabel) {
     bindingLines.push(`- 0 秒开场必须先对齐${firstFrameLabel}的构图、角色站位、朝向、动作停点和光线状态；随后角色运动、镜头推进和空间关系必须在${sceneLabel}锁定的同一场景母图空间中继续。`);
     bindingLines.push(`- ${firstFrameLabel}只决定当前片段开头的时间状态，不能替代${sceneLabel}的环境设定；不要把尾帧里的构图误当成新场景母图。`);
   } else if (sceneLabel) {
@@ -503,6 +612,25 @@ function getSegmentReferenceResources(segment: PlannedSegmentArtifact | undefine
   if (resources.length) return resources;
 
   const fallbackResources: SegmentReferenceResource[] = [];
+  if (isGridStoryboardMode(segment) && segment.storyboard_grid?.url) {
+    fallbackResources.push({
+      description: "九宫格分镜图，作为该段视频主要提交参考图",
+      item: segment.storyboard_grid,
+      key: `storyboard-${segment.storyboard_grid.url}`,
+      kind: "storyboard_grid",
+      label: "九宫格分镜"
+    });
+    if (segment.first_frame_url) {
+      fallbackResources.push({
+        description: "上一段尾帧，用于承接构图、站位和动作停点",
+        item: { kind: "image", name: "上一段尾帧", url: segment.first_frame_url },
+        key: `grid-first-frame-${segment.first_frame_url}`,
+        kind: "first_frame",
+        label: "尾帧承接"
+      });
+    }
+    return fallbackResources;
+  }
   const sceneFrame = getSegmentSceneFrame(segment, sceneRows);
   if (sceneFrame?.url) {
     fallbackResources.push({
@@ -536,10 +664,43 @@ function getSegmentReferenceResources(segment: PlannedSegmentArtifact | undefine
 }
 
 function labelResourceKind(kind?: string) {
+  if (kind === "storyboard_grid") return "九宫格分镜图，该段视频主要参考图";
   if (kind === "scene_master") return "场景母图，锁定地点、光线、空间透视和固定道具";
   if (kind === "first_frame") return "上一段尾帧，锁定片段开头的时间状态";
   if (kind === "character") return "角色定妆图，锁定角色身份和造型";
   return "提交给视频生成接口的参考图";
+}
+
+function isGridStoryboardMode(segment?: PlannedSegmentArtifact) {
+  return segment?.video_mode === "grid_storyboard";
+}
+
+function isSegmentReadyForVideo(segment: PlannedSegmentArtifact) {
+  if (isGridStoryboardMode(segment)) return Boolean(segment.storyboard_ready || segment.storyboard_grid?.url);
+  return Boolean(segment.scene_ready);
+}
+
+function getSegmentVideoAction(segment: PlannedSegmentArtifact) {
+  if (segment.rendered_clip?.url) {
+    return { label: "重新生成视频", reason: "" };
+  }
+  if (isGridStoryboardMode(segment) && !isSegmentReadyForVideo(segment)) {
+    return {
+      label: "先生成九宫格",
+      reason: segment.scene_ready ? "九宫格未生成，先生成九宫格后才能生成视频。" : "当前片段缺少场景母图或角色图，先补齐素材。"
+    };
+  }
+  return { label: "生成当前视频", reason: "" };
+}
+
+function labelSegmentVideoState(segment: PlannedSegmentArtifact) {
+  if (segment.rendered_clip?.url) return "已出片";
+  if (isGridStoryboardMode(segment)) {
+    if (segment.storyboard_ready || segment.storyboard_grid?.url) return "可生成视频";
+    if (segment.scene_ready) return "待九宫格";
+    return "待场景图";
+  }
+  return segment.scene_ready ? "可生成" : "待场景图";
 }
 
 function labelSeverity(severity?: string) {

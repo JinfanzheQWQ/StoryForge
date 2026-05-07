@@ -7,6 +7,7 @@ StoryForge 是一个分阶段 AI 媒体生产系统。前端负责产品交互�
 ```text
 React Frontend
   -> FastAPI
+  -> Agent Session Runner / Project APIs
   -> Task Queue
   -> Domain Pipelines / Image Tasks
   -> LLM / Seedream / GPT Image 2 / Seedance / ffmpeg
@@ -27,7 +28,7 @@ frontend/
 src/storyforge/
 ├── agents/              # LLM backend 抽象和 LangChain 实现
 ├── api/                 # FastAPI router、schema、serializer、artifact 聚合
-├── application/         # 容器、任务队列、项目存储、任务 handler
+├── application/         # 容器、Agent Session、任务队列、项目存储、任务 handler
 ├── core/                # 配置、环境变量和 IO 工具
 ├── domains/
 │   ├── novel/           # 小说生成、结构化合同和 prompt
@@ -40,11 +41,38 @@ src/storyforge/
 
 - React 前端通过 HTTP 调用 FastAPI，不直接读取本地输出文件。
 - FastAPI 接收请求、校验 payload、创建任务并返回 task id。
+- Agent Chat API 接收创意消息，保存 Session Memory，返回计划、进度、错误和结果消息。
+- `AgentIntentPlanner` 必须调用 LLM 做结构化需求理解；代码不允许通过硬编码关键词、题材枚举或风格枚举推断用户意图。
+- `AgentSessionRunner` 是轻量状态机，只提交下一阶段子任务，不直接生成媒体，也不长期占用队列 worker。
+- `StageTaskGateway` 把 Agent stage 映射到现有 `project.story`、`project.scene_structure`、`project.segment_contracts`、`project.characters`、`project.scenes`、`project.storyboards`、`project.videos` 任务。
 - `TaskQueue` 异步执行任务，避免媒体长任务阻塞请求。
 - `TaskStore` 保存任务状态、错误和结果。
 - `ProjectStore` 保存项目、run 关系和最新任务索引。
 - pipeline 读取上一阶段产物，写入当前阶段产物，并更新项目状态。
 - `/outputs` 暴露生成后的媒体文件，供前端预览。
+
+## Agent Session 层
+
+Chat-first Agent 是小说转视频之上的会话式调度层，不新增媒体 pipeline。
+
+```text
+Human User / External Agent
+  -> Agent Chat API
+  -> AgentSessionStore / AgentMessageStore / AgentSessionEventStore
+  -> AgentIntentPlanner
+  -> AgentSessionRunner
+  -> StageTaskGateway
+  -> Existing Project Tasks / TaskQueue
+  -> Artifacts API
+```
+
+第一版只实现 Session Memory：
+
+- `agent_sessions`：保存当前意图、计划、设置、项目 id、根任务 id、当前任务 id、阶段、结果和错误。
+- `agent_session_messages`：保存用户消息、计划消息、进度消息、错误消息和结果消息。
+- `agent_session_events`：保存阶段推进事件，供前端和外部 Agent 轮询。
+
+Runner 由 Session API 轮询触发推进：确认开始后提交小说任务；之后每次查询 session、messages 或 events 时检查当前子任务，如果完成则提交下一阶段，如果失败则写入 failed 状态。
 
 ## 阶段模型
 

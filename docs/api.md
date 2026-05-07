@@ -33,6 +33,225 @@ FastAPI 只提供 API、健康检查和 `/outputs` 媒体访问。React 前端�
 }
 ```
 
+## Agent 自动创作
+
+Agent 自动创作是小说转视频的会话式入口。外部 Agent 和前端只调用 Session/Message API；小说、结构、角色图、场景图、九宫格、视频和合并仍由普通项目任务队列执行。
+
+第一版执行规则：
+
+- 用户先发送创意，后端返回生产计划并进入 `waiting_confirmation`。
+- 生产计划由 LLM 结构化生成；如果 LLM 配置缺失、API key 不存在或结构化输出失败，Session 进入 `failed`。
+- `waiting_confirmation` 状态下再次发送普通消息表示修改上一轮计划。后端会把上一轮创意、上一轮 intent/plan/settings 和最新消息一起交给 LLM，不能把最新的字数、比例或模型修改当成全新故事题材。
+- 用户发送 `开始`、`确认`、`开始生成`、`start` 或 `go` 后，Runner 创建普通小说转视频项目并提交 `project.story`。
+- 用户发送 `暂停` 或 `pause` 后，Session 进入 `paused`，Runner 暂停推进；发送 `继续`、`恢复`、`resume` 或 `continue` 后从当前进度接着跑。
+- 用户发送 `停止`、`停下`、`终止`、`取消`、`stop` 或 `cancel` 后，Session 进入 `canceled`，不可恢复，Runner 不再提交后续阶段。
+- “重新跑当前阶段”是独立动作，只在 `paused` 或 `failed` 状态下可用；它会重新提交当前阶段任务，不等同于继续。
+- 自动生产开始后，普通消息不会重写生产计划；需要修改具体产物时进入普通项目工作台操作。
+- `GET /v1/agent-sessions/{session_id}`、`GET /messages`、`GET /events` 会触发一次轻量推进；当前子任务完成时提交下一阶段任务。
+- Session Runner 不占用 `TaskQueue` worker 等待；每个媒体阶段都是独立子任务。
+
+### `POST /v1/agent-sessions`
+
+创建 Agent 创作会话。
+
+```json
+{
+  "product_type": "novel_to_video",
+  "mode": "auto_full_pipeline",
+  "settings": {
+    "image_model": "gpt-image-2",
+    "image_size": "2K",
+    "image_aspect_ratio": "16:9",
+    "seedream_watermark": false,
+    "seedance_watermark": false
+  }
+}
+```
+
+返回：
+
+```json
+{
+  "session_id": "session-id",
+  "project_id": null,
+  "source_task_id": null,
+  "current_task_id": null,
+  "status": "created",
+  "current_stage": "created"
+}
+```
+
+### `GET /v1/agent-sessions`
+
+返回最近 Agent 历史会话，用于前端切换老会话。
+
+```http
+GET /v1/agent-sessions?limit=50
+```
+
+返回：
+
+```json
+{
+  "sessions": [
+    {
+      "session_id": "session-id",
+      "status": "paused",
+      "current_stage": "waiting_storyboards",
+      "project_id": "project-id",
+      "source_task_id": "story-task-id",
+      "updated_at": "2026-05-07T10:00:00Z"
+    }
+  ]
+}
+```
+
+### `DELETE /v1/agent-sessions/{session_id}`
+
+删除 Agent 历史会话。前端必须让用户选择是否保留绑定项目。
+
+默认只删除会话、消息和事件，保留已创建项目：
+
+```http
+DELETE /v1/agent-sessions/session-id
+```
+
+同时删除绑定项目：
+
+```http
+DELETE /v1/agent-sessions/session-id?delete_project=true
+```
+
+如果绑定项目仍有排队中或运行中的任务，同时删除项目会返回 `409`，会话不会被删除。只删除会话不检查项目任务状态。
+
+返回：
+
+```json
+{
+  "session_id": "session-id",
+  "deleted": true,
+  "project_id": "project-id",
+  "project_deleted": false
+}
+```
+
+### `POST /v1/agent-sessions/{session_id}/messages`
+
+发送创意、计划修改或确认指令。
+
+创意消息：
+
+```json
+{
+  "content": "帮我做一个大学表白短片，傍晚花园，清新电影感。",
+  "settings": {
+    "image_model": "gpt-image-2",
+    "image_aspect_ratio": "16:9"
+  }
+}
+```
+
+确认消息：
+
+```json
+{
+  "content": "开始"
+}
+```
+
+停止消息：
+
+```json
+{
+  "content": "停止"
+}
+```
+
+停止后会返回 `canceled / canceled`。如果当前已有子任务进入底层执行，它可能仍会跑完，但 Agent Session 不会继续提交下一阶段。
+
+暂停与继续消息：
+
+```json
+{
+  "content": "暂停"
+}
+```
+
+```json
+{
+  "content": "继续"
+}
+```
+
+暂停后会保留 `current_stage` 和 `current_task_id`；继续时从当前任务接着跑。如果暂停期间当前子任务已经完成，继续后会提交下一阶段。
+
+重新跑当前阶段：
+
+```json
+{
+  "content": "重新跑当前阶段"
+}
+```
+
+该动作只在 `paused` 或 `failed` 下有效。它会重新提交当前生产阶段并替换 `current_task_id`；如果当前阶段是小说正文，会提交新的 `project.story` 并更新 `source_task_id`。已 `canceled` 的会话不可恢复，也不能重新跑。
+
+计划修改消息：
+
+```json
+{
+  "content": "1200字太长了，改成500字左右。"
+}
+```
+
+计划修改只在 `waiting_confirmation` 生效，语义上是“修改上一轮计划”，不是新建一个故事。
+
+确认后会返回 `waiting_task / waiting_story`，并带上自动创建的 `project_id`、`source_task_id` 和当前 `project.story` 任务 id。
+
+### `GET /v1/agent-sessions/{session_id}`
+
+查询并推进一次 Session。常见状态：
+
+- `created`：已创建，尚未发送创意。
+- `waiting_confirmation`：已生成生产计划，等待用户确认。
+- `waiting_task`：正在等待当前子任务完成。
+- `paused`：用户暂停，保留当前任务和阶段，可发送“继续”恢复。
+- `completed`：合并总片完成。
+- `failed`：当前阶段失败，`error` 包含原因。
+- `canceled`：用户已终止 Agent 自动创作，不再推进后续阶段。
+
+返回中的 `progress` 按当前阶段估算整体进度，`result.workspace_url` 指向普通项目工作台。
+
+### `GET /v1/agent-sessions/{session_id}/messages`
+
+返回聊天消息。消息类型包括 `text`、`plan`、`progress`、`error`、`result` 和 `action`。
+
+### `POST /v1/agent-sessions/{session_id}/rerun-current-stage`
+
+重新提交当前生产阶段。前端“重新跑当前阶段”按钮使用这个接口，避免把“继续”误当作重跑。
+
+可用状态：
+
+- `paused`
+- `failed`
+
+返回：
+
+```json
+{
+  "session": {
+    "session_id": "session-id",
+    "status": "waiting_task",
+    "current_stage": "waiting_storyboards",
+    "current_task_id": "new-task-id"
+  },
+  "messages": []
+}
+```
+
+### `GET /v1/agent-sessions/{session_id}/events`
+
+返回机器可读阶段事件，适合外部 Agent 轮询。
+
 ## 生图
 
 ### `POST /v1/images/generations`

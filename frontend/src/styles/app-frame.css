@@ -69,6 +69,10 @@
   grid-template-columns: 220px minmax(0, 1fr);
 }
 
+.workbench-shell.side-nav-collapsed {
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
 .app-side-nav {
   display: grid;
   align-content: start;
@@ -83,6 +87,10 @@
     linear-gradient(180deg, #07111f, #020617);
 }
 
+.workbench-shell.side-nav-collapsed .app-side-nav {
+  padding-inline: 12px;
+}
+
 .side-brand {
   display: flex;
   gap: 12px;
@@ -90,6 +98,22 @@
   min-height: 54px;
   padding: 6px;
   border-radius: 16px;
+}
+
+.workbench-shell.side-nav-collapsed .side-brand,
+.workbench-shell.side-nav-collapsed .side-nav-link,
+.workbench-shell.side-nav-collapsed .side-collapse-button {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.workbench-shell.side-nav-collapsed .side-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .side-brand .brand-mark {
@@ -116,6 +140,27 @@
 .side-nav-primary {
   display: grid;
   gap: 6px;
+}
+
+.side-collapse-button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 11px;
+  color: rgba(226, 232, 240, 0.62);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.side-collapse-button:hover {
+  color: #f8fafc;
+  border-color: rgba(103, 232, 249, 0.2);
+  background: rgba(15, 23, 42, 0.42);
 }
 
 .side-nav-link {

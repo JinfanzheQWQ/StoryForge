@@ -4,6 +4,7 @@ import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
 
 const LandingPage = lazy(() => import("../features/landing/LandingPage").then((module) => ({ default: module.LandingPage })));
+const AgentChatPage = lazy(() => import("../features/agent/AgentChatPage").then((module) => ({ default: module.AgentChatPage })));
 const ImageProjectPage = lazy(() => import("../features/images/ImageProjectPage").then((module) => ({ default: module.ImageProjectPage })));
 const ImageStudioPage = lazy(() => import("../features/images/ImageStudioPage").then((module) => ({ default: module.ImageStudioPage })));
 const NewProjectPage = lazy(() => import("../features/projects/NewProjectPage").then((module) => ({ default: module.NewProjectPage })));
@@ -23,6 +24,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: lazyRoute(<LandingPage />) },
       { path: "console", element: lazyRoute(<ProjectListPage />) },
+      { path: "console/agent", element: lazyRoute(<AgentChatPage />) },
       { path: "console/new", element: lazyRoute(<NewProjectPage />) },
       { path: "console/images", element: lazyRoute(<ImageStudioPage />) },
       { path: "console/images/text-to-image", element: <Navigate to="/console/images" replace /> },

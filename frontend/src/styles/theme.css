@@ -24,10 +24,17 @@ body {
 }
 
 .side-nav-link:hover,
-.side-nav-link.active {
+.side-nav-link.active,
+.side-collapse-button:hover {
   color: #0f766e;
   border-color: rgba(16, 185, 129, 0.18);
   background: rgba(255, 255, 255, 0.68);
+}
+
+.side-collapse-button {
+  color: rgba(15, 23, 42, 0.56);
+  border-color: rgba(15, 126, 168, 0.1);
+  background: rgba(255, 255, 255, 0.42);
 }
 
 .library-studio {

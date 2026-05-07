@@ -481,7 +481,10 @@ async def get_project(project_id: str, request: Request) -> ProjectDetailRespons
 
 @router.delete("/{project_id}", response_model=ProjectDeletedResponse)
 async def delete_project(project_id: str, request: Request) -> ProjectDeletedResponse:
-    container = request.app.state.container
+    return delete_project_records(project_id, request.app.state.container)
+
+
+def delete_project_records(project_id: str, container) -> ProjectDeletedResponse:
     project = container.project_store.get(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")

@@ -8,6 +8,13 @@ describe("queryKeys", () => {
     expect(queryKeys.task("t1")).toEqual(["task", "t1"]);
   });
 
+  it("keeps agent query keys stable", () => {
+    expect(queryKeys.agentSessions()).toEqual(["agent-sessions"]);
+    expect(queryKeys.agentSession("s1")).toEqual(["agent-session", "s1"]);
+    expect(queryKeys.agentMessages("s1")).toEqual(["agent-messages", "s1"]);
+    expect(queryKeys.agentEvents("s1")).toEqual(["agent-events", "s1"]);
+  });
+
   it("keeps artifact and story source query keys stable", () => {
     expect(queryKeys.artifacts("t1")).toEqual(["artifacts", "t1"]);
     expect(queryKeys.projectCardArtifacts("t2")).toEqual(["project-card-artifacts", "t2"]);

@@ -23,6 +23,13 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from storyforge.api.artifacts import build_task_artifacts  # noqa: E402
 from storyforge.api.main import create_app  # noqa: E402
+from storyforge.agents.base import AgentBackendUnavailableError, AgentResult, PromptRequest  # noqa: E402
+from storyforge.application.agent_sessions import (  # noqa: E402
+    AgentMessageRecord,
+    AgentSessionEventRecord,
+    AgentSessionRecord,
+    AgentSessionStore,
+)
 from storyforge.application.container import AppContainer  # noqa: E402
 from storyforge.application.projects import ProjectRecord, ProjectStore  # noqa: E402
 from storyforge.application.task_runtime import TaskExecutionContext, build_task_handler  # noqa: E402
@@ -179,6 +186,167 @@ class InMemoryTaskStore(TaskStore):
         record.finished_at = utc_now()
 
 
+class InMemoryAgentSessionStore(AgentSessionStore):
+    def __init__(self) -> None:
+        self._sessions: dict[str, AgentSessionRecord] = {}
+        self._messages: dict[str, list[AgentMessageRecord]] = {}
+        self._events: dict[str, list[AgentSessionEventRecord]] = {}
+
+    def create_session(
+        self,
+        *,
+        product_type: str,
+        mode: str,
+        status: str,
+        current_stage: str,
+        settings: dict[str, object] | None = None,
+    ) -> AgentSessionRecord:
+        now = utc_now()
+        record = AgentSessionRecord(
+            session_id=str(uuid4()),
+            product_type=product_type,
+            mode=mode,
+            status=status,
+            current_stage=current_stage,
+            user_prompt="",
+            intent={},
+            plan={},
+            settings=dict(settings or {}),
+            result={},
+            created_at=now,
+            updated_at=now,
+        )
+        self._sessions[record.session_id] = record
+        self._messages[record.session_id] = []
+        self._events[record.session_id] = []
+        return record
+
+    def get_session(self, session_id: str) -> AgentSessionRecord | None:
+        return self._sessions.get(session_id)
+
+    def list_sessions(self, limit: int = 50) -> list[AgentSessionRecord]:
+        return sorted(
+            self._sessions.values(),
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )[:limit]
+
+    def delete_session(self, session_id: str) -> bool:
+        if session_id not in self._sessions:
+            return False
+        del self._sessions[session_id]
+        self._messages.pop(session_id, None)
+        self._events.pop(session_id, None)
+        return True
+
+    def update_session(self, session_id: str, **updates) -> AgentSessionRecord:
+        record = self._sessions[session_id]
+        for key, value in updates.items():
+            if hasattr(record, key):
+                setattr(record, key, value)
+        record.updated_at = utc_now()
+        return record
+
+    def append_message(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        type: str,
+        content: str,
+        payload: dict[str, object] | None = None,
+    ) -> AgentMessageRecord:
+        record = AgentMessageRecord(
+            message_id=str(uuid4()),
+            session_id=session_id,
+            role=role,
+            type=type,
+            content=content,
+            payload=dict(payload or {}),
+            created_at=utc_now(),
+        )
+        self._messages.setdefault(session_id, []).append(record)
+        return record
+
+    def list_messages(self, session_id: str) -> list[AgentMessageRecord]:
+        return list(self._messages.get(session_id, []))
+
+    def append_event(
+        self,
+        *,
+        session_id: str,
+        stage: str,
+        status: str,
+        message: str,
+        task_id: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> AgentSessionEventRecord:
+        record = AgentSessionEventRecord(
+            event_id=str(uuid4()),
+            session_id=session_id,
+            stage=stage,
+            status=status,
+            message=message,
+            task_id=task_id,
+            payload=dict(payload or {}),
+            created_at=utc_now(),
+        )
+        self._events.setdefault(session_id, []).append(record)
+        return record
+
+    def list_events(self, session_id: str) -> list[AgentSessionEventRecord]:
+        return list(self._events.get(session_id, []))
+
+
+class DeterministicAgentIntentBackend:
+    def __init__(self) -> None:
+        self.requests: list[PromptRequest] = []
+
+    def generate(self, request: PromptRequest) -> AgentResult:
+        return AgentResult(content="deterministic agent intent backend", provider="deterministic-agent-intent")
+
+    def generate_structured(self, request: PromptRequest, schema):
+        self.requests.append(request)
+        return schema.model_validate(
+            {
+                "brief": {
+                    "title_hint": "大学表白短片",
+                    "idea": "大学表白短片，傍晚花园，清新电影感。",
+                    "genre": "校园情感",
+                    "tone": "清新、电影感、温柔",
+                    "target_audience": "年轻观众",
+                    "chapter_count": 1,
+                    "total_word_target": 1200,
+                    "must_include": ["大学", "表白", "傍晚花园"],
+                    "style_keywords": ["清新", "电影感", "温柔"],
+                },
+                "settings": {
+                    "video_mode": "grid_storyboard",
+                    "image_model": "gpt-image-2",
+                    "image_size": "2K",
+                    "image_aspect_ratio": "16:9",
+                    "seedream_watermark": False,
+                    "seedance_watermark": False,
+                },
+                "plan_summary": "生成 1 章校园情感短片，风格为清新、电影感、温柔。",
+                "steps": [
+                    "生成小说正文",
+                    "生成场景结构",
+                    "生成分段合同",
+                    "生成角色图",
+                    "生成场景母图",
+                    "生成九宫格分镜图",
+                    "生成分段视频",
+                    "合并成片",
+                ],
+                "assistant_message": (
+                    "我会生成一个 1 章校园情感短片，整体风格是清新、电影感、温柔。"
+                    "默认使用九宫格分镜，画面比例 16:9，生图模型 GPT Image 2。是否开始？"
+                ),
+            }
+        )
+
+
 class ApiTestCase(unittest.TestCase):
     def setUp(self) -> None:
         class ContinuityBackend:
@@ -191,6 +359,11 @@ class ApiTestCase(unittest.TestCase):
         self._container_patcher = patch(
             "storyforge.api.main.build_container",
             side_effect=self._build_test_container,
+        )
+        self._agent_intent_backend = DeterministicAgentIntentBackend()
+        self._agent_intent_backend_patcher = patch(
+            "storyforge.application.agent_intent.build_agent_backend",
+            return_value=self._agent_intent_backend,
         )
         self._story_backend_patcher = patch(
             "storyforge.pipelines.story_pipeline.build_agent_backend",
@@ -205,15 +378,18 @@ class ApiTestCase(unittest.TestCase):
             return_value=ContinuityBackend(),
         )
         self._container_patcher.start()
+        self._agent_intent_backend_patcher.start()
         self._story_backend_patcher.start()
         self._video_backend_patcher.start()
         self._continuity_backend_patcher.start()
         self.addCleanup(self._container_patcher.stop)
+        self.addCleanup(self._agent_intent_backend_patcher.stop)
         self.addCleanup(self._story_backend_patcher.stop)
         self.addCleanup(self._video_backend_patcher.stop)
         self.addCleanup(self._continuity_backend_patcher.stop)
 
     def _build_test_container(self, project_root: Path, config) -> AppContainer:
+        agent_session_store = InMemoryAgentSessionStore()
         project_store = InMemoryProjectStore()
         task_store = InMemoryTaskStore()
         context = TaskExecutionContext(
@@ -230,11 +406,12 @@ class ApiTestCase(unittest.TestCase):
         return AppContainer(
             project_root=project_root,
             config=config,
+            agent_session_store=agent_session_store,
             project_store=project_store,
             task_queue=task_queue,
         )
 
-    def _create_test_config(self) -> Path:
+    def _create_test_config(self, *, queue_concurrency: int = 2) -> Path:
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         root = Path(temp_dir.name)
@@ -304,7 +481,7 @@ class ApiTestCase(unittest.TestCase):
                 auto_create_schema = true
 
                 [queue]
-                concurrency = 2
+                concurrency = {queue_concurrency}
                 poll_interval_seconds = 0.2
 
                 [paths]
@@ -326,6 +503,424 @@ class ApiTestCase(unittest.TestCase):
                 break
             time.sleep(0.05)
         return payload
+
+    def test_agent_session_chat_plans_and_waits_for_confirmation(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_response = client.post("/v1/agent-sessions", json={})
+            self.assertEqual(session_response.status_code, 201)
+            session_payload = session_response.json()
+            session_id = session_payload["session_id"]
+            self.assertEqual(session_payload["status"], "created")
+            self.assertEqual(session_payload["current_stage"], "created")
+
+            message_response = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={
+                    "content": "帮我做一个大学表白短片，清新电影感。",
+                    "settings": {
+                        "image_model": "gpt-image-2",
+                        "image_aspect_ratio": "16:9",
+                    },
+                },
+            )
+            self.assertEqual(message_response.status_code, 200)
+            planned_payload = message_response.json()
+            self.assertEqual(planned_payload["session"]["status"], "waiting_confirmation")
+            self.assertEqual(planned_payload["session"]["current_stage"], "waiting_confirmation")
+            self.assertEqual(planned_payload["session"]["intent"]["genre"], "校园情感")
+            self.assertEqual(planned_payload["session"]["settings"]["image_model"], "gpt-image-2")
+            self.assertEqual(len(self._agent_intent_backend.requests), 1)
+            self.assertEqual(
+                self._agent_intent_backend.requests[0].metadata["task"],
+                "agent-intent-planner",
+            )
+            self.assertEqual([item["role"] for item in planned_payload["messages"]], ["user", "assistant"])
+            self.assertEqual(planned_payload["messages"][1]["type"], "plan")
+            self.assertIn("开始", planned_payload["messages"][1]["payload"]["actions"])
+
+            messages_response = client.get(f"/v1/agent-sessions/{session_id}/messages")
+            self.assertEqual(messages_response.status_code, 200)
+            self.assertEqual(len(messages_response.json()["messages"]), 2)
+
+            events_response = client.get(f"/v1/agent-sessions/{session_id}/events")
+            self.assertEqual(events_response.status_code, 200)
+            event_stages = [item["stage"] for item in events_response.json()["events"]]
+            self.assertIn("created", event_stages)
+            self.assertIn("waiting_confirmation", event_stages)
+
+            start_response = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            )
+            self.assertEqual(start_response.status_code, 200)
+            start_payload = start_response.json()
+            self.assertEqual(start_payload["session"]["status"], "waiting_task")
+            self.assertEqual(start_payload["session"]["current_stage"], "waiting_story")
+            self.assertTrue(start_payload["session"]["project_id"])
+            self.assertTrue(start_payload["session"]["source_task_id"])
+            self.assertEqual(
+                start_payload["session"]["current_task_id"],
+                start_payload["session"]["source_task_id"],
+            )
+            self.assertEqual(start_payload["messages"][-1]["type"], "progress")
+            self.assertIn("正在生成小说正文", start_payload["messages"][-1]["content"])
+
+            project_response = client.get(f"/v1/projects/{start_payload['session']['project_id']}")
+            self.assertEqual(project_response.status_code, 200)
+            tasks = project_response.json()["tasks"]
+            story_tasks = [item for item in tasks if item["task_type"] == "project.story"]
+            self.assertEqual(len(story_tasks), 1)
+            self.assertEqual(story_tasks[0]["task_id"], start_payload["session"]["source_task_id"])
+            self.assertEqual(story_tasks[0]["payload"]["brief"]["video_mode"], "grid_storyboard")
+
+            sessions_response = client.get("/v1/agent-sessions")
+            self.assertEqual(sessions_response.status_code, 200)
+            sessions = sessions_response.json()["sessions"]
+            self.assertTrue(any(item["session_id"] == session_id for item in sessions))
+
+    def test_delete_agent_session_can_keep_project(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            project_id = start_payload["session"]["project_id"]
+
+            delete_response = client.delete(f"/v1/agent-sessions/{session_id}")
+            self.assertEqual(delete_response.status_code, 200)
+            delete_payload = delete_response.json()
+            self.assertTrue(delete_payload["deleted"])
+            self.assertEqual(delete_payload["project_id"], project_id)
+            self.assertFalse(delete_payload["project_deleted"])
+            self.assertEqual(client.get(f"/v1/agent-sessions/{session_id}").status_code, 404)
+            self.assertEqual(client.get(f"/v1/projects/{project_id}").status_code, 200)
+
+    def test_delete_agent_session_can_delete_finished_project(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            project_id = start_payload["session"]["project_id"]
+            source_task_id = start_payload["session"]["source_task_id"]
+            app.state.container.task_queue.store.mark_failed(source_task_id, "user deleted project")
+
+            delete_response = client.delete(f"/v1/agent-sessions/{session_id}?delete_project=true")
+            self.assertEqual(delete_response.status_code, 200)
+            delete_payload = delete_response.json()
+            self.assertTrue(delete_payload["deleted"])
+            self.assertEqual(delete_payload["project_id"], project_id)
+            self.assertTrue(delete_payload["project_deleted"])
+            self.assertEqual(client.get(f"/v1/agent-sessions/{session_id}").status_code, 404)
+            self.assertEqual(client.get(f"/v1/projects/{project_id}").status_code, 404)
+
+    def test_agent_session_plan_revision_keeps_previous_creative_context(self) -> None:
+        config_path = self._create_test_config()
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "帮我做一个大学表白短片，傍晚花园，清新电影感。"},
+            )
+
+            revised_response = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "1200字太长了，改成500字左右。"},
+            )
+            self.assertEqual(revised_response.status_code, 200)
+            revised_payload = revised_response.json()
+            self.assertEqual(revised_payload["session"]["status"], "waiting_confirmation")
+            self.assertEqual(len(self._agent_intent_backend.requests), 2)
+            revision_prompt = self._agent_intent_backend.requests[1].user_prompt
+            self.assertIn("这是同一个 StoryForge Agent 创作会话里的计划修改", revision_prompt)
+            self.assertIn("帮我做一个大学表白短片", revision_prompt)
+            self.assertIn("1200字太长了，改成500字左右", revision_prompt)
+            self.assertIn("不要把这些参数本身当成故事题材", revision_prompt)
+            self.assertIn("帮我做一个大学表白短片", revised_payload["session"]["user_prompt"])
+            self.assertIn("1200字太长了", revised_payload["session"]["user_prompt"])
+
+    def test_agent_session_does_not_replan_after_runner_started(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            self.assertEqual(start_payload["session"]["status"], "waiting_task")
+
+            response = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "改成500字左右。"},
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["session"]["status"], "waiting_task")
+            self.assertEqual(len(self._agent_intent_backend.requests), 1)
+            self.assertEqual(payload["messages"][-1]["type"], "text")
+            self.assertIn("不能再用普通消息重写生产计划", payload["messages"][-1]["content"])
+
+    def test_agent_session_stop_cancels_runner_progression(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            source_task_id = start_payload["session"]["source_task_id"]
+
+            stop_response = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "停止"},
+            )
+            self.assertEqual(stop_response.status_code, 200)
+            stopped_payload = stop_response.json()
+            self.assertEqual(stopped_payload["session"]["status"], "canceled")
+            self.assertEqual(stopped_payload["session"]["current_stage"], "canceled")
+            self.assertIn("已停止 Agent 自动创作", stopped_payload["messages"][-1]["content"])
+
+            container = app.state.container
+            container.task_queue.store.mark_completed(
+                source_task_id,
+                {
+                    "story_title": "校园花园告白",
+                    "story_source_path": "/tmp/storyforge-agent-test/story_source.json",
+                    "output_dir": "/tmp/storyforge-agent-test",
+                    "story_source_revision": "revision-1",
+                    "pipeline_root_task_id": source_task_id,
+                },
+            )
+            session_response = client.get(f"/v1/agent-sessions/{session_id}")
+            self.assertEqual(session_response.status_code, 200)
+            session_payload = session_response.json()
+            self.assertEqual(session_payload["status"], "canceled")
+            self.assertEqual(session_payload["current_task_id"], source_task_id)
+
+            project_id = start_payload["session"]["project_id"]
+            project_response = client.get(f"/v1/projects/{project_id}")
+            self.assertEqual(project_response.status_code, 200)
+            scene_tasks = [
+                item
+                for item in project_response.json()["tasks"]
+                if item["task_type"] == "project.scene_structure"
+            ]
+            self.assertEqual(scene_tasks, [])
+
+    def test_agent_session_pause_and_resume_continue_from_current_task(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            source_task_id = start_payload["session"]["source_task_id"]
+            project_id = start_payload["session"]["project_id"]
+
+            pause_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "暂停"},
+            ).json()
+            self.assertEqual(pause_payload["session"]["status"], "paused")
+            self.assertEqual(pause_payload["session"]["current_stage"], "waiting_story")
+            self.assertEqual(pause_payload["session"]["current_task_id"], source_task_id)
+
+            container = app.state.container
+            container.task_queue.store.mark_completed(
+                source_task_id,
+                {
+                    "story_title": "校园花园告白",
+                    "story_source_path": "/tmp/storyforge-agent-test/story_source.json",
+                    "output_dir": "/tmp/storyforge-agent-test",
+                    "story_source_revision": "revision-1",
+                    "pipeline_root_task_id": source_task_id,
+                },
+            )
+
+            paused_poll = client.get(f"/v1/agent-sessions/{session_id}").json()
+            self.assertEqual(paused_poll["status"], "paused")
+            self.assertEqual(paused_poll["current_stage"], "waiting_story")
+            project_before_resume = client.get(f"/v1/projects/{project_id}").json()
+            self.assertEqual(
+                [item for item in project_before_resume["tasks"] if item["task_type"] == "project.scene_structure"],
+                [],
+            )
+
+            resume_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "继续"},
+            ).json()
+            self.assertEqual(resume_payload["session"]["status"], "waiting_task")
+            self.assertEqual(resume_payload["session"]["current_stage"], "waiting_scene_structure")
+            self.assertNotEqual(resume_payload["session"]["current_task_id"], source_task_id)
+
+            project_after_resume = client.get(f"/v1/projects/{project_id}").json()
+            scene_tasks = [
+                item
+                for item in project_after_resume["tasks"]
+                if item["task_type"] == "project.scene_structure"
+            ]
+            self.assertEqual(len(scene_tasks), 1)
+
+    def test_agent_session_rerun_current_stage_is_separate_from_resume(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            first_story_task_id = start_payload["session"]["source_task_id"]
+            project_id = start_payload["session"]["project_id"]
+
+            pause_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "暂停"},
+            ).json()
+            self.assertEqual(pause_payload["session"]["status"], "paused")
+
+            rerun_response = client.post(f"/v1/agent-sessions/{session_id}/rerun-current-stage")
+            self.assertEqual(rerun_response.status_code, 200)
+            rerun_payload = rerun_response.json()
+            self.assertEqual(rerun_payload["session"]["status"], "waiting_task")
+            self.assertEqual(rerun_payload["session"]["current_stage"], "waiting_story")
+            self.assertNotEqual(rerun_payload["session"]["current_task_id"], first_story_task_id)
+            self.assertEqual(
+                rerun_payload["session"]["source_task_id"],
+                rerun_payload["session"]["current_task_id"],
+            )
+            self.assertIn("已重新提交当前阶段", rerun_payload["messages"][-1]["content"])
+
+            container = app.state.container
+            container.task_queue.store.mark_completed(
+                first_story_task_id,
+                {
+                    "story_title": "旧任务完成",
+                    "story_source_path": "/tmp/storyforge-agent-test/old_story_source.json",
+                    "output_dir": "/tmp/storyforge-agent-test/old",
+                    "story_source_revision": "old-revision",
+                    "pipeline_root_task_id": first_story_task_id,
+                },
+            )
+            polled_payload = client.get(f"/v1/agent-sessions/{session_id}").json()
+            self.assertEqual(polled_payload["status"], "waiting_task")
+            self.assertEqual(polled_payload["current_stage"], "waiting_story")
+            self.assertEqual(polled_payload["current_task_id"], rerun_payload["session"]["current_task_id"])
+
+            project_response = client.get(f"/v1/projects/{project_id}")
+            self.assertEqual(project_response.status_code, 200)
+            story_tasks = [
+                item
+                for item in project_response.json()["tasks"]
+                if item["task_type"] == "project.story"
+            ]
+            self.assertEqual(len(story_tasks), 2)
+
+    def test_agent_session_planning_fails_without_llm_backend(self) -> None:
+        config_path = self._create_test_config()
+        with patch(
+            "storyforge.application.agent_intent.build_agent_backend",
+            side_effect=AgentBackendUnavailableError("missing llm key"),
+        ):
+            app = create_app(project_root=ROOT, config_path=config_path)
+            with TestClient(app) as client:
+                session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+                message_response = client.post(
+                    f"/v1/agent-sessions/{session_id}/messages",
+                    json={"content": "任意题材都必须交给 LLM 判断。"},
+                )
+                self.assertEqual(message_response.status_code, 200)
+                payload = message_response.json()
+                self.assertEqual(payload["session"]["status"], "failed")
+                self.assertEqual(payload["session"]["current_stage"], "planning")
+                self.assertIn("missing llm key", payload["session"]["error"])
+                self.assertEqual(payload["messages"][-1]["type"], "error")
+
+    def test_agent_session_runner_advances_after_story_completion(self) -> None:
+        config_path = self._create_test_config(queue_concurrency=0)
+        app = create_app(project_root=ROOT, config_path=config_path)
+        with TestClient(app) as client:
+            session_id = client.post("/v1/agent-sessions", json={}).json()["session_id"]
+            client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "校园花园里的一次清新告白。"},
+            )
+            start_payload = client.post(
+                f"/v1/agent-sessions/{session_id}/messages",
+                json={"content": "开始"},
+            ).json()
+            source_task_id = start_payload["session"]["source_task_id"]
+            project_id = start_payload["session"]["project_id"]
+            container = app.state.container
+            container.task_queue.store.mark_completed(
+                source_task_id,
+                {
+                    "story_title": "校园花园告白",
+                    "story_source_path": "/tmp/storyforge-agent-test/story_source.json",
+                    "output_dir": "/tmp/storyforge-agent-test",
+                    "story_source_revision": "revision-1",
+                    "pipeline_root_task_id": source_task_id,
+                },
+            )
+
+            session_response = client.get(f"/v1/agent-sessions/{session_id}")
+            self.assertEqual(session_response.status_code, 200)
+            session_payload = session_response.json()
+            self.assertEqual(session_payload["status"], "waiting_task")
+            self.assertEqual(session_payload["current_stage"], "waiting_scene_structure")
+            self.assertNotEqual(session_payload["current_task_id"], source_task_id)
+
+            project_response = client.get(f"/v1/projects/{project_id}")
+            self.assertEqual(project_response.status_code, 200)
+            scene_tasks = [
+                item
+                for item in project_response.json()["tasks"]
+                if item["task_type"] == "project.scene_structure"
+            ]
+            self.assertEqual(len(scene_tasks), 1)
+            self.assertEqual(scene_tasks[0]["payload"]["source_task_id"], source_task_id)
+            self.assertEqual(scene_tasks[0]["payload"]["pipeline_root_task_id"], source_task_id)
+
+            messages = client.get(f"/v1/agent-sessions/{session_id}/messages").json()["messages"]
+            self.assertIn("正在拆分场景结构", messages[-1]["content"])
 
     def _run_structuring_pipeline(
         self,

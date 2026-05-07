@@ -76,6 +76,66 @@ class MySQLBackend:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_sessions (
+                        session_id VARCHAR(64) PRIMARY KEY,
+                        project_id VARCHAR(64) NULL,
+                        source_task_id VARCHAR(64) NULL,
+                        current_task_id VARCHAR(64) NULL,
+                        product_type VARCHAR(64) NOT NULL,
+                        mode VARCHAR(64) NOT NULL,
+                        status VARCHAR(40) NOT NULL,
+                        current_stage VARCHAR(80) NOT NULL,
+                        user_prompt LONGTEXT NOT NULL,
+                        intent_json LONGTEXT NOT NULL,
+                        plan_json LONGTEXT NOT NULL,
+                        settings_json LONGTEXT NOT NULL,
+                        result_json LONGTEXT NOT NULL,
+                        error_text TEXT NULL,
+                        created_at VARCHAR(40) NOT NULL,
+                        updated_at VARCHAR(40) NOT NULL,
+                        finished_at VARCHAR(40) NULL,
+                        INDEX idx_agent_sessions_status_updated (status, updated_at),
+                        INDEX idx_agent_sessions_project_updated (project_id, updated_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_session_messages (
+                        message_id VARCHAR(64) PRIMARY KEY,
+                        session_id VARCHAR(64) NOT NULL,
+                        role VARCHAR(20) NOT NULL,
+                        type VARCHAR(30) NOT NULL,
+                        content LONGTEXT NOT NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        created_at VARCHAR(40) NOT NULL,
+                        INDEX idx_agent_messages_session_created (session_id, created_at),
+                        CONSTRAINT fk_agent_messages_session
+                            FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                            ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_session_events (
+                        event_id VARCHAR(64) PRIMARY KEY,
+                        session_id VARCHAR(64) NOT NULL,
+                        stage VARCHAR(80) NOT NULL,
+                        status VARCHAR(40) NOT NULL,
+                        message TEXT NOT NULL,
+                        task_id VARCHAR(64) NULL,
+                        payload_json LONGTEXT NOT NULL,
+                        created_at VARCHAR(40) NOT NULL,
+                        INDEX idx_agent_events_session_created (session_id, created_at),
+                        CONSTRAINT fk_agent_events_session
+                            FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
+                            ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """
+                )
         finally:
             schema_connection.close()
 

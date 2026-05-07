@@ -59,6 +59,7 @@ StoryForge 当前定位为中文剧情短视频创作工作台。它不是单次
 - Agent 前端当前只做第一版 `novel_to_video / auto_full_pipeline`，不做长期记忆或自由工具调用。
 - Agent 自动生产开始后，普通聊天消息不会重写生产计划；具体修改应进入项目工作台操作。
 - Agent 暂停和终止都是会话级控制；已经进入底层执行的单个长任务不保证立即中断。暂停后任务完成也不会自动推进，继续后才会接着跑；终止后不可恢复。
+- 下一版 Agent 方案已写入 `docs/agent_tool_skill_mode.md`，方向是 LLM Tool Agent、Skill Playbook、Tool Registry 和 Tool Executor。
 
 ## 质量状态
 
@@ -78,6 +79,7 @@ git diff --check
 
 - 为独立生图补充本地上传能力。
 - 做 Agent 自动创作真实端到端长链路验证，覆盖小说到合并成片。
+- 按 `docs/agent_tool_skill_mode.md` 拆解下一版 Agent：先做 Tool Registry 和 Tool Executor，再把小说转视频流程写成 Skill。
 - 为 Agent 自动创作补更细的失败恢复入口和阶段级重跑结果展示。
 - 补充九宫格分镜图的局部重做和失败状态视觉细节。
 - 实现 scene repair 的 changed fields 收集。

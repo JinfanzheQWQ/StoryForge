@@ -74,6 +74,8 @@ Human User / External Agent
 
 Runner 由 Session API 轮询触发推进：确认开始后提交小说任务；之后每次查询 session、messages 或 events 时检查当前子任务，如果完成则提交下一阶段，如果失败则写入 failed 状态。
 
+下一版 Agent 规划见 `docs/agent_tool_skill_mode.md`。目标是把固定 Runner 升级为 LLM 控制的 Tool Agent：LLM 读取 Skill Playbook，选择注册 Tool，Tool Executor 执行白名单能力并返回 observation。
+
 ## 阶段模型
 
 ```text
